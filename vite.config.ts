@@ -70,23 +70,80 @@ const classicifyEntryScript = {
         if (typeof asset.source !== 'string') continue;
 
         const html = asset.source;
-        const m = html.match(
-          /<script\s+type="module"(?:\s+crossorigin)?\s*>([\s\S]*?)<\/script>/,
-        );
-        if (!m) continue;
 
-        const scriptBody = m[1];
-        let out = html.replace(m[0], '');
-        const classicTag = `<script>${scriptBody}</script>`;
-        if (out.includes('</body>')) {
-          out = out.replace('</body>', `${classicTag}\n</body>`);
+        // Locate the inlined entry script tag deterministically using
+        // indexOf, NOT a regex. The bundle body contains substrings
+        // like `</script` (e.g. inside React's "<script><\/script>"
+        // string literal). A non-greedy regex on `</script>` cannot
+        // distinguish the real closing tag from those substrings.
+        // indexOf for the literal opening tag finds the unique entry
+        // script reliably.
+        const openMarker = '<script type="module" crossorigin>';
+        const altOpenMarker = '<script type="module">';
+        let openIdx = html.indexOf(openMarker);
+        let openLen = openMarker.length;
+        if (openIdx === -1) {
+          openIdx = html.indexOf(altOpenMarker);
+          openLen = altOpenMarker.length;
+        }
+        if (openIdx === -1) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[asd-classicify] no entry script tag found in ${asset.fileName}; skipping`,
+          );
+          continue;
+        }
+
+        // The closing tag is the LAST </script> in the file. Use
+        // lastIndexOf because the bundle body may legitimately contain
+        // </script substrings as JS string literals (escaped or not),
+        // but the only REAL </script> in the document is the one that
+        // closes our inlined entry. Searching from the end avoids any
+        // ambiguity introduced by content inside the bundle.
+        const closeIdx = html.lastIndexOf('</script>');
+        if (closeIdx === -1 || closeIdx < openIdx) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[asd-classicify] no closing </script> after open at ${openIdx} in ${asset.fileName}; skipping`,
+          );
+          continue;
+        }
+        const closeLen = '</script>'.length;
+        const scriptBody = html.slice(openIdx + openLen, closeIdx);
+
+        // Remove the original tag (open through close) by slicing around
+        // it. Then locate </body> and INSERT the new classic <script>
+        // there using slice + concat — NEVER String.prototype.replace
+        // with a replacement string built from bundle content. The
+        // bundle contains `$` characters (template literals like
+        // `^word/${t}\.xml$`) and String.prototype.replace interprets
+        // sequences like `$\`` (dollar-backtick) in the REPLACEMENT
+        // string as "the portion of the input before the match". That
+        // injects the HTML <head> into the middle of our script body
+        // and corrupts the bundle. This is exactly what produced the
+        // "Unexpected token '<'" parse failure on the previous build.
+        const before = html.slice(0, openIdx);
+        const after = html.slice(closeIdx + closeLen);
+        const noScript = before + after;
+        const bodyCloseIdx = noScript.indexOf('</body>');
+        const classicOpen = '<script>';
+        const classicClose = '</script>';
+        let out: string;
+        if (bodyCloseIdx === -1) {
+          out = noScript + classicOpen + scriptBody + classicClose;
         } else {
-          out = out + classicTag;
+          out =
+            noScript.slice(0, bodyCloseIdx) +
+            classicOpen +
+            scriptBody +
+            classicClose +
+            '\n' +
+            noScript.slice(bodyCloseIdx);
         }
         asset.source = out;
         // eslint-disable-next-line no-console
         console.log(
-          `[asd-classicify] rewrote ${asset.fileName}: stripped type="module" and moved entry script to end of <body>`,
+          `[asd-classicify] ${asset.fileName}: ${scriptBody.length} bytes of script body moved from <head> to end of <body>`,
         );
       }
     },
