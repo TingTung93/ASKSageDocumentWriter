@@ -22,20 +22,48 @@ export function Welcome() {
   const [draftBase, setDraftBase] = useState(baseUrl);
 
   async function validate(e: FormEvent) {
-    e.preventDefault();
+    // eslint-disable-next-line no-console
+    console.info('[Welcome.validate] handler entered');
+    try {
+      e.preventDefault();
+    } catch (preventErr) {
+      // eslint-disable-next-line no-console
+      console.error('[Welcome.validate] preventDefault threw:', preventErr);
+    }
+    // eslint-disable-next-line no-console
+    console.info(
+      `[Welcome.validate] base="${draftBase.trim()}" keyLength=${draftKey.trim().length}`,
+    );
+
     setError(null);
     setValidating(true);
     setModels(null);
+    // eslint-disable-next-line no-console
+    console.info('[Welcome.validate] state set: validating=true');
+
     try {
+      // eslint-disable-next-line no-console
+      console.info('[Welcome.validate] constructing AskSageClient');
       const client = new AskSageClient(draftBase.trim(), draftKey.trim());
+      // eslint-disable-next-line no-console
+      console.info('[Welcome.validate] calling client.getModels()');
       const list = await client.getModels();
+      // eslint-disable-next-line no-console
+      console.info(`[Welcome.validate] getModels resolved with ${list.length} models`);
       setBaseUrl(draftBase.trim());
       setApiKey(draftKey.trim());
       setModels(list);
+      // eslint-disable-next-line no-console
+      console.info('[Welcome.validate] state updated; success');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error('[Welcome.validate] caught error:', err);
+      setError(message);
     } finally {
       setValidating(false);
+      // eslint-disable-next-line no-console
+      console.info('[Welcome.validate] handler complete');
     }
   }
 
