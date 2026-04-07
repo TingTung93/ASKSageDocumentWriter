@@ -78,6 +78,31 @@ describe('AskSageClient', () => {
     expect(err.message).toMatch(/Network error/);
   });
 
+  it('only sets minimal fetch options (no cache/credentials/referrerPolicy) — regression for CORS preflight rejection on health.mil', async () => {
+    // The Ask Sage health.mil tenant's CORS Access-Control-Allow-Headers
+    // is narrow. Adding cache: 'no-store', credentials: 'omit',
+    // referrerPolicy: 'no-referrer', or redirect: 'follow' caused the
+    // browser to either add headers (Cache-Control, Pragma) or alter the
+    // preflight in ways that the server rejects, producing a fast
+    // "Failed to fetch" with no body. probe.html sets ONLY method, mode,
+    // headers, body — and works. The client must do the same.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(modelsFixture), { status: 200 }),
+    );
+    const client = makeClient();
+    await client.getModels();
+    const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const keys = Object.keys(opts).sort();
+    expect(keys).toEqual(['body', 'headers', 'method', 'mode'].sort());
+    expect(opts.mode).toBe('cors');
+    expect(opts.method).toBe('POST');
+    // These MUST NOT be set:
+    expect(opts).not.toHaveProperty('cache');
+    expect(opts).not.toHaveProperty('credentials');
+    expect(opts).not.toHaveProperty('referrerPolicy');
+    expect(opts).not.toHaveProperty('redirect');
+  });
+
   it('uses globalThis.fetch (not detached) when no fetchImpl is provided — regression for "Illegal invocation"', async () => {
     // Simulate a browser-like fetch that throws "Illegal invocation" when
     // `this` is not globalThis. This is what the real browser fetch does

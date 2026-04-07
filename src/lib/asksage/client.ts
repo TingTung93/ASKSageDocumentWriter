@@ -48,19 +48,18 @@ export class AskSageClient {
     const url = this.url(path);
     let res: Response;
     try {
+      // Match probe.html's working request shape EXACTLY. Do NOT add
+      // "defensive" options like cache: 'no-store', credentials: 'omit',
+      // referrerPolicy: 'no-referrer', etc. — `cache: 'no-store'` in
+      // particular causes Chromium/Firefox to add Cache-Control and
+      // Pragma headers, which are non-safelisted and get listed in the
+      // CORS preflight's Access-Control-Request-Headers. If the server's
+      // Access-Control-Allow-Headers doesn't include them (Ask Sage's
+      // doesn't), the preflight is rejected with no body and a generic
+      // "Failed to fetch" — exactly the bug I previously introduced.
       res = await this.fetchImpl(url, {
         method: 'POST',
-        // Explicit CORS mode. Default for cross-origin is 'cors' but
-        // file:// origins are special and we want zero ambiguity.
         mode: 'cors',
-        // Don't send cookies; we authenticate via x-access-tokens.
-        credentials: 'omit',
-        // Avoid any cache layer between us and Ask Sage.
-        cache: 'no-store',
-        // Some servers reject based on referrer; file:// referrers are
-        // unusual. Suppress to match probe.html's effective behavior.
-        referrerPolicy: 'no-referrer',
-        redirect: 'follow',
         headers: {
           'Content-Type': 'application/json',
           'x-access-tokens': this.apiKey,

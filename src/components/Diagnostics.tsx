@@ -49,13 +49,12 @@ async function runProbe(
   let networkError: { name: string; message: string } | null = null;
 
   try {
+    // Match probe.html exactly. Do NOT add cache/credentials/referrerPolicy
+    // — see comment in src/lib/asksage/client.ts for why those break the
+    // CORS preflight on the Ask Sage health tenant.
     res = await globalThis.fetch(url, {
       method: 'POST',
       mode: 'cors',
-      credentials: 'omit',
-      cache: 'no-store',
-      referrerPolicy: 'no-referrer',
-      redirect: 'follow',
       headers: requestHeaders,
       body: requestBody,
     });
