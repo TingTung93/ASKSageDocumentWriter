@@ -3,7 +3,7 @@
 // per-template synthesis cost stays under ~2k input tokens.
 
 import type { TemplateSchema } from '../types';
-import type { SectionSample, FullBody } from './sample';
+import type { SectionSample, FullBody, ParagraphLine } from './sample';
 
 export interface BuildPromptArgs {
   schema: TemplateSchema;
@@ -85,17 +85,22 @@ export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
   // DHA templates have rich placeholder/instruction text (italic
   // bracketed guidance like "[Insert purpose statement, 2-3 sentences]")
   // that the LLM cannot infer from headings alone. We send every
-  // paragraph of the document with its paragraph index so the LLM can
-  // correlate against the per-section paragraph ranges below.
+  // paragraph of the document with its paragraph index AND structural
+  // annotations (style, numbering, content control, table membership)
+  // so the LLM can correlate role with content.
   lines.push(``);
   lines.push(
     `=== FULL TEMPLATE BODY (${full_body.lines.length}/${full_body.total_paragraphs} paragraphs, ${full_body.total_chars} chars${full_body.truncated ? '; TRAILING TRUNCATED' : ''}) ===`,
   );
   lines.push(
-    `This is the verbatim text of the template document. Use it to understand what each section is FOR — placeholder instructions, example wording, and tone are the strongest signals of intent.`,
+    `This is the verbatim text of the template document with structural annotations. Each line has the format:`,
+  );
+  lines.push(`  [<paragraph_index>] (<style_name> [num=<list_id>·<level>] [table] [sdt=<content_control_tag>] [bookmark=<name>]) "<text>"`);
+  lines.push(
+    `Annotations in parentheses tell you the paragraph's ROLE: the named style (Heading 1, Body Text, List Bullet, etc.), whether it's in a numbered list, whether it sits inside a table cell, whether it's wrapped by a Word content control (sdt — these are metadata fields like CUI banner, document number, classification), and any bookmarks. Use these annotations together with the text content to infer purpose. Bracketed instructional text like "[Insert purpose statement]" is the strongest signal of section intent.`,
   );
   for (const line of full_body.lines) {
-    lines.push(`[${line.index}] ${line.text}`);
+    lines.push(formatBodyLine(line));
   }
   lines.push(`=== END FULL TEMPLATE BODY ===`);
 
@@ -127,4 +132,17 @@ export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
     system_prompt: SYSTEM_PROMPT,
     message: lines.join('\n'),
   };
+}
+
+function formatBodyLine(line: ParagraphLine): string {
+  const annotations: string[] = [];
+  const styleLabel = line.style_name ?? line.style_id ?? 'Normal';
+  annotations.push(styleLabel);
+  if (line.numbering_id !== null) {
+    annotations.push(`num=${line.numbering_id}·${line.numbering_level ?? 0}`);
+  }
+  if (line.in_table) annotations.push('table');
+  if (line.content_control_tag) annotations.push(`sdt=${line.content_control_tag}`);
+  for (const b of line.bookmark_starts) annotations.push(`bookmark=${b}`);
+  return `[${line.index}] (${annotations.join(' ')}) "${line.text}"`;
 }

@@ -40,7 +40,7 @@ export async function synthesizeSchema(
   // text, instructions, example wording) — not just heading text.
   const paragraphs = await extractParagraphs(docx_bytes);
   const samples = extractSamples(structural, paragraphs);
-  const fullBody = extractFullBody(paragraphs);
+  const fullBody = extractFullBody(paragraphs, structural);
 
   // (3): build prompt.
   const prompt = buildSynthesisPrompt({

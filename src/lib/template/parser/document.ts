@@ -25,6 +25,17 @@ export interface ParagraphInfo {
   bookmark_starts: string[];
   /** Set of bookmark names that END at this paragraph */
   bookmark_ends: string[];
+  /**
+   * Tag of the nearest enclosing w:sdt (Word content control) ancestor,
+   * or null if this paragraph is not inside any content control.
+   * Critical signal for understanding paragraph PURPOSE — DHA templates
+   * use content controls for CUI banners, document numbers, classification
+   * markings, and other metadata that the LLM should not mistake for body
+   * content.
+   */
+  content_control_tag: string | null;
+  /** True if this paragraph is inside a table cell (w:tc ancestor). */
+  in_table: boolean;
   /** Reference to the underlying element for fill region detection */
   el: Element;
 }
@@ -109,6 +120,11 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     .map((b) => wAttr(b, 'id'))
     .filter((n): n is string => !!n);
 
+  // Walk parent chain to find enclosing content control / table cell.
+  // Both signals matter: content controls mark metadata regions, tables
+  // mark structured layouts (responsibility matrices, etc.).
+  const ancestors = scanAncestors(p);
+
   return {
     index,
     style_id,
@@ -118,8 +134,37 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     outline_level,
     bookmark_starts,
     bookmark_ends,
+    content_control_tag: ancestors.content_control_tag,
+    in_table: ancestors.in_table,
     el: p,
   };
+}
+
+interface AncestorScan {
+  content_control_tag: string | null;
+  in_table: boolean;
+}
+
+function scanAncestors(p: Element): AncestorScan {
+  let content_control_tag: string | null = null;
+  let in_table = false;
+  let node: Element | null = p.parentElement;
+  while (node) {
+    if (node.namespaceURI === W_NS) {
+      const local = node.localName;
+      if (local === 'sdt' && content_control_tag === null) {
+        // Look for w:sdtPr/w:tag @w:val on this sdt
+        const sdtPr = wFirst(node, 'sdtPr');
+        const tagEl = sdtPr ? wFirst(sdtPr, 'tag') : null;
+        const val = wAttr(tagEl, 'val');
+        if (val) content_control_tag = val;
+      } else if (local === 'tc') {
+        in_table = true;
+      }
+    }
+    node = node.parentElement;
+  }
+  return { content_control_tag, in_table };
 }
 
 function extractPageSetup(sectPr: Element): PageSetup {

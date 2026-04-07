@@ -19,7 +19,7 @@
 // these caps are intentionally generous.
 
 import type { ParagraphInfo } from '../parser';
-import type { TemplateSchema, BodyFillRegion } from '../types';
+import type { BodyFillRegion, TemplateSchema } from '../types';
 
 /** Per-section sample cap in characters. ~4000 chars ≈ ~700 words. */
 const SECTION_SAMPLE_CAP = 4000;
@@ -39,6 +39,16 @@ export interface SectionSample {
 export interface ParagraphLine {
   index: number;
   text: string;
+  /** styles.xml id (machine name) */
+  style_id: string | null;
+  /** Resolved human-readable style name from named_styles, if available */
+  style_name: string | null;
+  numbering_id: number | null;
+  numbering_level: number | null;
+  /** Tag of the enclosing w:sdt content control, if any */
+  content_control_tag: string | null;
+  in_table: boolean;
+  bookmark_starts: string[];
 }
 
 export interface FullBody {
@@ -89,29 +99,57 @@ function extractOne(section: BodyFillRegion, paragraphs: ParagraphInfo[]): Secti
   };
 }
 
-export function extractFullBody(paragraphs: ParagraphInfo[]): FullBody {
-  const nonEmpty = paragraphs.filter((p) => p.text.trim().length > 0);
+export function extractFullBody(
+  paragraphs: ParagraphInfo[],
+  schema?: TemplateSchema,
+): FullBody {
+  // Build style_id → style_name lookup once. We use the readable name
+  // (e.g. "Heading 1") in the prompt instead of the machine id ("Heading1")
+  // because the LLM has stronger priors about human-readable style names.
+  const styleNameById = new Map<string, string>();
+  if (schema) {
+    for (const s of schema.formatting.named_styles) {
+      styleNameById.set(s.id, s.name);
+    }
+  }
+
+  // Include paragraphs that have either text content OR a content
+  // control tag (an empty content control still carries semantic
+  // information — it's a placeholder waiting to be filled).
+  const significant = paragraphs.filter(
+    (p) => p.text.trim().length > 0 || p.content_control_tag !== null,
+  );
+
   const lines: ParagraphLine[] = [];
   let total = 0;
   let truncated = false;
 
-  for (const p of nonEmpty) {
+  for (const p of significant) {
     const text = p.text.trim();
-    // Account for the line's overhead in the eventual prompt format
-    // ("[NN] " prefix + newline). Use 8 chars as a conservative estimate.
-    const projected = total + text.length + 8;
+    // Conservative overhead estimate for the rendered line annotations.
+    const projected = total + text.length + 80;
     if (projected > FULL_BODY_CAP) {
       truncated = true;
       break;
     }
-    lines.push({ index: p.index, text });
+    lines.push({
+      index: p.index,
+      text,
+      style_id: p.style_id,
+      style_name: p.style_id ? styleNameById.get(p.style_id) ?? null : null,
+      numbering_id: p.numbering_id,
+      numbering_level: p.numbering_level,
+      content_control_tag: p.content_control_tag,
+      in_table: p.in_table,
+      bookmark_starts: p.bookmark_starts,
+    });
     total = projected;
   }
 
   return {
     lines,
     truncated,
-    total_paragraphs: nonEmpty.length,
+    total_paragraphs: significant.length,
     total_chars: total,
   };
 }

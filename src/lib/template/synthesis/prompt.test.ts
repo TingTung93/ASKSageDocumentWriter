@@ -5,6 +5,20 @@ import type { FullBody } from './sample';
 
 const EMPTY_BODY: FullBody = { lines: [], truncated: false, total_paragraphs: 0, total_chars: 0 };
 
+function pl(index: number, text: string, extra: Partial<import('./sample').ParagraphLine> = {}): import('./sample').ParagraphLine {
+  return {
+    index,
+    text,
+    style_id: extra.style_id ?? null,
+    style_name: extra.style_name ?? null,
+    numbering_id: extra.numbering_id ?? null,
+    numbering_level: extra.numbering_level ?? null,
+    content_control_tag: extra.content_control_tag ?? null,
+    in_table: extra.in_table ?? false,
+    bookmark_starts: extra.bookmark_starts ?? [],
+  };
+}
+
 function makeSchema(): TemplateSchema {
   return {
     $schema: 'test',
@@ -149,24 +163,31 @@ describe('buildSynthesisPrompt', () => {
     expect(built.message).toContain('paragraph_range: [3, 7]');
   });
 
-  it('renders the full body block with paragraph indices', () => {
+  it('renders the full body block with paragraph indices and style annotations', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [],
       full_body: {
         lines: [
-          { index: 0, text: 'TITLE OF SOP' },
-          { index: 1, text: '1. Purpose' },
-          { index: 2, text: '[Insert purpose statement, 2-3 sentences.]' },
+          pl(0, 'TITLE OF SOP', { style_id: 'Title', style_name: 'Title' }),
+          pl(1, '1. Purpose', { style_id: 'Heading1', style_name: 'Heading 1' }),
+          pl(2, '[Insert purpose statement, 2-3 sentences.]', { style_id: 'BodyText', style_name: 'Body Text' }),
+          pl(3, 'See policy', { style_id: 'BodyText', style_name: 'Body Text', content_control_tag: 'PolicyRef' }),
+          pl(4, 'First step', { style_id: 'ListNumber', style_name: 'List Number', numbering_id: 7, numbering_level: 0 }),
+          pl(5, 'Cell content', { style_id: 'BodyText', style_name: 'Body Text', in_table: true }),
         ],
         truncated: false,
-        total_paragraphs: 3,
-        total_chars: 80,
+        total_paragraphs: 6,
+        total_chars: 200,
       },
     });
     expect(built.message).toContain('FULL TEMPLATE BODY');
-    expect(built.message).toContain('[0] TITLE OF SOP');
-    expect(built.message).toContain('[2] [Insert purpose statement, 2-3 sentences.]');
+    expect(built.message).toContain('[0] (Title) "TITLE OF SOP"');
+    expect(built.message).toContain('[1] (Heading 1) "1. Purpose"');
+    expect(built.message).toContain('[2] (Body Text) "[Insert purpose statement, 2-3 sentences.]"');
+    expect(built.message).toContain('sdt=PolicyRef');
+    expect(built.message).toContain('num=7·0');
+    expect(built.message).toContain('table');
     expect(built.message).toContain('END FULL TEMPLATE BODY');
   });
 
@@ -175,7 +196,7 @@ describe('buildSynthesisPrompt', () => {
       schema: makeSchema(),
       samples: [],
       full_body: {
-        lines: [{ index: 0, text: 'first' }],
+        lines: [pl(0, 'first')],
         truncated: true,
         total_paragraphs: 100,
         total_chars: 5,
