@@ -11,6 +11,11 @@ node_modules/
 dist/
 build/
 .vite/
+
+# release/ IS tracked. The DHA workstation cannot run npm/node, so the
+# built single-file artifact (release/index.html) is the deliverable
+# that gets committed and pulled there. Rebuild and re-stage on every
+# change to src/.
 *.log
 npm-debug.log*
 yarn-debug.log*
