@@ -1,7 +1,8 @@
 import Dexie, { type Table } from 'dexie';
+import type { TemplateSchema } from '../template/types';
 
-// Phase 0 baseline. The shape will grow as Phase 1a/1b/2/3 land.
-// Each table here corresponds to an artifact category from PRD §7.
+// The shape will grow as Phase 1b/2/3 land. Each table here corresponds
+// to an artifact category from PRD §7.
 
 export interface TemplateRecord {
   id: string;
@@ -10,8 +11,8 @@ export interface TemplateRecord {
   ingested_at: string;
   /** Original DOCX bytes. The template IS the export skeleton. */
   docx_bytes: Blob;
-  /** Loose `unknown` for Phase 0; will be typed as TemplateSchema in Phase 1a. */
-  schema_json: unknown;
+  /** Structural half from Phase 1a; semantic half added by Phase 1b. */
+  schema_json: TemplateSchema;
 }
 
 export interface ProjectRecord {
