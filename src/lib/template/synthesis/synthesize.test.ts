@@ -59,6 +59,8 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
       },
       sections: schema.sections.map((s, i) => ({
         id: s.id,
+        name: s.name,
+        paragraph_range: [i * 5, i * 5 + 4] as [number, number],
         intent: `Auto-generated intent ${i + 1}.`,
         target_words: [100, 200] as [number, number],
         depends_on: i === 0 ? [] : [schema.sections[i - 1]!.id],

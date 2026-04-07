@@ -1,11 +1,18 @@
-// Folds the LLM's semantic output into the structural TemplateSchema.
-// Pure function — given the same inputs, produces the same output. The
-// structural half is never overwritten; only the semantic fields are
-// added or replaced. If the LLM omits a section, that section's
-// semantic fields stay empty (the schema viewer will show that).
+// Builds the final TemplateSchema by combining the parser's structural
+// half (formatting, named styles, numbering, metadata fill regions) with
+// the LLM's authored section list (the body sections and their semantic
+// fields, plus the document's overall style block).
+//
+// This is NOT an enrichment pass — the LLM is the author of the section
+// list. Parser-detected sections are discarded in favor of whatever the
+// LLM emitted. The LLM's paragraph_range for each section becomes the
+// new BodyFillRegion's anchor indices.
+//
+// If the LLM emits zero sections (failure mode), we fall back to the
+// parser's section list so we don't lose work entirely.
 
-import type { TemplateSchema } from '../types';
-import type { LLMSemanticOutput } from './types';
+import type { BodyFillRegion, NamedStyle, TemplateSchema } from '../types';
+import type { LLMSemanticOutput, LLMSemanticSection } from './types';
 
 export interface MergeOptions {
   semantic_synthesizer: string;
@@ -17,20 +24,12 @@ export function mergeSemanticIntoSchema(
   semantic: LLMSemanticOutput,
   opts: MergeOptions,
 ): TemplateSchema {
-  // Build a lookup from id → semantic section
-  const bySectionId = new Map(semantic.sections.map((s) => [s.id, s]));
-
-  const sections = structural.sections.map((section) => {
-    const llm = bySectionId.get(section.id);
-    if (!llm) return section;
-    return {
-      ...section,
-      intent: llm.intent,
-      target_words: llm.target_words,
-      depends_on: llm.depends_on,
-      validation: llm.validation as Record<string, unknown> | undefined,
-    };
-  });
+  const sections =
+    semantic.sections.length > 0
+      ? semantic.sections.map((llm, order) =>
+          buildSectionFromLLM(llm, order, structural.formatting.named_styles),
+        )
+      : structural.sections; // fallback: keep parser sections if LLM emitted none
 
   return {
     ...structural,
@@ -48,4 +47,47 @@ export function mergeSemanticIntoSchema(
       ingested_at: opts.ingested_at ?? structural.source.ingested_at,
     },
   };
+}
+
+function buildSectionFromLLM(
+  llm: LLMSemanticSection,
+  order: number,
+  namedStyles: NamedStyle[],
+): BodyFillRegion {
+  const body_style_id = findStyleByName(namedStyles, ['Body Text', 'BodyText', 'Normal']);
+  const heading_style_id = findStyleByName(namedStyles, ['Heading 1', 'Heading1']);
+
+  const [first, last] = llm.paragraph_range;
+  return {
+    id: llm.id,
+    name: llm.name,
+    order,
+    required: true,
+    fill_region: {
+      kind: 'heading_bounded',
+      heading_text: llm.name,
+      heading_style_id,
+      body_style_id,
+      // anchor_paragraph_index is the LINE BEFORE the body content. For
+      // LLM-authored sections we treat the first paragraph as the
+      // section's first content line (no separate "heading" paragraph),
+      // so anchor = first - 1 (or -1 if first is 0). The export pipeline
+      // can use these to locate the right slice.
+      anchor_paragraph_index: Math.max(-1, first - 1),
+      end_anchor_paragraph_index: last,
+      permitted_roles: ['body', 'bullet', 'step', 'note', 'table'],
+    },
+    intent: llm.intent,
+    target_words: llm.target_words,
+    depends_on: llm.depends_on,
+    validation: llm.validation as Record<string, unknown> | undefined,
+  };
+}
+
+function findStyleByName(styles: NamedStyle[], candidates: string[]): string | null {
+  for (const c of candidates) {
+    const hit = styles.find((s) => s.id === c || s.name === c);
+    if (hit) return hit.id;
+  }
+  return null;
 }

@@ -86,6 +86,8 @@ function makeSemantic(): LLMSemanticOutput {
     sections: [
       {
         id: 'purpose',
+        name: '1. Purpose',
+        paragraph_range: [1, 3],
         intent: 'State the SOP goal.',
         target_words: [80, 150],
         depends_on: [],
@@ -93,6 +95,8 @@ function makeSemantic(): LLMSemanticOutput {
       },
       {
         id: 'scope',
+        name: '2. Scope',
+        paragraph_range: [4, 6],
         intent: 'Define the SOP applicability.',
         target_words: [60, 120],
         depends_on: ['purpose'],
@@ -133,30 +137,46 @@ describe('mergeSemanticIntoSchema', () => {
     expect(merged.source.semantic_synthesizer).toBe('google-gemini-2.5-flash');
   });
 
-  it('preserves all structural fields untouched (formatting, fill_region)', () => {
+  it('preserves the parser-derived structural formatting half', () => {
     const structural = makeStructural();
     const merged = mergeSemanticIntoSchema(structural, makeSemantic(), {
       semantic_synthesizer: 'google-gemini-2.5-flash',
     });
     expect(merged.formatting).toEqual(structural.formatting);
-    expect(merged.sections[0]!.fill_region).toEqual(structural.sections[0]!.fill_region);
+    expect(merged.metadata_fill_regions).toEqual(structural.metadata_fill_regions);
     expect(merged.id).toBe(structural.id);
   });
 
-  it('leaves a section unchanged if the LLM omits it', () => {
-    const structural = makeStructural();
-    const partial: LLMSemanticOutput = {
-      style: makeSemantic().style,
-      sections: [makeSemantic().sections[0]!], // only purpose, no scope
-    };
-    const merged = mergeSemanticIntoSchema(structural, partial, {
+  it('builds new BodyFillRegions from LLM paragraph_range, replacing parser sections', () => {
+    const merged = mergeSemanticIntoSchema(makeStructural(), makeSemantic(), {
       semantic_synthesizer: 'google-gemini-2.5-flash',
     });
-    const scope = merged.sections.find((s) => s.id === 'scope')!;
-    expect(scope.intent).toBeUndefined();
-    expect(scope.target_words).toBeUndefined();
-    // Structural fields still present
-    expect(scope.fill_region).toBeDefined();
+    // The LLM-authored sections become the schema's sections.
+    expect(merged.sections.length).toBe(2);
+    const purpose = merged.sections.find((s) => s.id === 'purpose')!;
+    expect(purpose.name).toBe('1. Purpose');
+    expect(purpose.fill_region.kind).toBe('heading_bounded');
+    if (purpose.fill_region.kind === 'heading_bounded') {
+      // anchor = first - 1, end = last
+      expect(purpose.fill_region.anchor_paragraph_index).toBe(0);
+      expect(purpose.fill_region.end_anchor_paragraph_index).toBe(3);
+    }
+  });
+
+  it('falls back to parser sections if the LLM emits zero sections', () => {
+    const structural = makeStructural();
+    const empty: LLMSemanticOutput = {
+      style: makeSemantic().style,
+      sections: [],
+    };
+    const merged = mergeSemanticIntoSchema(structural, empty, {
+      semantic_synthesizer: 'google-gemini-2.5-flash',
+    });
+    // Section list comes from the parser, but the style block still
+    // gets the LLM's output.
+    expect(merged.sections.length).toBe(structural.sections.length);
+    expect(merged.sections[0]!.id).toBe('purpose');
+    expect(merged.style.voice).toBe('third_person');
   });
 
   it('does not mutate the input structural schema', () => {
