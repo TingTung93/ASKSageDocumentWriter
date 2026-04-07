@@ -78,6 +78,32 @@ describe('AskSageClient', () => {
     expect(err.message).toMatch(/Network error/);
   });
 
+  it('uses globalThis.fetch (not detached) when no fetchImpl is provided — regression for "Illegal invocation"', async () => {
+    // Simulate a browser-like fetch that throws "Illegal invocation" when
+    // `this` is not globalThis. This is what the real browser fetch does
+    // and what was causing the Phase 0 connection-check failure on the
+    // DHA workstation.
+    const browserLikeFetch = function (this: unknown, _input: unknown, _init?: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify(modelsFixture), { status: 200 }),
+      );
+    } as unknown as typeof fetch;
+
+    const originalFetch = globalThis.fetch;
+    (globalThis as unknown as { fetch: typeof fetch }).fetch = browserLikeFetch;
+    try {
+      // Construct WITHOUT passing fetchImpl so we exercise the default path.
+      const client = new AskSageClient('https://api.asksage.health.mil', 'test-key');
+      const models = await client.getModels();
+      expect(models.length).toBeGreaterThan(0);
+    } finally {
+      (globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch;
+    }
+  });
+
   it('query() POSTs to /server/query with the input as JSON body', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
