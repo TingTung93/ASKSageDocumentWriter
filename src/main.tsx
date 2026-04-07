@@ -1,15 +1,33 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './App';
+import { debugLog } from './lib/debug/log';
 import './index.css';
 
-const rootEl = document.getElementById('root');
-if (!rootEl) {
-  throw new Error('#root element not found in index.html');
-}
+// Install global log capture FIRST so any error during React init is
+// captured and rendered in the debug panel.
+debugLog.install();
 
-ReactDOM.createRoot(rootEl).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+try {
+  const rootEl = document.getElementById('root');
+  if (!rootEl) {
+    throw new Error('#root element not found in index.html');
+  }
+  // eslint-disable-next-line no-console
+  console.info('[main] mounting React app');
+  ReactDOM.createRoot(rootEl).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+  // eslint-disable-next-line no-console
+  console.info('[main] React mount called');
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.error('[main] crash during init:', e);
+  // Render a minimal fallback so the debug panel still has somewhere to live.
+  document.body.insertAdjacentHTML(
+    'beforeend',
+    '<pre style="color:#b00;padding:1rem;font-family:monospace">init crash — see debug panel below</pre>',
+  );
+}
