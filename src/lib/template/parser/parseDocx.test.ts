@@ -107,6 +107,19 @@ describe('parseDocx — real DHA templates', () => {
       expect(def.id).toBeGreaterThanOrEqual(0);
       expect(Array.isArray(def.levels)).toBe(true);
     });
+
+    it('falls back to a whole-document section when no headings are detected', async () => {
+      const { schema } = await parseDocx(loadFixture(DHA_POLICY_MEMO), {
+        filename: DHA_POLICY_MEMO,
+        docx_blob_id: 'fixture://memo',
+      });
+      // Memo templates use a flat layout without Heading 1/2 styles, so
+      // the only way the synthesis pass gets anything to work with is
+      // the whole-body fallback. Assert it kicked in.
+      expect(schema.sections.length).toBeGreaterThanOrEqual(1);
+      const fallback = schema.sections.find((s) => s.id === 'document_body');
+      expect(fallback).toBeDefined();
+    });
   });
 
   it('rejects bytes that are not a DOCX', async () => {
