@@ -1,0 +1,114 @@
+import { useState, type FormEvent } from 'react';
+import { useAuth } from '../lib/state/auth';
+import { AskSageClient } from '../lib/asksage/client';
+
+export function Welcome() {
+  const {
+    apiKey,
+    baseUrl,
+    models,
+    isValidating,
+    error,
+    setApiKey,
+    setBaseUrl,
+    setModels,
+    setValidating,
+    setError,
+    clear,
+  } = useAuth();
+
+  const [draftKey, setDraftKey] = useState(apiKey ?? '');
+  const [draftBase, setDraftBase] = useState(baseUrl);
+
+  async function validate(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setValidating(true);
+    setModels(null);
+    try {
+      const client = new AskSageClient(draftBase.trim(), draftKey.trim());
+      const list = await client.getModels();
+      setBaseUrl(draftBase.trim());
+      setApiKey(draftKey.trim());
+      setModels(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  return (
+    <main>
+      <h1>Phase 0 — Connection check</h1>
+      <p>
+        Paste your Ask Sage API key and click validate. The app will call{' '}
+        <code>/server/get-models</code> with your key in the{' '}
+        <code>x-access-tokens</code> header. If the call succeeds, the model
+        list appears below and the rest of the tool can use the same client.
+      </p>
+
+      <form onSubmit={validate}>
+        <label htmlFor="baseUrl">Base URL</label>
+        <input
+          id="baseUrl"
+          type="text"
+          value={draftBase}
+          onChange={(e) => setDraftBase(e.target.value)}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <p className="note">
+          Default is the DHA health tenant. Change if you're testing against
+          a different Ask Sage tenant.
+        </p>
+
+        <label htmlFor="apiKey">Ask Sage API key</label>
+        <input
+          id="apiKey"
+          type="password"
+          value={draftKey}
+          onChange={(e) => setDraftKey(e.target.value)}
+          placeholder="paste your long-lived Ask Sage API key"
+          spellCheck={false}
+          autoComplete="off"
+        />
+        <p className="note">
+          Stored in this tab's session storage only. Never sent anywhere
+          except directly to the Ask Sage base URL above. Closing the tab
+          forgets it.
+        </p>
+
+        <button type="submit" disabled={isValidating || !draftKey.trim()}>
+          {isValidating ? 'Validating…' : 'Validate connection'}
+        </button>
+        {apiKey && (
+          <button
+            type="button"
+            onClick={() => {
+              clear();
+              setDraftKey('');
+            }}
+            style={{ marginLeft: '0.5rem', background: '#666', borderColor: '#666' }}
+          >
+            Clear stored key
+          </button>
+        )}
+      </form>
+
+      {error && <div className="error">Error: {error}</div>}
+
+      {models && (
+        <section>
+          <h2>Available models ({models.length})</h2>
+          <p className="note">Pulled from <code>/server/get-models</code>.</p>
+          <ul className="models">
+            {models.map((m) => (
+              <li key={m.id}>{m.id}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </main>
+  );
+}

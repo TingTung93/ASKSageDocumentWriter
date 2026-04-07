@@ -183,7 +183,7 @@ The earlier design that put templates in Ask Sage datasets was a constraint chas
 
 ## 5. Verified technical foundation
 
-Probed against `https://api.asksage.health.mil` from a DHA workstation browser on 2026-04-07. Raw outputs in `API_Testing_Outputs` (commit `ff4f161`).
+Probed against `https://api.asksage.health.mil` from a DHA workstation browser on 2026-04-07. Raw outputs in `API_Testing_Outputs.md` (originally added in commit `ff4f161`).
 
 ### CORS — split by API surface
 
@@ -689,5 +689,5 @@ Header on every call: `x-access-tokens: <user's Ask Sage API key>`
 ## Appendix C — File reference
 
 - `probe.html` — browser-side API probe; kept in repo for future re-validation
-- `API_Testing_Outputs` — captured probe results from 2026-04-07 verification run; basis for §5
+- `API_Testing_Outputs.md` — captured probe results from 2026-04-07 verification run; basis for §5
 - `PRD.md` — this document

@@ -1,0 +1,47 @@
+{
+  "data": [
+    {
+      "created": "na",
+      "id": "google-gemini-2.5-flash",
+      "name": "google-gemini-2.5-flash",
+      "object": "model",
+      "owned_by": "organization-owner"
+    },
+    {
+      "created": "na",
+      "id": "google-claude-46-sonnet",
+      "name": "google-claude-46-sonnet",
+      "object": "model",
+      "owned_by": "organization-owner"
+    },
+    {
+      "created": "na",
+      "id": "google-claude-45-haiku",
+      "name": "google-claude-45-haiku",
+      "object": "model",
+      "owned_by": "organization-owner"
+    },
+    {
+      "created": "na",
+      "id": "aws-bedrock-claude-45-sonnet-gov",
+      "name": "aws-bedrock-claude-45-sonnet-gov",
+      "object": "model",
+      "owned_by": "organization-owner"
+    },
+    {
+      "created": "na",
+      "id": "gpt-5.1-gov",
+      "name": "gpt-5.1-gov",
+      "object": "model",
+      "owned_by": "organization-owner"
+    }
+  ],
+  "object": "list",
+  "response": [
+    "google-gemini-2.5-flash",
+    "google-claude-46-sonnet",
+    "google-claude-45-haiku",
+    "aws-bedrock-claude-45-sonnet-gov",
+    "gpt-5.1-gov"
+  ]
+}
