@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
+import { Diagnostics } from '../components/Diagnostics';
 
 export function Welcome() {
   const {
@@ -96,7 +97,18 @@ export function Welcome() {
         )}
       </form>
 
-      {error && <div className="error">Error: {error}</div>}
+      {error && (
+        <div className="error">
+          <strong>Connection failed.</strong>
+          {'\n\n'}
+          {error}
+          {'\n\n'}
+          Try the diagnostics panel below for full per-probe detail —
+          it surfaces the same info DevTools would show.
+        </div>
+      )}
+
+      <Diagnostics baseUrl={draftBase.trim()} apiKey={draftKey.trim()} />
 
       {models && (
         <section>

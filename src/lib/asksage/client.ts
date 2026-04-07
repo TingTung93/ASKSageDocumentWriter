@@ -45,10 +45,22 @@ export class AskSageClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = this.url(path);
     let res: Response;
     try {
-      res = await this.fetchImpl(this.url(path), {
+      res = await this.fetchImpl(url, {
         method: 'POST',
+        // Explicit CORS mode. Default for cross-origin is 'cors' but
+        // file:// origins are special and we want zero ambiguity.
+        mode: 'cors',
+        // Don't send cookies; we authenticate via x-access-tokens.
+        credentials: 'omit',
+        // Avoid any cache layer between us and Ask Sage.
+        cache: 'no-store',
+        // Some servers reject based on referrer; file:// referrers are
+        // unusual. Suppress to match probe.html's effective behavior.
+        referrerPolicy: 'no-referrer',
+        redirect: 'follow',
         headers: {
           'Content-Type': 'application/json',
           'x-access-tokens': this.apiKey,
@@ -56,16 +68,25 @@ export class AskSageClient {
         body: JSON.stringify(body ?? {}),
       });
     } catch (err) {
-      // Network-level failure (CORS, DNS, offline, etc.)
+      // Network-level failure (CORS, DNS, offline, etc.). The browser
+      // hides the real cause behind a generic "Failed to fetch". Capture
+      // everything we have so the UI can surface it without DevTools.
+      const name = err instanceof Error ? err.name : 'UnknownError';
       const message = err instanceof Error ? err.message : String(err);
-      throw new AskSageError(null, `Network error calling ${path}: ${message}`);
+      throw new AskSageError(
+        null,
+        `Network error calling POST ${url}: ${name}: ${message}. ` +
+          `This is typically a CORS preflight rejection, DNS failure, ` +
+          `unreachable host, or browser security policy. The browser ` +
+          `does not expose the underlying reason to JavaScript.`,
+      );
     }
 
     const text = await res.text();
     if (!res.ok) {
       throw new AskSageError(
         res.status,
-        `Ask Sage ${path} failed (${res.status}): ${text || res.statusText}`,
+        `Ask Sage POST ${url} failed (${res.status} ${res.statusText}): ${text || '(empty body)'}`,
         text,
       );
     }
@@ -75,7 +96,7 @@ export class AskSageClient {
     } catch {
       throw new AskSageError(
         res.status,
-        `Ask Sage ${path} returned non-JSON body`,
+        `Ask Sage POST ${url} returned non-JSON body: ${text.slice(0, 500)}`,
         text,
       );
     }
