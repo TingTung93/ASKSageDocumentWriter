@@ -27,17 +27,74 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 // no top-level import/export syntax; the transformIndexHtml plugin
 // strips type="module" from the inlined script tag so the browser
 // parses it as a classic script.
-const stripModuleScriptType = {
-  name: 'asd-strip-module-script-type',
-  transformIndexHtml(html: string): string {
-    return html
-      .replace(/<script\s+type="module"\s+crossorigin\s*/g, '<script ')
-      .replace(/<script\s+type="module"\s*/g, '<script ');
+// Strips type="module" + crossorigin from the inlined entry script AND
+// moves it from <head> to just before </body>. Both steps are required:
+//
+//  1. Without stripping type="module", Chromium parses the script in a
+//     module-script context and the DHA workstation's CORS check rejects
+//     /server/* requests (see feedback memo + probe-module.html).
+//
+//  2. Without moving the script out of <head>, the now-classic inline
+//     script runs SYNCHRONOUSLY at parse time — before <body> exists in
+//     the DOM — so `document.getElementById('root')` returns null and
+//     React can't mount. Module scripts have implicit defer semantics
+//     that hid this; classic inline scripts do not, and `defer` is not
+//     valid on inline scripts. The standard pre-defer pattern is to put
+//     the script at the end of <body>, which is what we do here.
+// MUST run AFTER vite-plugin-singlefile inlines the entry script body
+// into the HTML asset. singlefile does that in `generateBundle`, not in
+// `transformIndexHtml` — so we have to hook generateBundle ourselves
+// with `order: 'post'` and patch the bundle's index.html source string
+// in place.
+//
+// Two transformations:
+//   1. Strip type="module" (and any crossorigin) from the entry script
+//      tag so the browser parses it as a classic script. Required to
+//      avoid the CORS preflight rejection on the DHA workstation.
+//   2. Move the entry script from <head> to right before </body>. The
+//      stripped classic script no longer has implicit defer semantics,
+//      so it would otherwise execute synchronously at parse time —
+//      before <body> and #root exist — and React would crash on mount.
+const classicifyEntryScript = {
+  name: 'asd-classicify-entry-script',
+  generateBundle: {
+    order: 'post' as const,
+    handler(
+      _options: unknown,
+      bundle: Record<string, { type: string; source?: string | Uint8Array; fileName: string }>,
+    ): void {
+      for (const key of Object.keys(bundle)) {
+        const asset = bundle[key];
+        if (!asset || asset.type !== 'asset') continue;
+        if (!asset.fileName.endsWith('.html')) continue;
+        if (typeof asset.source !== 'string') continue;
+
+        const html = asset.source;
+        const m = html.match(
+          /<script\s+type="module"(?:\s+crossorigin)?\s*>([\s\S]*?)<\/script>/,
+        );
+        if (!m) continue;
+
+        const scriptBody = m[1];
+        let out = html.replace(m[0], '');
+        const classicTag = `<script>${scriptBody}</script>`;
+        if (out.includes('</body>')) {
+          out = out.replace('</body>', `${classicTag}\n</body>`);
+        } else {
+          out = out + classicTag;
+        }
+        asset.source = out;
+        // eslint-disable-next-line no-console
+        console.log(
+          `[asd-classicify] rewrote ${asset.fileName}: stripped type="module" and moved entry script to end of <body>`,
+        );
+      }
+    },
   },
 };
 
 export default defineConfig({
-  plugins: [react(), viteSingleFile(), stripModuleScriptType],
+  plugins: [react(), viteSingleFile(), classicifyEntryScript],
   base: './',
   build: {
     // Output to release/ rather than the conventional dist/ because the
