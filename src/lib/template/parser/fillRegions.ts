@@ -52,7 +52,41 @@ export function detectFillRegions(ctx: DetectionContext): FillRegions {
     bodyRegions = detectHeadingBoundedSections(ctx);
   }
 
+  // ─── Pass 3: whole-document fallback ───────────────────────────────
+  // If neither content controls nor headings produced any body regions
+  // (typical for memo templates that use a flat single-style layout),
+  // create one synthetic section that spans the entire body. The
+  // synthesis pass then has at least one section to attach an intent
+  // to, and the LLM can describe the document holistically. Better
+  // memo-specific detection (numbered sections, "MEMORANDUM FOR" etc.)
+  // can be added in a follow-up pass.
+  if (bodyRegions.length === 0 && ctx.paragraphs.length > 0) {
+    bodyRegions = createWholeBodyFallback(ctx);
+  }
+
   return { metadata, body: bodyRegions };
+}
+
+function createWholeBodyFallback(ctx: DetectionContext): BodyFillRegion[] {
+  const body_style_id =
+    findStyleByName(ctx.namedStyles, ['Body Text', 'BodyText', 'Normal']) ?? null;
+  return [
+    {
+      id: 'document_body',
+      name: 'Document body',
+      order: 0,
+      required: true,
+      fill_region: {
+        kind: 'heading_bounded',
+        heading_text: '',
+        heading_style_id: null,
+        body_style_id,
+        anchor_paragraph_index: -1,
+        end_anchor_paragraph_index: ctx.paragraphs.length - 1,
+        permitted_roles: ['body', 'bullet', 'step', 'note', 'table'],
+      },
+    },
+  ];
 }
 
 function toMetadataRegion(cc: ContentControlInfo): MetadataFillRegion {
