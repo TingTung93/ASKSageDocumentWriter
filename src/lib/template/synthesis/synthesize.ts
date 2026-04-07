@@ -15,7 +15,7 @@
 import type { AskSageClient } from '../../asksage/client';
 import { extractParagraphs } from '../parser';
 import type { TemplateSchema } from '../types';
-import { extractSamples } from './sample';
+import { extractSamples, extractFullBody } from './sample';
 import { buildSynthesisPrompt } from './prompt';
 import { mergeSemanticIntoSchema } from './merge';
 import type {
@@ -35,16 +35,27 @@ export async function synthesizeSchema(
   const model = opts.model ?? DEFAULT_SYNTHESIS_MODEL;
   const temperature = opts.temperature ?? 0;
 
-  // (1)+(2): re-parse paragraphs and extract per-section samples.
+  // (1)+(2): re-parse paragraphs, extract per-section samples, and pull
+  // the full template body so the LLM has rich context (placeholder
+  // text, instructions, example wording) — not just heading text.
   const paragraphs = await extractParagraphs(docx_bytes);
   const samples = extractSamples(structural, paragraphs);
+  const fullBody = extractFullBody(paragraphs);
 
   // (3): build prompt.
   const prompt = buildSynthesisPrompt({
     schema: structural,
     samples,
+    full_body: fullBody,
     user_hint: opts.user_hint,
   });
+  // eslint-disable-next-line no-console
+  console.info(
+    `[synthesize] template="${structural.name}" sections=${structural.sections.length} ` +
+      `paragraphs=${fullBody.lines.length}/${fullBody.total_paragraphs}` +
+      `${fullBody.truncated ? ' (truncated)' : ''} ` +
+      `prompt_chars=${prompt.message.length} (≈${Math.round(prompt.message.length / 4)} tokens)`,
+  );
 
   // (4)+(5): call Ask Sage and parse JSON.
   const { data, raw } = await client.queryJson<LLMSemanticOutput>({
