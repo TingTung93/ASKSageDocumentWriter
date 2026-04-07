@@ -23,7 +23,15 @@
 </head>
 <body>
 
-<h1>Ask Sage browser probe</h1>
+<h1>Ask Sage browser probe — MODULE SCRIPT VARIANT</h1>
+<p style="background:#ffe;padding:.5rem;border:1px solid #cc0">
+  This file is byte-identical to <code>probe.html</code> EXCEPT that its
+  script tag is <code>&lt;script type="module"&gt;</code> instead of plain
+  <code>&lt;script&gt;</code>. Used to isolate whether Chromium on file://
+  treats module scripts differently for CORS purposes — which would
+  explain why probe.html (classic) reaches Ask Sage from your DHA
+  workstation but the SPA bundle (module) does not.
+</p>
 <p class="note">
   Origin: <code id="origin"></code>.
   Open this file two ways and compare results:
@@ -75,7 +83,7 @@
   <div id="results"></div>
 </fieldset>
 
-<script>
+<script type="module">
 document.getElementById('origin').textContent = location.origin || '(null — file:// origin)';
 
 const results = document.getElementById('results');
