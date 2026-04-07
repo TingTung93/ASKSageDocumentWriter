@@ -1,6 +1,6 @@
 # ASKSageDocumentWriter — Product Requirements Document
 
-**Status:** Draft v0.1
+**Status:** Draft v0.2
 **Last updated:** 2026-04-07
 **Owner:** TingTung93
 
@@ -61,7 +61,7 @@ The user's monthly budget is finite (~250k query tokens, ~2M training/dataset to
 
 ## 4. Solution overview
 
-ASKSageDocumentWriter is a **zero-backend single-page web application** that orchestrates the Ask Sage Server API to drive a multi-stage agentic document generation pipeline. The user supplies templates and reference material as **Ask Sage datasets** (managed in Ask Sage's own UI, not in this app), and the tool synthesizes a JSON schema from the template dataset on each project, then drives section-by-section drafting against the reference dataset(s).
+ASKSageDocumentWriter is a **zero-backend single-page web application** that orchestrates the Ask Sage Server API to drive a multi-stage agentic document generation pipeline. **Templates are local files** (DOCX) that the user adds to the app once each — the app parses their OOXML deterministically in-browser, captures structure and formatting authoritatively from the bytes, and uses an LLM only for the semantic layer (section intent, style guidance, validation rules). **Reference material** (FAR, DHA Issuances, prior packets, policy library) lives in Ask Sage datasets and is retrieved via RAG at drafting time. The split is intentional: **structure is local; content is dataset.**
 
 ### The agentic chain
 
@@ -70,15 +70,35 @@ PROJECT START
    │
    ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ Stage 1 — Schema synthesis (one-shot per project)           │
-│ Model: google-claude-46-opus                                │
-│ Input:  name of template dataset + project intent           │
-│ Action: query the template dataset, asking the model to     │
-│         identify each template, dissect its structure, and  │
-│         emit a strict JSON TemplateSchema describing        │
-│         sections, style rules, formatting conventions,      │
-│         field placeholders, and validation rules            │
-│ Output: TemplateSchema[] for the project (cached locally)   │
+│ Stage 1a — Deterministic OOXML parse (no model call)        │
+│ Input:  local DOCX file (uploaded once per template)        │
+│ Action: jszip + custom OOXML walker reads document.xml,     │
+│         styles.xml, numbering.xml, settings.xml, sectPr,    │
+│         headers/footers, content controls, bookmarks.       │
+│         Detects fill regions in priority order:             │
+│           1. Word content controls (w:sdt)                  │
+│           2. Bookmarks                                      │
+│           3. Placeholder text patterns ([INSERT...], {{...}})│
+│           4. Heading-bounded sections (fallback)            │
+│         Splits fill regions into:                           │
+│           • metadata (CUI banner, doc number, dates,        │
+│             classification, author — small structured)      │
+│           • body (Purpose, Scope, Procedure — prose)        │
+│ Output: structural half of TemplateSchema (formatting,      │
+│         styles, numbering refs, fill_region descriptors)    │
+└─────────────────────────────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Stage 1b — Semantic schema synthesis                        │
+│ Model: google-gemini-2.5-flash (constrained JSON output)    │
+│ Input:  structural digest from 1a + sample paragraphs from  │
+│         each region + user's project intent                 │
+│ Action: emit semantic half of TemplateSchema — section      │
+│         intents, target word counts, voice/tone rules,      │
+│         dependencies, validation rules                      │
+│ Output: merged TemplateSchema, persisted in IndexedDB       │
+│         alongside the original DOCX bytes                   │
 └─────────────────────────────────────────────────────────────┘
    │
    ▼
@@ -123,23 +143,43 @@ PROJECT START
 ┌─────────────────────────────────────────────────────────────┐
 │ Stage 5 — DOCX assembly & export                            │
 │ No model call. Pure local OOXML manipulation.               │
-│ If the user has provided a local DOCX skeleton for the      │
-│ template, fill it in place (high fidelity). Otherwise,      │
-│ generate a styled DOCX from scratch using the schema's      │
-│ formatting rules (lower fidelity, no friction).             │
+│ Clone the original DOCX bytes (always available — they're   │
+│ stored in IndexedDB from Stage 1a). Walk to each fill       │
+│ region. For metadata regions, substitute project inputs    │
+│ directly. For body regions, replace contained paragraphs    │
+│ with new paragraphs that REFERENCE the same paragraph       │
+│ styles, numbering definitions, and inheritance the          │
+│ surrounding template uses. Headers, footers, page setup,    │
+│ margins, theme are inherited automatically because we       │
+│ never touch them.                                           │
+│                                                             │
+│ The LLM never picks fonts or margins. It produces           │
+│ structured output with role tags (heading, body, step,      │
+│ bullet, note); the assembler maps roles to the template's   │
+│ own style names.                                            │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Why dataset-first
+### Why local templates + dataset references
 
-Templates and reference material live in Ask Sage datasets that the user manages through Ask Sage's existing web UI. The tool **never uploads or hosts files itself.** Benefits:
+**Deterministic local DOCX schema is the foundational strength of the tool.** Ask Sage's dataset ingest converts files to plain text, which strips margins, multilevel list definitions, indent levels, style names, headers/footers, numbering, tables, content controls, and section properties — all of the things our users need preserved in the output. If the schema source is RAG text, the tool can produce a content outline but cannot produce a document that respects native formatting conventions. By reading the original DOCX bytes locally, we get every formatting property authoritatively, no inference needed, no tokens consumed.
 
-- Honors C1 (no new data flows or storage)
-- Honors C2 (Ask Sage already controls the data inside the user's existing trust boundary)
-- Eliminates dataset management UI entirely from v1 (it lives in Ask Sage)
-- Lets the user share template datasets with peers using Ask Sage's existing sharing model
+This forces a deliberate split:
 
-The tradeoff is that the User API (`/user/*`) is CORS-blocked from the browser on the health.mil tenant (see §5), so the tool cannot list or enumerate datasets programmatically. The user types the dataset name into a project config field; the app remembers it for next time. **The LLM is the file browser** — Stage 1 asks it to enumerate and describe what it finds in the dataset via RAG.
+| Asset | Where it lives | Why |
+|---|---|---|
+| **Templates** | Local DOCX files in the app (IndexedDB) | Need bytes for formatting fidelity; templates change rarely |
+| **Reference material** | Ask Sage datasets | Voluminous; benefits from RAG; already inside the user's enclave |
+
+Benefits of this split:
+
+- Honors C1 (no new infrastructure for either asset)
+- Honors C2 (user's own credentials for Ask Sage; templates never leave the user's machine)
+- Eliminates the `/user/*` CORS-block problem entirely — we don't need dataset enumeration at all
+- Templates and their schemas can be shared with peers as plain files (DOCX + JSON pairs) over SharePoint, email, or git
+- Schema synthesis becomes faster, cheaper, and more reliable because the LLM only does the semantic pass — structure is ground truth from OOXML
+
+The earlier design that put templates in Ask Sage datasets was a constraint chase, not a strength. This is a strength.
 
 ## 5. Verified technical foundation
 
@@ -183,7 +223,7 @@ Verified via `/server/get-models`. Selection used by the pipeline:
 
 | Stage | Model ID | Rationale |
 |---|---|---|
-| Schema synthesis | `google-claude-46-opus` | Most capable; called once per project |
+| Schema synthesis (semantic pass) | `google-gemini-2.5-flash` | Strong constrained-JSON output; fast and cheap; only handles the semantic layer because structure is parsed deterministically from OOXML |
 | Project planning | `google-claude-45-haiku` | Cheap, fast structural reasoning |
 | Section drafting | `google-claude-46-sonnet` | Strong long-form, sane cost |
 | Critic/validation | `google-claude-45-haiku` | Cheap pattern checks |
@@ -194,120 +234,207 @@ The full model menu (40+ models incl. Claude 4.5/4.6 family, GPT-5.1/4.1 Gov, Ge
 
 ### Limitations discovered
 
-1. **No raw file download from datasets.** Ask Sage exposes no documented endpoint to retrieve the original DOCX bytes of a file ingested into a dataset. The schema synthesizer therefore works from the *text* representation Ask Sage returns via RAG, not the original binary. For high-fidelity DOCX export the user must drop a local copy of each template into the app once as an export skeleton (see §6, hybrid export).
+1. **No raw file download from datasets.** Ask Sage exposes no documented endpoint to retrieve the original bytes of a file ingested into a dataset. This does not affect ASKSageDocumentWriter because templates are local files in the app, not dataset entries — the limitation only would have mattered if we were trying to round-trip binary fidelity through Ask Sage, which we're not.
 2. **No streaming.** Ask Sage's `/server/query` does not appear to support SSE/streaming. The pipeline is job-based with section-level checkpoints; the user sees progress as sections complete, not as tokens stream.
 3. **No conversation persistence.** Ask Sage is stateless; the app owns all conversation state.
+4. **`/user/*` CORS-blocked.** No programmatic dataset enumeration or management. Reference datasets are configured by name (typed once, remembered locally). Does not affect templates because templates are local.
 
 ## 6. Template schema specification
 
-The TemplateSchema is the artifact that connects template understanding to document generation. It is plain JSON, intended to be readable by both the LLM and a human reviewer.
+The TemplateSchema is the artifact that connects template understanding to document generation. It has **two halves with distinct provenance:**
 
-```json
+- **Structural half** (`formatting`, `fill_regions`, `style_refs`) — populated **deterministically** from the OOXML by the local parser in Stage 1a. These fields are ground truth from the binary; no LLM involved.
+- **Semantic half** (`intent`, `target_words`, `depends_on`, `validation`, `voice`) — populated by Gemini Flash in Stage 1b from the parsed structure plus sample content. Human-reviewable and editable.
+
+```jsonc
 {
-  "$schema": "https://asksage-doc-writer.local/schemas/template/v1",
+  "$schema": "https://asksage-doc-writer.local/schemas/template/v2",
   "id": "sop-mtf-clinical-v1",
   "name": "MTF Clinical SOP",
   "version": 1,
   "source": {
-    "dataset": "mtf-templates",
     "filename": "SOP_Clinical_Template_v3.docx",
-    "synthesized_by": "google-claude-46-opus",
-    "synthesized_at": "2026-04-07T18:22:11Z"
+    "ingested_at": "2026-04-07T18:22:11Z",
+    "structural_parser_version": "1.0.0",
+    "semantic_synthesizer": "google-gemini-2.5-flash",
+    "docx_blob_id": "idb://templates/sop-mtf-clinical-v1.docx"
   },
-  "document_metadata": {
-    "title_field": "title",
-    "classification_banner": "UNCLASSIFIED",
-    "header_fields": ["effective_date", "approving_authority", "review_cycle"],
-    "footer_fields": ["page_x_of_y", "document_id"]
-  },
-  "style": {
-    "voice": "third_person",
-    "tense": "present",
-    "register": "formal_government",
-    "sentence_length": "moderate",
-    "jargon_policy": "use_DoD_and_DHA_terminology",
-    "banned_phrases": ["going forward", "leverage synergies"]
-  },
+
+  // ─── STRUCTURAL HALF — deterministic from OOXML ──────────────────
   "formatting": {
-    "heading_levels": ["1.", "1.1.", "1.1.1."],
-    "list_style": "numbered_then_lettered",
-    "citation_style": "inline_parenthetical",
-    "table_policy": "use_for_responsibility_matrices"
+    "page_setup": {
+      "paper": "letter",
+      "orientation": "portrait",
+      "margins_twips": { "top": 1440, "right": 1440, "bottom": 1440, "left": 1440 },
+      "header_distance": 720,
+      "footer_distance": 720
+    },
+    "default_font": { "family": "Times New Roman", "size_pt": 12 },
+    "theme": "Office",
+    "named_styles": [
+      { "id": "Heading1", "name": "Heading 1", "based_on": "Normal", "outline_level": 0 },
+      { "id": "Heading2", "name": "Heading 2", "based_on": "Normal", "outline_level": 1 },
+      { "id": "BodyText", "name": "Body Text", "based_on": "Normal" },
+      { "id": "ListNumber", "name": "List Number", "numbering_id": 7 },
+      { "id": "ListBullet", "name": "List Bullet", "numbering_id": 3 },
+      { "id": "Note", "name": "Note", "based_on": "BodyText" }
+    ],
+    "numbering_definitions": [
+      {
+        "id": 7,
+        "kind": "decimal",
+        "levels": [
+          { "level": 0, "format": "%1.", "indent_twips": 720 },
+          { "level": 1, "format": "%1.%2.", "indent_twips": 1440 },
+          { "level": 2, "format": "%1.%2.%3.", "indent_twips": 2160 }
+        ]
+      },
+      { "id": 3, "kind": "bullet", "levels": [{ "level": 0, "glyph": "•", "indent_twips": 720 }] }
+    ],
+    "headers": [{ "type": "default", "part": "word/header1.xml" }],
+    "footers": [{ "type": "default", "part": "word/footer1.xml" }]
   },
+
+  // ─── METADATA FILL REGIONS — small, structured, filled from project inputs ───
+  // These get filled WITHOUT an LLM call. Values come from the user's project
+  // inputs or shared profile (POCs, dates, classification, etc.).
+  "metadata_fill_regions": [
+    {
+      "id": "cui_banner",
+      "kind": "content_control",
+      "sdt_tag": "CUIBanner",
+      "control_type": "dropdown",
+      "allowed_values": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY", "CUI//SP-PROPIN"],
+      "project_input_field": "classification",
+      "required": true
+    },
+    {
+      "id": "document_number",
+      "kind": "content_control",
+      "sdt_tag": "DocNumber",
+      "control_type": "plain_text",
+      "project_input_field": "document_number"
+    },
+    {
+      "id": "effective_date",
+      "kind": "content_control",
+      "sdt_tag": "EffectiveDate",
+      "control_type": "date",
+      "project_input_field": "effective_date"
+    },
+    {
+      "id": "approving_authority",
+      "kind": "bookmark",
+      "bookmark_name": "ApprovingAuthority",
+      "control_type": "plain_text",
+      "project_input_field": "approving_authority"
+    }
+  ],
+
+  // ─── BODY FILL REGIONS / SECTIONS — prose, drafted by the LLM ─────
   "sections": [
     {
       "id": "purpose",
       "name": "1. Purpose",
       "order": 1,
       "required": true,
+
+      // Structural — from OOXML parse
+      "fill_region": {
+        "kind": "heading_bounded",
+        "heading_text": "1. Purpose",
+        "heading_style_id": "Heading1",
+        "body_style_id": "BodyText",
+        "anchor_paragraph_index": 12,
+        "end_anchor_paragraph_index": 14
+      },
+
+      // Semantic — from Gemini Flash
       "intent": "State the SOP's goal and the operational outcome it produces.",
       "target_words": [80, 150],
       "depends_on": [],
-      "validation": {
-        "must_mention": ["scope_subject"],
-        "must_not_exceed_words": 200
-      }
-    },
-    {
-      "id": "scope",
-      "name": "2. Scope",
-      "order": 2,
-      "required": true,
-      "intent": "Define which personnel, facilities, and activities the SOP applies to.",
-      "target_words": [60, 120],
-      "depends_on": ["purpose"]
+      "validation": { "must_mention": ["scope_subject"], "must_not_exceed_words": 200 }
     },
     {
       "id": "responsibilities",
       "name": "3. Responsibilities",
       "order": 3,
       "required": true,
+      "fill_region": {
+        "kind": "content_control",
+        "sdt_tag": "ResponsibilitiesBody",
+        "heading_style_id": "Heading1",
+        "body_style_id": "BodyText",
+        "permitted_roles": ["body", "bullet", "table"],
+        "table_hint": { "columns": ["Role", "Duty"], "style_id": "TableGrid" }
+      },
       "intent": "Enumerate roles and their specific duties under this SOP.",
       "target_words": [200, 400],
-      "depends_on": ["purpose", "scope"],
-      "format_hint": "responsibility_matrix_table"
+      "depends_on": ["purpose", "scope"]
     },
     {
       "id": "procedure",
       "name": "4. Procedure",
       "order": 4,
       "required": true,
+      "fill_region": {
+        "kind": "content_control",
+        "sdt_tag": "ProcedureBody",
+        "heading_style_id": "Heading1",
+        "body_style_id": "BodyText",
+        "numbered_list_style_id": "ListNumber",
+        "numbering_id": 7,
+        "permitted_roles": ["body", "step", "note", "bullet"]
+      },
       "intent": "Step-by-step instructions an operator can follow without ambiguity.",
       "target_words": [400, 1200],
       "depends_on": ["scope", "responsibilities"]
-    },
-    {
-      "id": "references",
-      "name": "5. References",
-      "order": 5,
-      "required": true,
-      "intent": "Cite governing regulations, instructions, and parent policies.",
-      "target_words": [40, 200],
-      "depends_on": []
-    },
-    {
-      "id": "revision_history",
-      "name": "6. Revision History",
-      "order": 6,
-      "required": true,
-      "intent": "Tabular log of versions, dates, authors, and change summaries.",
-      "target_words": [20, 100],
-      "depends_on": [],
-      "format_hint": "table_columns: version, date, author, summary"
     }
-  ]
+    // ... additional sections elided
+  ],
+
+  "style": {
+    "voice": "third_person",
+    "tense": "present",
+    "register": "formal_government",
+    "jargon_policy": "use_DoD_and_DHA_terminology",
+    "banned_phrases": ["going forward", "leverage synergies"]
+  }
 }
 ```
 
-Key properties of the schema:
+### How this connects to drafting and export
 
-- **Document-class agnostic.** The same shape works for an SOP, a PWS, a J&A memo, a DoD memorandum, etc. No field is contracting-specific or healthcare-specific.
-- **Section dependencies are explicit** (`depends_on`), enabling parallel drafting of independent sections and serial drafting where context must flow.
-- **Validation rules are first-class** so the critic stage can run deterministic checks before LLM-driven critique.
-- **Style and formatting rules are scoped to the document, not the section**, since most templates are stylistically uniform.
-- **Synthesis provenance** is recorded so future versions can re-synthesize and diff.
+**Drafting** (Stage 3) sees the section's `intent`, `target_words`, dependencies, and validation rules. The drafting model produces output as a structured paragraph array with role tags:
 
-The schema is regenerated fresh per project from the current state of the template dataset. There is no schema cache invalidation problem because there is no schema cache; this is a deliberate v1 simplification.
+```json
+[
+  { "role": "step", "text": "Verify the patient's eligibility against DEERS." },
+  { "role": "step", "text": "Document the encounter in CHCS." },
+  { "role": "note", "text": "If DEERS is unreachable, escalate to the duty officer." }
+]
+```
+
+**Export** (Stage 5) maps role tags to the template's own style ids via `fill_region.permitted_roles` and the style/numbering references:
+
+| Role tag | Resolved to (for this section) |
+|---|---|
+| `step` | paragraph using `ListNumber` style with `numbering_id: 7` |
+| `body` | paragraph using `BodyText` style |
+| `note` | paragraph using `Note` style |
+| `bullet` | paragraph using `ListBullet` style |
+| `table` | actual `<w:tbl>` element using `TableGrid` style |
+
+**The LLM never picks fonts, margins, or indents.** Those live in the template's styles. The schema's job is to expose the right style ids to the assembler so role tags resolve correctly.
+
+### Key properties
+
+- **Document-class agnostic.** Same shape for SOP, PWS, J&A memo, DoD memorandum, charter, after-action report. No domain hardcoding.
+- **Two-halved provenance.** Structural fields are deterministic and stable; semantic fields are LLM-derived and editable. Re-running the semantic pass never overwrites the structural half.
+- **Metadata vs body separation.** CUI banners, classification dropdowns, document numbers, dates, approving authorities — filled from project inputs without an LLM call. Keeps the drafting budget focused on prose.
+- **Fill region detection priority** (in Stage 1a): content controls → bookmarks → placeholder text patterns → heading-bounded fallback. Real-world templates from DHA are likely to mix all four.
+- **Section dependencies are explicit** (`depends_on`), enabling parallel drafting of independent sections.
+- **Schema is paired with the original DOCX** via `docx_blob_id` — both are stored together in IndexedDB and exported/imported together.
 
 ## 7. Architecture & tech stack
 
@@ -322,8 +449,8 @@ The schema is regenerated fresh per project from the current state of the templa
 │  │  React SPA                                                 │  │
 │  │                                                            │  │
 │  │  ┌────────────┐ ┌────────────┐ ┌────────────────────────┐  │  │
-│  │  │ Project    │ │ Document   │ │ Generation             │  │  │
-│  │  │ setup      │ │ workspace  │ │ pipeline (in-tab)      │  │  │
+│  │  │ Template   │ │ Document   │ │ Generation             │  │  │
+│  │  │ + ingest   │ │ workspace  │ │ pipeline (in-tab)      │  │  │
 │  │  └────────────┘ └────────────┘ └────────────────────────┘  │  │
 │  │         │             │                  │                │  │
 │  │         └─────────────┴──────────────────┘                 │  │
@@ -335,10 +462,11 @@ The schema is regenerated fresh per project from the current state of the templa
 │  │                       │                                    │  │
 │  │              ┌────────▼─────────┐                          │  │
 │  │              │  IndexedDB       │                          │  │
-│  │              │  - projects      │                          │  │
+│  │              │  - template DOCX │                          │  │
+│  │              │    bytes (Blobs) │                          │  │
 │  │              │  - schemas       │                          │  │
+│  │              │  - projects      │                          │  │
 │  │              │  - drafts        │                          │  │
-│  │              │  - skeletons     │                          │  │
 │  │              │  - audit log     │                          │  │
 │  │              │  - api key (enc) │                          │  │
 │  │              └──────────────────┘                          │  │
@@ -361,15 +489,16 @@ The schema is regenerated fresh per project from the current state of the templa
 | Build | Vite | Fast dev loop, simple static output, no backend assumed |
 | UI framework | React + TypeScript | Mature ecosystem for the workspace UI, type safety on the schema |
 | State | Zustand | Minimal, no boilerplate, fits in-tab workflow |
-| Persistence | Dexie (IndexedDB) | Simple typed IndexedDB wrapper |
+| Persistence | Dexie (IndexedDB) | Simple typed IndexedDB wrapper; stores DOCX bytes as Blobs alongside schemas |
 | HTTP | native `fetch` | No SDK needed; Ask Sage is plain JSON |
-| DOCX read | `jszip` + custom OOXML walker | Direct OOXML access; no external API |
-| DOCX write (skeleton-fill) | `docxtemplater` (license check required) or hand-rolled OOXML | Preserves original styling |
-| DOCX write (from scratch) | `docx` npm package | Used when no skeleton is available |
-| PDF parsing (v2) | `pdf.js` | Browser-native |
+| **DOCX read** | **`jszip` + custom OOXML walker we own** | Direct, deterministic access to every formatting property. Reads `document.xml`, `styles.xml`, `numbering.xml`, `settings.xml`, `sectPr`, `header*.xml`, `footer*.xml`, `theme1.xml`, content controls (`w:sdt`), bookmarks. Rejected `mammoth.js` (lossy → HTML), `docx-preview` (renders only), `docx` npm (write-only). |
+| **DOCX write** | **Clone original bytes via `jszip` + targeted XML mutation** | Preserves every formatting node we don't touch. Walks to fill regions by content control id, bookmark name, placeholder pattern, or heading anchor — and replaces only the contained paragraphs. Headers/footers/margins/styles inherited automatically. |
+| DOCX write (scratch fallback) | `docx` npm package | Only used in the unlikely case a template's bytes are unavailable at export time. Lower fidelity. |
+| XML | `fast-xml-parser` or browser-native `DOMParser` | For parsing/serializing the OOXML parts |
+| PDF parsing (v1 best-effort) | `pdf.js` | Browser-native; extracts text + positions + fonts. Fidelity is approximate compared to DOCX. |
 | Crypto for stored API key | WebCrypto API (AES-GCM with PBKDF2-derived key from user passphrase) | Browser-native, no library |
 | Routing | React Router | Standard |
-| Tests | Vitest + Playwright | Vitest for unit, Playwright for the agentic pipeline integration tests against a recorded Ask Sage transcript |
+| Tests | Vitest + Playwright | Vitest for unit (especially the OOXML parser/assembler — these need extensive fixture-based tests against real DHA-style templates). Playwright for the agentic pipeline integration tests against a recorded Ask Sage transcript. |
 
 ### Why no backend, restated
 
@@ -384,24 +513,30 @@ The architecture has zero server-side code we operate. The Ask Sage Server API i
 ### In scope
 
 - API key entry, validation against `/server/get-models`, optional encrypted persistence in IndexedDB
-- Project creation: name, description, target template dataset name, target reference dataset name(s)
-- Stage 1: schema synthesis from template dataset → JSON TemplateSchemas, displayed for user review/edit
-- Stage 2: project planning UI — select which templates the project needs, fill shared inputs once
-- Stage 3: section drafting pipeline with live progress, per-section regenerate, RAG against reference datasets
-- Stage 4: critic pass against validation rules + LLM critique of each section
-- Stage 5: DOCX export — hybrid mode (skeleton-fill if local DOCX provided, scratch otherwise)
+- **Local DOCX template ingest:** file picker, OOXML parser, fill region detection (content controls, bookmarks, placeholder text, heading-bounded fallback), structural schema emission, original DOCX bytes stored as Blob in IndexedDB
+- **Semantic schema synthesis** via Gemini 2.5 Flash, merged into the unified TemplateSchema
+- **Schema viewer/editor UI** with structural fields read-only and semantic fields editable
+- **Template library:** persistent local collection of ingested templates + their schemas, with import/export as DOCX+JSON pairs for sharing
+- Project creation: pick templates from the local library, name reference dataset(s), provide project description
+- Stage 2: project planning UI — auto-derives shared inputs from `metadata_fill_regions` across selected templates
+- Stage 3: section drafting pipeline with live progress, per-section regenerate, RAG against reference datasets, structured paragraph output with role tags
+- Stage 4: critic pass against validation rules + Haiku LLM critique of flagged sections
+- **Stage 5: DOCX assembly via clone-and-mutate** — preserves all formatting from the original template, swaps in metadata values and drafted prose, role-tag → style-id resolution, round-trip verification
 - Live token budget meter (reads `usage` field from `/server/query` responses) with pre-run cost projection
 - Local audit log of every Ask Sage call (prompt, model, tokens, references) viewable in-app
 - Project export/import as a `.json` file (so users can share project configs)
 
 ### Out of scope (v2 or later)
 
-- PDF template ingestion (v1 is DOCX only)
+- **PDF template input:** best-effort only in v1 (DOCX is the priority); full PDF parsing with structure inference is v2
+- **PDF output:** v1 outputs DOCX exclusively; users print to PDF if needed
+- **Scratch DOCX generation** (when no template bytes are available): not needed in v1 because templates are always ingested as files. Reserved as a v2 fallback only if the use case appears.
 - In-app dataset management (Ask Sage UI handles this — and the User API is CORS-blocked anyway)
 - Multi-user collaboration / shared workspaces
 - Automated FAR/DHA citation verification
 - Image-bearing templates with vision-model passes
 - Schema versioning with diff/migration
+- Rare content control types (rich text, repeating sections, building block galleries) — supported types documented per release
 - Browser extension or Tauri packaging
 - Server-side anything
 
@@ -411,16 +546,16 @@ The architecture has zero server-side code we operate. The Ask Sage Server API i
 
 For one major document of typical length (e.g., a 15-page SOP, a 10-page market research report, or one 20-page PWS):
 
-| Stage | Calls | Avg. tokens per call (in/out) | Subtotal |
-|---|---|---|---|
-| Schema synthesis (amortized: this happens once per project, across ~3 docs) | 1 ÷ 3 = 0.33 | 8k in / 4k out | ~4k |
-| Project planning | 1 | 3k in / 1k out | 4k |
-| Section drafting (~8 sections, with summaries + RAG snippets) | 8 | 4k in / 2k out | 48k |
-| Critic pass | 8 | 2.5k in / 0.5k out | 24k |
-| Final polish | 1 | 6k in / 3k out | 9k |
-| **Total per major document** | | | **~89k tokens** |
+| Stage | Model | Calls | Avg. tokens per call (in/out) | Subtotal |
+|---|---|---|---|---|
+| Schema synthesis (semantic only; structural is free) — paid once per template, amortized across ~5 docs that reuse it | Flash | 1 ÷ 5 = 0.2 | 4k in / 2k out | ~1k |
+| Project planning | Haiku | 1 | 3k in / 1k out | 4k |
+| Section drafting (~8 sections, with summaries + RAG snippets) | Sonnet 4.6 | 8 | 4k in / 2k out | 48k |
+| Critic pass (only on flagged sections, ~half) | Haiku | 4 | 2.5k in / 0.5k out | 12k |
+| Final polish | Sonnet 4.6 | 1 | 6k in / 3k out | 9k |
+| **Total per major document** | | | | **~74k tokens** |
 
-At ~89k tokens per document, the 250k/month budget supports **2-3 major documents per month** with comfortable headroom for revisions. This meets the user's stated floor of 2 major docs/month and leaves room for the team to validate the workflow before requesting a token bump.
+At ~74k tokens per document, the 250k/month budget supports **3 major documents per month** with comfortable headroom for revisions and re-runs. Schema synthesis is now nearly free thanks to (a) deterministic OOXML parsing eliminating the structural cost entirely and (b) Flash being cheap and fast for the semantic pass. The remaining cost is concentrated where it matters: actual prose drafting.
 
 ### Levers if we need to push further
 
@@ -433,7 +568,7 @@ Aggressive mode lands around 50k/document → 5 docs/month within the same budge
 
 ### Training/dataset budget
 
-The 2M training token budget is consumed entirely by ingesting templates and reference material into Ask Sage datasets, which the user does in Ask Sage's own UI. The tool itself does not consume training tokens.
+The 2M training token budget is consumed entirely by ingesting **reference material** (FAR, DHA Issuances, prior packets, policy library) into Ask Sage datasets, which the user does in Ask Sage's own UI. **Templates do not consume training tokens** because they live locally as DOCX files in the app, not in Ask Sage datasets.
 
 ## 10. Phased build plan
 
@@ -442,7 +577,7 @@ Phases are scoped by deliverable, not calendar.
 ### Phase 0 — Project scaffold
 
 - Vite + React + TS project initialized in repo
-- Dexie schema for projects/schemas/drafts/audit
+- Dexie schema for templates (DOCX Blob + schema)/projects/drafts/audit
 - Ask Sage client wrapper with `x-access-tokens` auth
 - API key entry screen with `/server/get-models` validation
 - Basic routing and shell layout
@@ -450,36 +585,48 @@ Phases are scoped by deliverable, not calendar.
 
 **Done when:** the user can paste an API key, see the model list returned by their tenant, and the dev server runs without backend.
 
-### Phase 1 — Schema synthesis
+### Phase 1a — DOCX template parser
 
-- Project creation form (name, template dataset name, reference dataset name)
-- Stage 1 implementation: prompts `google-claude-46-opus` against the template dataset to enumerate templates and emit JSON schemas
-- Schema viewer/editor UI (tree view of sections, fields editable inline)
-- Schema persistence in IndexedDB
+- DOCX file picker / drop zone
+- `jszip` + custom OOXML walker reading `document.xml`, `styles.xml`, `numbering.xml`, `settings.xml`, `sectPr`, `header*.xml`, `footer*.xml`, `theme1.xml`
+- Fill region detection in priority order: content controls (`w:sdt`) → bookmarks → placeholder text patterns → heading-bounded fallback
+- Metadata vs body fill region classification (control type, value constraints, project_input_field mapping)
+- Emits the structural half of the TemplateSchema and stores the original DOCX as a Blob in IndexedDB paired with the schema
+- Fixture-based unit tests against several real-world DOCX templates (DHA-style SOP, DoD memo, PWS template) — this is the most test-heavy piece of the codebase
 
-**Done when:** the user can point at a real template dataset on health.mil and get back valid TemplateSchemas they can review.
+**Done when:** dropping a real DHA template DOCX into the app produces a structurally complete TemplateSchema (formatting, styles, numbering, fill_regions) with no LLM call. The schema viewer can render the parsed structure.
+
+### Phase 1b — Semantic schema synthesis
+
+- Gemini 2.5 Flash client integration with strict-JSON output
+- Stage 1b prompt: takes the structural digest from 1a + sample paragraphs from each region → emits semantic half (intent, target_words, depends_on, validation, voice/style)
+- Merge into the unified TemplateSchema
+- Schema viewer/editor UI: tree view of sections, edit semantic fields inline, structural fields read-only
+
+**Done when:** the user can take a freshly parsed template through the semantic pass and end up with a TemplateSchema they'd actually use.
 
 ### Phase 2 — Section drafting
 
-- Stage 2: project planning UI with shared inputs
-- Stage 3: drafting pipeline with parallelism where dependencies allow
-- Section workspace with regenerate button, references panel, token meter
+- Project creation: pick templates from the local library, name reference dataset(s), provide project description
+- Stage 2: project planning UI with shared inputs (auto-derived from `metadata_fill_regions` across selected templates so the user fills CUI banner / dates / POCs once)
+- Stage 3: drafting pipeline with parallelism where `depends_on` allows; structured paragraph output with role tags
+- Section workspace with regenerate button, references panel from Ask Sage RAG, live token meter
 - Audit log viewer
 
-**Done when:** the user can run a real project end-to-end through drafting and see all sections produced with citations.
+**Done when:** the user can run a real project end-to-end through drafting and see all sections produced as structured paragraph arrays with citations.
 
-### Phase 3 — DOCX export
+### Phase 3 — DOCX assembly & export
 
-- Local DOCX skeleton upload per template (one-time per template, persisted in IndexedDB)
-- Skeleton-fill export path using OOXML manipulation
-- Scratch-generation export path for templates without skeletons
-- Export verification: round-trip a generated DOCX through a parser and compare structure
+- DOCX clone-and-mutate assembler: walks the original bytes, locates each fill region (by sdt id, bookmark name, placeholder pattern, or heading anchor), substitutes metadata regions from project inputs, replaces body region paragraphs with new ones referencing the same styles and numbering definitions
+- Role-tag → style-id resolver per section
+- Round-trip verification: the assembled DOCX is re-parsed by the same Phase 1a parser to confirm structural integrity
+- Save / download flow
 
-**Done when:** the user can export a real project's documents as styled DOCX files that match the original template look.
+**Done when:** an exported document opens in Word with margins, headers/footers, multilevel lists, indents, content control values, and styles all matching the original template, with the LLM-drafted prose in place of the fill regions.
 
 ### Phase 4 — Critic, polish, and packaging
 
-- Stage 4: critic pass with deterministic validation + LLM critique
+- Stage 4: critic pass with deterministic validation (length, must_mention, banned_phrases) + Haiku LLM critique on flagged sections
 - Stage 5: final polish pass
 - Cost projection UI (pre-run estimate based on schema)
 - Settings: model overrides per stage
@@ -491,22 +638,24 @@ Phases are scoped by deliverable, not calendar.
 
 ### Open questions
 
-1. **Local DOCX skeleton workflow.** Users will need to drop a local copy of each template into the app for high-fidelity export. How painful is this in practice on a DHA workstation where file operations are sometimes restricted? May need to validate during Phase 3.
-2. **Schema synthesis quality variance.** How well does `google-claude-46-opus` actually identify and dissect templates from a RAG view of a dataset? Will the synthesized schemas need significant human editing to be usable? This is the single biggest unknown for Phase 1.
-3. **`/server/query` `dataset` parameter behavior.** The Ask Sage docs describe the parameter but don't specify exactly how RAG retrieval scopes work for multi-file datasets. May require empirical tuning of `limit_references` and prompt strategies.
-4. **Token usage reporting accuracy.** The `usage` field in responses needs to be verified against `/server/count-monthly-tokens` (User API — CORS blocked) or against the user's Ask Sage usage dashboard. A small drift is acceptable; large drift would break the budget meter.
-5. **API key persistence UX.** Encrypted IndexedDB with a passphrase is the right default, but adds friction. Need to validate during Phase 0 whether users prefer paste-on-load.
+1. **Fill region detection coverage.** Real DHA templates are likely to mix content controls (CUI banners, classification dropdowns, admin metadata), bookmarks, and unmarked heading-bounded sections. How well does the priority-ordered detector handle messy real-world templates? Tested via the Phase 1a fixture suite.
+2. **Semantic synthesis quality with Gemini Flash.** Flash is fast and JSON-strong, but the semantic pass needs to produce genuinely useful section intents, target lengths, and validation rules from the structural digest. If quality is insufficient, fall back to `google-claude-45-sonnet` for synthesis at modest cost increase (still cheap because it's one call per template).
+3. **`/server/query` `dataset` parameter behavior.** The Ask Sage docs describe the parameter but don't specify exactly how RAG retrieval scopes work for multi-file datasets. May require empirical tuning of `limit_references` and prompt strategies during Phase 2.
+4. **Token usage reporting accuracy.** The `usage` field in responses needs to be cross-checked against the user's Ask Sage usage dashboard (we can't call `/server/count-monthly-tokens` because it's on the User API surface). A small drift is acceptable; large drift would break the budget meter.
+5. **API key persistence UX.** Encrypted IndexedDB with a passphrase is the right default, but adds friction. Validate during Phase 0 whether users prefer paste-on-load.
+6. **Role-tag set completeness.** The drafting model emits paragraphs tagged with semantic roles (`heading`, `body`, `step`, `bullet`, `note`, `table`). Are there additional roles real templates need (`warning`, `caution`, `definition`, `example`, `quotation`)? Surface during Phase 3 fixture testing.
 
 ### Risks
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Ask Sage changes CORS policy on `/server/*` | Low | Catastrophic — kills the architecture | Maintain a parallel local-proxy fallback design (Python or PowerShell script that wraps the same fetch logic). Not built in v1, but the SPA's HTTP layer is isolated so swapping it is a small change. |
-| Schema synthesis produces unusable schemas | Medium | Forces manual schema editing as primary workflow | Schema viewer/editor is in v1 scope; users can hand-correct. If the failure rate is high, fall back to a guided template-walking UX where the user confirms each section. |
-| Token costs exceed projections | Medium | User runs out of monthly budget mid-project | Live meter + cost projection + abort button; aggressive-mode model overrides documented |
-| User API CORS becomes desirable later (e.g., for in-app dataset management) | Medium | Blocks features but not core flow | Wait and see; if the demand is strong, ship the optional local proxy |
+| Ask Sage changes CORS policy on `/server/*` | Low | Catastrophic — kills the architecture | The SPA's HTTP layer is isolated so swapping in a local-proxy fallback (Python script or browser extension) is a small change. Not built in v1. |
+| OOXML parser misses fill regions in real-world templates | Medium | Some sections require manual schema editing | Multiple detection strategies + schema editor UI + fixture suite of real DHA-style templates built up over Phase 1a |
+| Style/numbering inheritance breaks on export for unusual templates (custom multilevel lists, nested tables, embedded objects) | Medium | Some output documents need manual fixup in Word | Round-trip verification in Phase 3; document known unsupported features; maintain a fixture corpus for regression testing |
+| Semantic synthesis produces low-quality intents and validation rules | Medium | More user time spent editing the schema | Schema editor is core v1 UX; if Flash is insufficient, escalate to Sonnet for the semantic pass |
+| Token costs exceed projections | Low (math has headroom) | User runs out of monthly budget mid-project | Live meter + cost projection + abort button; aggressive-mode model overrides documented |
 | Ask Sage adds streaming and the lack of streaming feels dated | Low | UX polish only | Job-based UX with section-level checkpoints is appropriate for long-form anyway |
-| DOCX skeleton-fill has fidelity issues with complex templates (tables, content controls, embedded objects) | Medium | Some templates fall back to scratch-generation | Document the limitation; allow per-template choice between skeleton-fill and scratch |
+| Templates with rare content control types (rich text, repeating sections, building block galleries) aren't fully supported in v1 | Medium | Those templates fall back to placeholder/heading detection | Document supported control types per release; expand coverage in v2 |
 
 ---
 
@@ -516,12 +665,16 @@ Phases are scoped by deliverable, not calendar.
 |---|---|---|
 | 2026-04-06 | Zero-backend SPA, no hosted infrastructure | Constraint C1 (no security review) |
 | 2026-04-06 | User's own Ask Sage credentials, never proxied | Constraint C2 |
-| 2026-04-06 | Templates and references live in Ask Sage datasets, not in this app | Constraint C1 + Ask Sage already inside enclave boundary |
 | 2026-04-07 | Skip Ask Sage token-exchange flow; use raw API key in `x-access-tokens` | `/user/get-token-with-api-key` is CORS-blocked on health.mil; raw API key works directly per Ask Sage docs and verified empirically |
 | 2026-04-07 | No in-app dataset management UI | `/user/*` endpoints are CORS-blocked on health.mil; users manage datasets in Ask Sage's own UI |
-| 2026-04-07 | Default models: Claude 4.6 Opus (synthesis), Sonnet (drafting), Haiku 4.5 (critic) | Verified available via `/server/get-models` on health.mil; best quality/cost trade across the menu |
-| 2026-04-07 | Hybrid DOCX export (skeleton-fill if available, scratch otherwise) | Ask Sage exposes no documented endpoint to retrieve raw file bytes from a dataset; need a local skeleton for fidelity |
-| 2026-04-07 | Schema regenerated fresh per project, no schema cache | Avoids cache invalidation problem; cost is small relative to drafting |
+| 2026-04-07 | **Templates are local DOCX files in the app, NOT Ask Sage dataset entries.** Reference material remains in Ask Sage datasets. | Ask Sage's dataset ingest converts files to plain text and strips formatting (margins, multilevel lists, indents, styles, headers/footers, content controls). If schemas are synthesized from RAG text only, the tool cannot produce documents with native formatting. Reading the original DOCX bytes locally is the only way to preserve formatting fidelity, and it makes deterministic local schema parsing the foundational strength of the tool. Walks back the 2026-04-06 "templates in datasets" idea. |
+| 2026-04-07 | Two-stage schema synthesis: Stage 1a deterministic OOXML parse → structural half; Stage 1b LLM semantic pass → semantic half | Structure is ground truth from the binary, costs zero tokens, never wrong. LLM is reserved for what only an LLM can do: inferring section intent, target lengths, validation rules. |
+| 2026-04-07 | Schema synthesis (semantic pass) uses `google-gemini-2.5-flash` | Strong constrained-JSON output, fast, cheap. Earlier choice of Claude 4.6 Opus was overkill since structural extraction is now deterministic. |
+| 2026-04-07 | Drafting models: `google-claude-46-sonnet` (drafting/polish), `google-claude-45-haiku` (planning/critic) | Verified available on health.mil; best quality/cost trade for prose generation |
+| 2026-04-07 | DOCX export = clone original bytes + targeted XML mutation. **No more "hybrid skeleton-fill vs. scratch" — skeleton-fill is the only path** because the original DOCX is always present (it's how we ingested the template in the first place). Scratch-generation is a v2 fallback only. | Eliminates the lower-fidelity output path entirely. The user doesn't have to "provide a skeleton" as a separate step — the template they ingested IS the skeleton. |
+| 2026-04-07 | The drafting LLM emits structured paragraphs with role tags (`heading`, `body`, `step`, `bullet`, `note`, `table`); the assembler maps role tags to template-defined style ids per section. **The LLM never picks fonts, margins, or indents.** | Word's style system handles formatting inheritance correctly when content references styles. Pushing formatting decisions into the template's existing styles is dramatically more robust than trying to generate formatting from a schema description. |
+| 2026-04-07 | Metadata fill regions (CUI banner, classification, dates, doc number, POCs) are first-class and filled from project inputs WITHOUT an LLM call | DHA templates contain content controls for CUI markings and admin metadata that must be filled deterministically, not drafted. Keeps the drafting budget focused on prose. |
+| 2026-04-07 | PDF input is best-effort in v1; PDF output is deferred to v2 | DOCX has authoritative structural metadata; PDF doesn't. Generating fixed-layout PDF from scratch is its own project. v1 outputs DOCX even from PDF inputs; users print to PDF if needed. |
 
 ## Appendix B — Verified API endpoints used
 
