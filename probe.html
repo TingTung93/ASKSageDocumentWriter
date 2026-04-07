@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ask Sage browser probe</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; }
+  label { display: block; margin: 0.5rem 0 0.25rem; font-weight: 600; }
+  input[type=text], input[type=password], textarea {
+    width: 100%; box-sizing: border-box; padding: 0.5rem;
+    font: 13px ui-monospace, Consolas, monospace;
+  }
+  button { margin: 0.25rem 0.25rem 0.25rem 0; padding: 0.5rem 0.75rem; cursor: pointer; }
+  pre { background: #f4f4f4; padding: 0.75rem; overflow: auto; max-height: 300px;
+        font: 12px ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  .row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .ok { color: #0a0; font-weight: 600; }
+  .bad { color: #b00; font-weight: 600; }
+  .note { color: #555; font-size: 12px; }
+  fieldset { margin-top: 1rem; }
+</style>
+</head>
+<body>
+
+<h1>Ask Sage browser probe</h1>
+<p class="note">
+  Origin: <code id="origin"></code>.
+  Open this file two ways and compare results:
+  (1) double-click to open from <code>file://</code>;
+  (2) serve it locally (e.g. <code>python -m http.server</code> in this folder, then visit <code>http://localhost:8000/probe.html</code>).
+  Some browsers treat <code>file://</code> as the opaque origin <code>null</code>, which CORS-allowed APIs may still reject.
+</p>
+
+<label for="email">Ask Sage account email:</label>
+<input id="email" type="text" autocomplete="off" placeholder="you@example.mil">
+
+<label for="apikey">Ask Sage API key (long-lived; kept in memory only):</label>
+<input id="apikey" type="password" autocomplete="off" placeholder="paste your Ask Sage API key">
+
+<label for="token">Access token (short-lived, populated by 'Exchange API key for access token'):</label>
+<input id="token" type="password" autocomplete="off" placeholder="(will be filled in automatically)">
+
+<label for="base">Base URL:</label>
+<input id="base" type="text" value="https://api.asksage.ai">
+
+<label for="authmode">Auth header mode for probes below:</label>
+<select id="authmode">
+  <option value="x-access-tokens-access">x-access-tokens: &lt;access_token&gt;  (recommended)</option>
+  <option value="x-access-tokens-apikey">x-access-tokens: &lt;api_key&gt;  (some endpoints)</option>
+  <option value="bearer-access">Authorization: Bearer &lt;access_token&gt;  (legacy try)</option>
+</select>
+
+<fieldset>
+  <legend>Step 1 — exchange API key for access token</legend>
+  <div class="row">
+    <button data-test="exchange">Exchange API key → access token</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Step 2 — probes (uses the auth header mode selected above)</legend>
+  <div class="row">
+    <button data-test="models">/server/get-models</button>
+    <button data-test="files">/user/get-all-files-ingested</button>
+    <button data-test="datasets">/user/get-datasets</button>
+    <button data-test="query">/server/query (tiny "ping")</button>
+    <button data-test="openai">/server/openai/v1/chat/completions (tiny)</button>
+    <button data-test="all">Run all probes</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Results</legend>
+  <div id="results"></div>
+</fieldset>
+
+<script>
+document.getElementById('origin').textContent = location.origin || '(null — file:// origin)';
+
+const results = document.getElementById('results');
+const emailEl  = () => document.getElementById('email').value.trim();
+const apikeyEl = () => document.getElementById('apikey').value.trim();
+const tokenEl  = () => document.getElementById('token').value.trim();
+const baseEl   = () => document.getElementById('base').value.trim().replace(/\/$/, '');
+const authMode = () => document.getElementById('authmode').value;
+
+function log(label, payload) {
+  const wrap = document.createElement('div');
+  const h = document.createElement('h3');
+  h.style.margin = '1rem 0 0.25rem';
+  h.textContent = label;
+  wrap.appendChild(h);
+  const pre = document.createElement('pre');
+  pre.textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+  wrap.appendChild(pre);
+  results.prepend(wrap);
+}
+
+function buildAuthHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  const mode = authMode();
+  if (mode === 'x-access-tokens-access') {
+    if (tokenEl()) headers['x-access-tokens'] = tokenEl();
+  } else if (mode === 'x-access-tokens-apikey') {
+    if (apikeyEl()) headers['x-access-tokens'] = apikeyEl();
+  } else if (mode === 'bearer-access') {
+    if (tokenEl()) headers['Authorization'] = 'Bearer ' + tokenEl();
+  }
+  return headers;
+}
+
+async function call(path, body, headerOverride) {
+  const url = baseEl() + path;
+  const started = performance.now();
+  const headers = headerOverride || buildAuthHeaders();
+
+  let res, text, parsed = null, errorKind = null, errorMsg = null;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: body ? JSON.stringify(body) : '{}',
+      mode: 'cors',
+    });
+    text = await res.text();
+    try { parsed = JSON.parse(text); } catch {}
+  } catch (e) {
+    errorKind = e.name;
+    errorMsg  = e.message;
+  }
+  const ms = Math.round(performance.now() - started);
+
+  // Headers we can see from the browser are filtered by CORS;
+  // we report what's visible but absence ≠ absence on the wire.
+  const visibleHeaders = {};
+  if (res) for (const [k, v] of res.headers.entries()) visibleHeaders[k] = v;
+
+  return {
+    url,
+    ms,
+    network_error: errorKind ? { name: errorKind, message: errorMsg } : null,
+    status: res ? res.status : null,
+    visible_response_headers: visibleHeaders,
+    body_text_excerpt: text ? text.slice(0, 1500) : null,
+    body_parsed: parsed,
+  };
+}
+
+async function exchange() {
+  if (!emailEl() || !apikeyEl()) {
+    log('error', 'enter email AND api_key first');
+    return;
+  }
+  // Token-exchange call uses the API key in the body, no auth header needed.
+  const r = await call(
+    '/user/get-token-with-api-key',
+    { email: emailEl(), api_key: apikeyEl() },
+    { 'Content-Type': 'application/json' }
+  );
+  log('✔ exchange', r);
+  // Try to lift the access_token out of the parsed body and store it.
+  const tok =
+    r.body_parsed?.access_token ??
+    r.body_parsed?.response?.access_token ??
+    r.body_parsed?.data?.access_token ??
+    null;
+  if (tok) {
+    document.getElementById('token').value = tok;
+    log('info', 'access_token captured into the token field. Now run the probes.');
+  } else {
+    log('warn', 'no access_token field found in response — inspect body_parsed above to see the actual shape.');
+  }
+}
+
+const tests = {
+  exchange: exchange,
+  models:   () => call('/server/get-models'),
+  files:    () => call('/user/get-all-files-ingested'),
+  datasets: () => call('/user/get-datasets'),
+  query:    () => call('/server/query', { message: 'ping', model: 'openai_gpt' }),
+  openai:   () => call('/server/openai/v1/chat/completions', {
+                    model: 'gpt-4o-mini',
+                    messages: [{ role: 'user', content: 'ping' }],
+                    max_tokens: 5,
+                  }),
+};
+
+document.body.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('button[data-test]');
+  if (!btn) return;
+  const which = btn.dataset.test;
+  if (which === 'all') {
+    const order = ['models', 'files', 'datasets', 'query', 'openai'];
+    for (const name of order) {
+      log('▶ ' + name + ' (running…)', '');
+      const r = await tests[name]();
+      log('✔ ' + name, r);
+    }
+  } else {
+    log('▶ ' + which + ' (running…)', '');
+    const r = await tests[which]();
+    if (which !== 'exchange') log('✔ ' + which, r);
+  }
+});
+</script>
+</body>
+</html>
