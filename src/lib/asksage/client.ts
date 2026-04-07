@@ -111,4 +111,38 @@ export class AskSageClient {
   async query(input: QueryInput): Promise<QueryResponse> {
     return this.post<QueryResponse>('/server/query', input);
   }
+
+  /**
+   * Calls /server/query and parses the model's text response as strict
+   * JSON. Strips a leading ```json / trailing ``` code fence if the model
+   * wrapped its output in one (Flash and Sonnet sometimes do this even
+   * when told not to). Throws AskSageError on parse failure with the
+   * full raw response in the body for debugging.
+   *
+   * The caller is responsible for putting "respond with strict JSON" in
+   * the system_prompt and choosing temperature 0.
+   */
+  async queryJson<T>(input: QueryInput): Promise<{ data: T; raw: QueryResponse }> {
+    const response = await this.query(input);
+    const text = (response.message ?? '').trim();
+    const cleaned = stripCodeFence(text);
+    try {
+      return { data: JSON.parse(cleaned) as T, raw: response };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new AskSageError(
+        response.status ?? null,
+        `Ask Sage queryJson: response was not parseable JSON (${reason}). ` +
+          `Raw response (first 2000 chars):\n${text.slice(0, 2000)}`,
+        text,
+      );
+    }
+  }
+}
+
+function stripCodeFence(text: string): string {
+  // Match ```json\n...\n``` or ```\n...\n``` with optional trailing newline.
+  const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i);
+  if (fenced) return fenced[1]!.trim();
+  return text;
 }

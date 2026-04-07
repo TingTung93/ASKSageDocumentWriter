@@ -14,11 +14,13 @@ import {
   type HeaderFooterPart,
   type TemplateSchema,
 } from '../types';
-import { parseDocumentXml } from './document';
+import { parseDocumentXml, type ParagraphInfo } from './document';
 import { parseStylesXml } from './styles';
 import { parseNumberingXml } from './numbering';
 import { findContentControls } from './contentControls';
 import { detectFillRegions } from './fillRegions';
+
+export type { ParagraphInfo } from './document';
 
 export interface ParseDocxOptions {
   filename: string;
@@ -34,6 +36,13 @@ export interface ParseDocxResult {
   schema: TemplateSchema;
   /** The DOCX bytes wrapped as a Blob, ready to persist alongside the schema */
   docx_blob: Blob;
+  /**
+   * Flat paragraph sequence from word/document.xml. Not persisted with
+   * the schema (it would bloat IndexedDB), but exposed here so callers
+   * can extract sample text per section for the Phase 1b semantic
+   * synthesizer without re-parsing the DOCX.
+   */
+  paragraphs: ParagraphInfo[];
 }
 
 export async function parseDocx(
@@ -121,7 +130,22 @@ export async function parseDocx(
     },
   };
 
-  return { schema, docx_blob: blob };
+  return { schema, docx_blob: blob, paragraphs: document.paragraphs };
+}
+
+/**
+ * Re-parse a stored DOCX Blob to recover the paragraph sequence. Used by
+ * the synthesis pipeline when we need sample text per section but only
+ * have the persisted (schema, blob) pair.
+ */
+export async function extractParagraphs(
+  bytes: ArrayBuffer | Uint8Array | Blob,
+): Promise<ParagraphInfo[]> {
+  const result = await parseDocx(bytes, {
+    filename: '__re-parse__',
+    docx_blob_id: '__re-parse__',
+  });
+  return result.paragraphs;
 }
 
 function parseXml(xml: string): Document {
