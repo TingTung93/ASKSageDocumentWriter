@@ -7,6 +7,19 @@ import {
 } from './types';
 
 /**
+ * Default fetch wrapper. We DO NOT pass `fetch` directly because the
+ * browser's `fetch` is a built-in that requires its `this` context to be
+ * `globalThis`/`window`. Storing `fetch` as a method property and calling
+ * it detached (`this.fetchImpl(...)`) throws "Illegal invocation" in real
+ * browsers (test mocks don't care, which is how this slipped through).
+ *
+ * The wrapper below always invokes `globalThis.fetch(...)` as a method
+ * call, preserving the correct receiver. Custom `fetchImpl`s passed by
+ * tests are already free functions, so they work as-is.
+ */
+const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
+
+/**
  * Browser-side client for the Ask Sage Server API.
  *
  * Auth: the user's long-lived API key is sent in the `x-access-tokens`
@@ -20,7 +33,7 @@ export class AskSageClient {
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey: string,
-    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = defaultFetch,
   ) {
     if (!baseUrl) throw new Error('AskSageClient: baseUrl is required');
     if (!apiKey) throw new Error('AskSageClient: apiKey is required');
