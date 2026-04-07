@@ -1,47 +1,34 @@
-Connection failed.
-
-Network error calling POST https://api.asksage.health.mil/server/get-models: TypeError: Failed to fetch. This is typically a CORS preflight rejection, DNS failure, unreachable host, or browser security policy. The browser does not expose the underlying reason to JavaScript.
-
-Try the diagnostics panel below for full per-probe detail — it surfaces the same info DevTools would show.
-Diagnostics
-Runs the same probes as probe.html but renders the results inline so you can debug without DevTools. The API key is sent only to the base URL above and is shown as <redacted> in the output below.
-
-Run all probes
-✗ get-models (POST /server/get-models) — 83ms
-URL: https://api.asksage.health.mil/server/get-models
-Status: (no response)
-NETWORK ERROR: TypeError: Failed to fetch
-
-The browser refused or could not complete the request. Common causes from a file:// origin against api.asksage.health.mil:
-• CORS preflight rejected by the server (no Access-Control-Allow-Origin for this origin)
-• Network unreachable (firewall, VPN, proxy)
-• DNS resolution failure
-• Browser security policy on file://
-• Mixed content / certificate issue
-Visible response headers (0) — most are hidden by CORS
-(none visible to JavaScript)
-Request shape
-POST https://api.asksage.health.mil/server/get-models
-Content-Type: application/json
-x-access-tokens: <redacted>
-
-{}
-✗ query ping (POST /server/query) — 82ms
-URL: https://api.asksage.health.mil/server/query
-Status: (no response)
-NETWORK ERROR: TypeError: Failed to fetch
-
-The browser refused or could not complete the request. Common causes from a file:// origin against api.asksage.health.mil:
-• CORS preflight rejected by the server (no Access-Control-Allow-Origin for this origin)
-• Network unreachable (firewall, VPN, proxy)
-• DNS resolution failure
-• Browser security policy on file://
-• Mixed content / certificate issue
-Visible response headers (0) — most are hidden by CORS
-(none visible to JavaScript)
-Request shape
-POST https://api.asksage.health.mil/server/query
-Content-Type: application/json
-x-access-tokens: <redacted>
-
-{"message":"ping","model":"google-claude-45-haiku","dataset":"none","temperature":0}
+21:03:33.124
+info
+[debugLog] installed; capturing console + window errors
+21:03:33.124
+info
+[main] mounting React app
+21:03:33.126
+info
+[main] React mount called
+21:03:38.931
+info
+[Welcome.validate] handler entered
+21:03:38.931
+info
+[Welcome.validate] base="https://api.asksage.health.mil" keyLength=64
+21:03:38.931
+info
+[Welcome.validate] state set: validating=true
+21:03:38.931
+info
+[Welcome.validate] constructing AskSageClient
+21:03:38.931
+info
+[Welcome.validate] calling client.getModels()
+21:05:53.819
+error
+[Welcome.validate] caught error: AskSageError: Network error calling POST https://api.asksage.health.mil/server/get-models: TypeError: Failed to fetch. This is typically a CORS preflight rejection, DNS failure, unreachable host, or browser security policy. The browser does not expose the underlying reason to JavaScript.
+AskSageError: Network error calling POST https://api.asksage.health.mil/server/get-models: TypeError: Failed to fetch. This is typically a CORS preflight rejection, DNS failure, unreachable host, or browser security policy. The browser does not expose the underlying reason to JavaScript.
+    at Ih.post (https://tingtung93.github.io/ASKSageDocumentWriter/:73:3287)
+    at async Ih.getModels (https://tingtung93.github.io/ASKSageDocumentWriter/:73:3799)
+    at async w (https://tingtung93.github.io/ASKSageDocumentWriter/:86:719)
+21:05:53.819
+info
+[Welcome.validate] handler complete
