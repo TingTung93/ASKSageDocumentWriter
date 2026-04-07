@@ -3,11 +3,12 @@
 // per-template synthesis cost stays under ~2k input tokens.
 
 import type { TemplateSchema } from '../types';
-import type { SectionSample } from './sample';
+import type { SectionSample, FullBody } from './sample';
 
 export interface BuildPromptArgs {
   schema: TemplateSchema;
   samples: SectionSample[];
+  full_body: FullBody;
   user_hint?: string;
 }
 
@@ -48,7 +49,7 @@ Guidance:
 - Output ONE section object per input section id, in the same order`;
 
 export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
-  const { schema, samples, user_hint } = args;
+  const { schema, samples, full_body, user_hint } = args;
 
   const lines: string[] = [];
   lines.push(`Template name: ${schema.name}`);
@@ -80,14 +81,42 @@ export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
     }
   }
 
+  // ─── Full template body — the most important context ───────────────
+  // DHA templates have rich placeholder/instruction text (italic
+  // bracketed guidance like "[Insert purpose statement, 2-3 sentences]")
+  // that the LLM cannot infer from headings alone. We send every
+  // paragraph of the document with its paragraph index so the LLM can
+  // correlate against the per-section paragraph ranges below.
   lines.push(``);
-  lines.push(`Body sections (${schema.sections.length}) — produce one entry per id, in order:`);
+  lines.push(
+    `=== FULL TEMPLATE BODY (${full_body.lines.length}/${full_body.total_paragraphs} paragraphs, ${full_body.total_chars} chars${full_body.truncated ? '; TRAILING TRUNCATED' : ''}) ===`,
+  );
+  lines.push(
+    `This is the verbatim text of the template document. Use it to understand what each section is FOR — placeholder instructions, example wording, and tone are the strongest signals of intent.`,
+  );
+  for (const line of full_body.lines) {
+    lines.push(`[${line.index}] ${line.text}`);
+  }
+  lines.push(`=== END FULL TEMPLATE BODY ===`);
+
+  // ─── Per-section anchored samples ──────────────────────────────────
+  lines.push(``);
+  lines.push(
+    `Body sections (${schema.sections.length}) — produce ONE entry per id, in order. Each section lists its paragraph range from the full body above so you know which lines to focus on:`,
+  );
   for (const sample of samples) {
     lines.push(``);
     lines.push(`id: ${sample.section_id}`);
     lines.push(`heading: ${sample.heading}`);
+    if (sample.paragraph_range) {
+      lines.push(`paragraph_range: [${sample.paragraph_range[0]}, ${sample.paragraph_range[1]}]`);
+    } else {
+      lines.push(`paragraph_range: (not anchored — see full body above)`);
+    }
     lines.push(
-      `sample: ${sample.sample_text ? `"${truncate(sample.sample_text, 600)}"` : '(empty in template)'}`,
+      sample.sample_text
+        ? `anchored_text: """${sample.sample_text}"""`
+        : `anchored_text: (empty in template)`,
     );
   }
 
@@ -98,9 +127,4 @@ export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
     system_prompt: SYSTEM_PROMPT,
     message: lines.join('\n'),
   };
-}
-
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1).trimEnd() + '…';
 }

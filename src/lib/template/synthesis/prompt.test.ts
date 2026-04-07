@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { buildSynthesisPrompt } from './prompt';
 import type { TemplateSchema } from '../types';
+import type { FullBody } from './sample';
+
+const EMPTY_BODY: FullBody = { lines: [], truncated: false, total_paragraphs: 0, total_chars: 0 };
 
 function makeSchema(): TemplateSchema {
   return {
@@ -75,7 +78,8 @@ describe('buildSynthesisPrompt', () => {
   it('produces a system prompt that demands strict JSON', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
-      samples: [{ section_id: 'purpose', heading: '1. Purpose', sample_text: 'This SOP establishes the procedures for clinical care.' }],
+      samples: [{ section_id: 'purpose', heading: '1. Purpose', sample_text: 'This SOP establishes the procedures for clinical care.', paragraph_range: [1, 3] }],
+      full_body: EMPTY_BODY,
     });
     expect(built.system_prompt).toMatch(/STRICT JSON/);
     expect(built.system_prompt).toMatch(/JSON\.parse/);
@@ -87,6 +91,7 @@ describe('buildSynthesisPrompt', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [],
+      full_body: EMPTY_BODY,
     });
     expect(built.message).toContain('Clinical SOP');
     expect(built.message).toContain('sop.docx');
@@ -96,8 +101,9 @@ describe('buildSynthesisPrompt', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [
-        { section_id: 'purpose', heading: '1. Purpose', sample_text: 'This SOP establishes the procedures.' },
+        { section_id: 'purpose', heading: '1. Purpose', sample_text: 'This SOP establishes the procedures.', paragraph_range: [1, 3] },
       ],
+      full_body: EMPTY_BODY,
     });
     expect(built.message).toContain('id: purpose');
     expect(built.message).toContain('heading: 1. Purpose');
@@ -108,6 +114,7 @@ describe('buildSynthesisPrompt', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [],
+      full_body: EMPTY_BODY,
     });
     expect(built.message).toContain('Metadata fill regions');
     expect(built.message).toContain('cui_banner');
@@ -119,18 +126,62 @@ describe('buildSynthesisPrompt', () => {
       schema: makeSchema(),
       samples: [],
       user_hint: 'This is for an MTF infectious disease ward.',
+      full_body: EMPTY_BODY,
     });
     expect(built.message).toContain('MTF infectious disease ward');
   });
 
-  it('truncates very long samples', () => {
-    const longSample = 'word '.repeat(500);
+  it('renders per-section samples with anchored_text and paragraph_range', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
-      samples: [{ section_id: 'purpose', heading: '1. Purpose', sample_text: longSample }],
+      samples: [
+        {
+          section_id: 'purpose',
+          heading: '1. Purpose',
+          sample_text: 'Establishes procedures for clinical care.',
+          paragraph_range: [3, 7],
+        },
+      ],
+      full_body: EMPTY_BODY,
     });
-    // sample line should not exceed ~700 chars (600 sample + label overhead)
-    const sampleLine = built.message.split('\n').find((l) => l.startsWith('sample:'))!;
-    expect(sampleLine.length).toBeLessThan(750);
+    expect(built.message).toContain('anchored_text:');
+    expect(built.message).toContain('Establishes procedures for clinical care.');
+    expect(built.message).toContain('paragraph_range: [3, 7]');
+  });
+
+  it('renders the full body block with paragraph indices', () => {
+    const built = buildSynthesisPrompt({
+      schema: makeSchema(),
+      samples: [],
+      full_body: {
+        lines: [
+          { index: 0, text: 'TITLE OF SOP' },
+          { index: 1, text: '1. Purpose' },
+          { index: 2, text: '[Insert purpose statement, 2-3 sentences.]' },
+        ],
+        truncated: false,
+        total_paragraphs: 3,
+        total_chars: 80,
+      },
+    });
+    expect(built.message).toContain('FULL TEMPLATE BODY');
+    expect(built.message).toContain('[0] TITLE OF SOP');
+    expect(built.message).toContain('[2] [Insert purpose statement, 2-3 sentences.]');
+    expect(built.message).toContain('END FULL TEMPLATE BODY');
+  });
+
+  it('marks the full body as truncated when not all paragraphs fit', () => {
+    const built = buildSynthesisPrompt({
+      schema: makeSchema(),
+      samples: [],
+      full_body: {
+        lines: [{ index: 0, text: 'first' }],
+        truncated: true,
+        total_paragraphs: 100,
+        total_chars: 5,
+      },
+    });
+    expect(built.message).toContain('1/100');
+    expect(built.message).toContain('TRAILING TRUNCATED');
   });
 });
