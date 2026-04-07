@@ -4,15 +4,23 @@
 // TemplateSchema produced by Phase 1a.
 
 export interface LLMSemanticSection {
-  /** Must match a section.id from the structural schema */
+  /** snake_case identifier the LLM picks (e.g. "scope_and_objectives") */
   id: string;
+  /** Display name as it should appear in the document (e.g. "1. Scope") */
+  name: string;
+  /**
+   * Inclusive paragraph index range from the FULL TEMPLATE BODY block
+   * that constitutes this section. Used by the merger to construct the
+   * BodyFillRegion's paragraph anchors.
+   */
+  paragraph_range: [number, number];
   /** One-sentence statement of what this section communicates */
   intent: string;
   /** [min, max] target word count for the drafted body */
   target_words: [number, number];
-  /** Section ids whose content this section logically requires */
+  /** Section ids (from this same output list) whose content this section requires */
   depends_on: string[];
-  /** Optional validation rules */
+  /** Concrete, verifiable validation rules. Omit if none apply. */
   validation?: {
     must_mention?: string[];
     must_not_mention?: string[];

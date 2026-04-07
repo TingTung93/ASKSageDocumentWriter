@@ -111,7 +111,7 @@ describe('buildSynthesisPrompt', () => {
     expect(built.message).toContain('sop.docx');
   });
 
-  it('lists each section sample under its id', () => {
+  it('lists parser-detected sections in the advisory hints block', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [
@@ -119,9 +119,10 @@ describe('buildSynthesisPrompt', () => {
       ],
       full_body: EMPTY_BODY,
     });
-    expect(built.message).toContain('id: purpose');
-    expect(built.message).toContain('heading: 1. Purpose');
-    expect(built.message).toContain('This SOP establishes the procedures.');
+    expect(built.message).toContain('PARSER-DETECTED SECTIONS');
+    expect(built.message).toContain('"1. Purpose"');
+    expect(built.message).toContain('paragraphs [1, 3]');
+    expect(built.message).toContain('ADVISORY ONLY');
   });
 
   it('lists metadata fill regions separately so the LLM does not draft them', () => {
@@ -145,7 +146,7 @@ describe('buildSynthesisPrompt', () => {
     expect(built.message).toContain('MTF infectious disease ward');
   });
 
-  it('renders per-section samples with anchored_text and paragraph_range', () => {
+  it('shows the advisory parser sections with their paragraph ranges', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),
       samples: [
@@ -158,9 +159,19 @@ describe('buildSynthesisPrompt', () => {
       ],
       full_body: EMPTY_BODY,
     });
-    expect(built.message).toContain('anchored_text:');
-    expect(built.message).toContain('Establishes procedures for clinical care.');
-    expect(built.message).toContain('paragraph_range: [3, 7]');
+    expect(built.message).toContain('"1. Purpose"');
+    expect(built.message).toContain('paragraphs [3, 7]');
+  });
+
+  it('tells the LLM to propose structure from scratch when parser found nothing', () => {
+    const empty: TemplateSchema = { ...makeSchema(), sections: [] };
+    const built = buildSynthesisPrompt({
+      schema: empty,
+      samples: [],
+      full_body: EMPTY_BODY,
+    });
+    expect(built.message).toContain('PARSER-DETECTED SECTIONS (0)');
+    expect(built.message).toContain('propose the section structure from scratch');
   });
 
   it('renders the full body block with paragraph indices and style annotations', () => {
