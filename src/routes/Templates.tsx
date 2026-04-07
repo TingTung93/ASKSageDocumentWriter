@@ -3,17 +3,57 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type TemplateRecord } from '../lib/db/schema';
 import { parseDocx } from '../lib/template/parser';
 import type { TemplateSchema } from '../lib/template/types';
+import { useAuth } from '../lib/state/auth';
+import { AskSageClient } from '../lib/asksage/client';
+import { synthesizeSchema, DEFAULT_SYNTHESIS_MODEL } from '../lib/template/synthesis/synthesize';
 
 // Phase 1a UI: drop a DOCX file → parser produces structural schema →
 // row in the local template library → click to view the schema.
+// Phase 1b UI: synthesize semantic half via Gemini Flash on demand.
 
 export function Templates() {
   const templates = useLiveQuery(() => db.templates.orderBy('ingested_at').reverse().toArray(), []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
+  const [synthError, setSynthError] = useState<string | null>(null);
+  const [synthesizingId, setSynthesizingId] = useState<string | null>(null);
+  const apiKey = useAuth((s) => s.apiKey);
+  const baseUrl = useAuth((s) => s.baseUrl);
 
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
+
+  async function onSynthesize(template: TemplateRecord) {
+    if (!apiKey) {
+      setSynthError('Connect on the Connection tab first — synthesis needs an Ask Sage API key.');
+      return;
+    }
+    setSynthError(null);
+    setSynthesizingId(template.id);
+    // eslint-disable-next-line no-console
+    console.info(`[Templates] synthesizing semantic half for ${template.id} via ${DEFAULT_SYNTHESIS_MODEL}`);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const result = await synthesizeSchema(client, template.schema_json, template.docx_bytes);
+      const updated: TemplateRecord = {
+        ...template,
+        schema_json: result.schema,
+      };
+      await db.templates.put(updated);
+      // eslint-disable-next-line no-console
+      console.info(
+        `[Templates] synthesis complete; ${result.schema.sections.filter((s) => s.intent).length}/${result.schema.sections.length} sections have intent; usage:`,
+        result.usage,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error('[Templates] synthesis failed:', err);
+      setSynthError(message);
+    } finally {
+      setSynthesizingId(null);
+    }
+  }
 
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
     setParseError(null);
@@ -124,21 +164,59 @@ export function Templates() {
         ))}
       </ul>
 
-      {selected && <SchemaViewer schema={selected.schema_json} />}
+      {selected && (
+        <SchemaViewer
+          schema={selected.schema_json}
+          onSynthesize={() => onSynthesize(selected)}
+          synthesizing={synthesizingId === selected.id}
+          synthError={synthError}
+          canSynthesize={!!apiKey}
+        />
+      )}
     </main>
   );
 }
 
-function SchemaViewer({ schema }: { schema: TemplateSchema }) {
+interface SchemaViewerProps {
+  schema: TemplateSchema;
+  onSynthesize: () => void;
+  synthesizing: boolean;
+  synthError: string | null;
+  canSynthesize: boolean;
+}
+
+function SchemaViewer({ schema, onSynthesize, synthesizing, synthError, canSynthesize }: SchemaViewerProps) {
   const [tab, setTab] = useState<'summary' | 'json'>('summary');
+  const hasSemantic = schema.source.semantic_synthesizer !== null;
 
   return (
     <section style={{ marginTop: '1.5rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
       <h2>Schema · {schema.name}</h2>
-      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem' }}>
+      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem', alignItems: 'center' }}>
         <TabBtn active={tab === 'summary'} onClick={() => setTab('summary')}>Summary</TabBtn>
         <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Raw JSON</TabBtn>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={onSynthesize}
+          disabled={synthesizing || !canSynthesize}
+          title={!canSynthesize ? 'Connect on the Connection tab first' : `Calls ${DEFAULT_SYNTHESIS_MODEL} via /server/query`}
+          style={{
+            margin: 0,
+            padding: '0.4rem 0.8rem',
+            background: hasSemantic ? '#666' : '#2050a0',
+            borderColor: hasSemantic ? '#666' : '#2050a0',
+            fontSize: 12,
+          }}
+        >
+          {synthesizing
+            ? 'Synthesizing…'
+            : hasSemantic
+              ? 'Re-synthesize semantic'
+              : 'Synthesize semantic'}
+        </button>
       </div>
+      {synthError && <div className="error">Synthesis failed: {synthError}</div>}
       {tab === 'summary' ? <SummaryView schema={schema} /> : <JsonView value={schema} />}
     </section>
   );
@@ -231,6 +309,21 @@ function SummaryView({ schema }: { schema: TemplateSchema }) {
         ))
       )}
 
+      <h3>Style (semantic — Phase 1b)</h3>
+      {schema.style.voice === null ? (
+        <em>(not yet synthesized — click "Synthesize semantic" above)</em>
+      ) : (
+        <div style={{ background: '#f8f4e8', padding: '0.5rem', border: '1px solid #d4c483', fontSize: 12 }}>
+          <Field label="Voice">{schema.style.voice ?? '(none)'}</Field>
+          <Field label="Tense">{schema.style.tense ?? '(none)'}</Field>
+          <Field label="Register">{schema.style.register ?? '(none)'}</Field>
+          <Field label="Jargon policy">{schema.style.jargon_policy ?? '(none)'}</Field>
+          <Field label="Banned phrases">
+            {schema.style.banned_phrases.length > 0 ? schema.style.banned_phrases.join(', ') : '(none)'}
+          </Field>
+        </div>
+      )}
+
       <h3>Body fill regions / sections ({schema.sections.length})</h3>
       {schema.sections.length === 0 ? (
         <em>(none detected)</em>
@@ -245,6 +338,20 @@ function SummaryView({ schema }: { schema: TemplateSchema }) {
               )}
               {' · roles: '}{s.fill_region.permitted_roles.join(', ')}
             </div>
+            {s.intent && (
+              <div style={{ marginTop: '0.35rem', padding: '0.25rem 0.5rem', background: '#fff8e0', border: '1px solid #ec9', fontSize: 12 }}>
+                <div><strong>Intent:</strong> {s.intent}</div>
+                {s.target_words && (
+                  <div><strong>Target words:</strong> {s.target_words[0]}–{s.target_words[1]}</div>
+                )}
+                {s.depends_on && s.depends_on.length > 0 && (
+                  <div><strong>Depends on:</strong> {s.depends_on.join(', ')}</div>
+                )}
+                {s.validation && Object.keys(s.validation).length > 0 && (
+                  <div><strong>Validation:</strong> <code>{JSON.stringify(s.validation)}</code></div>
+                )}
+              </div>
+            )}
           </div>
         ))
       )}
