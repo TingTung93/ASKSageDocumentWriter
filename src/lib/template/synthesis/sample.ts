@@ -45,6 +45,13 @@ export interface ParagraphLine {
   style_name: string | null;
   numbering_id: number | null;
   numbering_level: number | null;
+  /** Paragraph-level overrides; null means "inherit from style" */
+  alignment: 'left' | 'center' | 'right' | 'justify' | 'both' | null;
+  indent_left_twips: number | null;
+  indent_first_line_twips: number | null;
+  indent_hanging_twips: number | null;
+  bold: boolean;
+  italic: boolean;
   /** Tag of the enclosing w:sdt content control, if any */
   content_control_tag: string | null;
   in_table: boolean;
@@ -139,6 +146,12 @@ export function extractFullBody(
       style_name: p.style_id ? styleNameById.get(p.style_id) ?? null : null,
       numbering_id: p.numbering_id,
       numbering_level: p.numbering_level,
+      alignment: p.alignment,
+      indent_left_twips: p.indent_left_twips,
+      indent_first_line_twips: p.indent_first_line_twips,
+      indent_hanging_twips: p.indent_hanging_twips,
+      bold: p.bold,
+      italic: p.italic,
       content_control_tag: p.content_control_tag,
       in_table: p.in_table,
       bookmark_starts: p.bookmark_starts,

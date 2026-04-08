@@ -8,6 +8,8 @@
 import type { PageSetup } from '../types';
 import { wAll, wAttr, wAttrInt, wFirst, W_NS } from './ns';
 
+export type Alignment = 'left' | 'center' | 'right' | 'justify' | 'both' | null;
+
 export interface ParagraphInfo {
   /** Document-order index */
   index: number;
@@ -21,6 +23,18 @@ export interface ParagraphInfo {
   numbering_level: number | null;
   /** w:outlineLvl @w:val — heading level if specified inline */
   outline_level: number | null;
+  /** w:jc @w:val — paragraph alignment override, null if inherits from style */
+  alignment: Alignment;
+  /** w:ind @w:left in twips — left indent override, null if inherits */
+  indent_left_twips: number | null;
+  /** w:ind @w:firstLine in twips — first-line indent, null if inherits */
+  indent_first_line_twips: number | null;
+  /** w:ind @w:hanging in twips — hanging indent, null if inherits */
+  indent_hanging_twips: number | null;
+  /** Paragraph-level run properties: pPr/rPr/b — bold default for the paragraph */
+  bold: boolean;
+  /** Paragraph-level run properties: pPr/rPr/i — italic default for the paragraph */
+  italic: boolean;
   /** Set of bookmark names that START at this paragraph */
   bookmark_starts: string[];
   /** Set of bookmark names that END at this paragraph */
@@ -105,6 +119,41 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     outline_level = wAttrInt(ol, 'val');
   }
 
+  // Alignment (w:jc @w:val)
+  let alignment: Alignment = null;
+  if (pPr) {
+    const jc = pPr.getElementsByTagNameNS(W_NS, 'jc')[0] ?? null;
+    const v = wAttr(jc, 'val');
+    if (v === 'left' || v === 'center' || v === 'right' || v === 'justify' || v === 'both') {
+      alignment = v;
+    }
+  }
+
+  // Indent properties (w:ind @w:left, @w:firstLine, @w:hanging) in twips
+  let indent_left_twips: number | null = null;
+  let indent_first_line_twips: number | null = null;
+  let indent_hanging_twips: number | null = null;
+  if (pPr) {
+    const ind = pPr.getElementsByTagNameNS(W_NS, 'ind')[0] ?? null;
+    indent_left_twips = wAttrInt(ind, 'left') ?? wAttrInt(ind, 'start');
+    indent_first_line_twips = wAttrInt(ind, 'firstLine');
+    indent_hanging_twips = wAttrInt(ind, 'hanging');
+  }
+
+  // Paragraph-level run defaults: pPr/rPr/b and pPr/rPr/i. These set the
+  // default bold/italic state for runs in the paragraph that don't
+  // override at the run level. A toggle element with no @w:val or
+  // @w:val="1"/"true" means on; @w:val="0"/"false" means off.
+  let bold = false;
+  let italic = false;
+  if (pPr) {
+    const pPr_rPr = pPr.getElementsByTagNameNS(W_NS, 'rPr')[0] ?? null;
+    if (pPr_rPr) {
+      bold = isToggleOn(pPr_rPr.getElementsByTagNameNS(W_NS, 'b')[0]);
+      italic = isToggleOn(pPr_rPr.getElementsByTagNameNS(W_NS, 'i')[0]);
+    }
+  }
+
   // Concatenate all w:t text content under this paragraph.
   const text = Array.from(p.getElementsByTagNameNS(W_NS, 't'))
     .map((t) => t.textContent ?? '')
@@ -132,12 +181,26 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     numbering_id,
     numbering_level,
     outline_level,
+    alignment,
+    indent_left_twips,
+    indent_first_line_twips,
+    indent_hanging_twips,
+    bold,
+    italic,
     bookmark_starts,
     bookmark_ends,
     content_control_tag: ancestors.content_control_tag,
     in_table: ancestors.in_table,
     el: p,
   };
+}
+
+function isToggleOn(el: Element | undefined): boolean {
+  if (!el) return false;
+  const v = wAttr(el, 'val');
+  // Toggle elements default to ON when present with no val attribute
+  if (v === null) return true;
+  return v === '1' || v === 'true' || v === 'on';
 }
 
 interface AncestorScan {
