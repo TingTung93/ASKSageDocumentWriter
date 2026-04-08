@@ -9,6 +9,21 @@ export interface ModelInfo {
   owned_by: string;
   /** Free-form date string ("na" on the health tenant). */
   created: string;
+  /**
+   * Per-token pricing in USD. Populated by providers that expose it
+   * (currently only OpenRouter via `/v1/models`); undefined for Ask
+   * Sage, whose health.mil tenant does not return per-model pricing.
+   */
+  pricing?: ModelPricing;
+}
+
+export interface ModelPricing {
+  /** USD per input token. */
+  prompt_per_token: number;
+  /** USD per output completion token. */
+  completion_per_token: number;
+  /** True when both prompt and completion costs are zero. */
+  is_free: boolean;
 }
 
 export interface GetModelsResponse {

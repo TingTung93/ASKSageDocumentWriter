@@ -64,8 +64,33 @@ export interface ProjectContextFile {
    * per-section prompt.
    */
   bytes: Blob;
+  /**
+   * Optional: semantic chunks the user produced via an explicit
+   * "chunk semantically" action. When present, the orchestrator
+   * selects the most-relevant chunks per section (rather than
+   * inlining the whole file). When absent, the orchestrator falls
+   * back to naive paragraph-based chunking on the fly. See
+   * lib/project/chunk.ts.
+   */
+  chunks?: ReferenceChunk[];
   /** ISO timestamp when the file was attached */
   created_at: string;
+}
+
+/**
+ * One semantic chunk of a reference file. The drafter selects a
+ * subset of chunks per section (relevance-scored against the section
+ * intent + project subject) and inlines only the selected chunks
+ * into that section's drafting prompt.
+ */
+export interface ReferenceChunk {
+  id: string;
+  /** One-line human-readable label, e.g. "Section 1.2 — Scope of Work" */
+  title: string;
+  /** One-sentence summary of the chunk's content, used for relevance scoring */
+  summary: string;
+  /** Verbatim text of the chunk */
+  text: string;
 }
 
 export interface ProjectRecord {

@@ -32,6 +32,7 @@
 import { AskSageError } from '../asksage/types';
 import type {
   ModelInfo,
+  ModelPricing,
   QueryInput,
   QueryResponse,
   QueryUsage,
@@ -43,13 +44,20 @@ const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
-// OpenRouter `/v1/models` shape (subset we use).
+// OpenRouter `/v1/models` shape (subset we use). Pricing fields are
+// stringified USD per token; `"0"` for free models.
 interface OpenRouterModelsResponse {
   data: Array<{
     id: string;
     name?: string;
     created?: number;
     description?: string;
+    pricing?: {
+      prompt?: string;
+      completion?: string;
+      request?: string;
+      image?: string;
+    };
   }>;
 }
 
@@ -250,13 +258,46 @@ function mapModel(m: OpenRouterModelsResponse['data'][number]): ModelInfo {
   // vendor segment as `owned_by` to mirror Ask Sage's shape so the
   // existing model picker UI doesn't have to special-case anything.
   const vendor = m.id.includes('/') ? m.id.split('/')[0] ?? 'openrouter' : 'openrouter';
-  return {
+  const out: ModelInfo = {
     id: m.id,
     name: m.name ?? m.id,
     object: 'model',
     owned_by: vendor,
     created: typeof m.created === 'number' ? String(m.created) : 'na',
   };
+  const pricing = extractPricing(m);
+  if (pricing) out.pricing = pricing;
+  return out;
+}
+
+/**
+ * Convert OpenRouter's stringified per-token prices to numbers and
+ * decide whether the model is free. A model is free when both prompt
+ * and completion costs are zero, OR when the id ends in `:free`
+ * (OpenRouter's naming convention for free-tier-only variants —
+ * sometimes the pricing fields are missing on those).
+ */
+function extractPricing(
+  m: OpenRouterModelsResponse['data'][number],
+): ModelPricing | null {
+  const p = m.pricing;
+  const idLooksFree = m.id.endsWith(':free');
+  if (!p && !idLooksFree) return null;
+
+  const prompt = parseUsdPerToken(p?.prompt);
+  const completion = parseUsdPerToken(p?.completion);
+  const is_free = idLooksFree || (prompt === 0 && completion === 0);
+  return {
+    prompt_per_token: prompt,
+    completion_per_token: completion,
+    is_free,
+  };
+}
+
+function parseUsdPerToken(value: string | undefined): number {
+  if (value === undefined || value === null || value === '') return 0;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 function mapQueryInputToOpenAI(input: QueryInput): {

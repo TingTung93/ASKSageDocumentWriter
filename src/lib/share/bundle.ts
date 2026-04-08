@@ -219,6 +219,8 @@ interface ExportedContextFile {
   size_bytes: number;
   /** Base64-encoded file bytes. Empty string if the exporter chose to strip them. */
   bytes_base64: string;
+  /** Semantic chunks if the exporter ran the chunking pass. Plain JSON. */
+  chunks?: Array<{ id: string; title: string; summary: string; text: string }>;
   created_at: string;
 }
 
@@ -242,6 +244,7 @@ async function serializeContextItems(
         mime_type: item.mime_type,
         size_bytes: item.size_bytes,
         bytes_base64,
+        chunks: item.chunks,
         created_at: item.created_at,
       });
     } else {

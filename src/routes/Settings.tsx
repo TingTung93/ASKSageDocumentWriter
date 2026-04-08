@@ -8,6 +8,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useAuth } from '../lib/state/auth';
 import { loadSettings, saveSettings } from '../lib/settings/store';
 import { toast } from '../lib/state/toast';
+import type { ModelInfo } from '../lib/asksage/types';
 import {
   DEFAULT_COST_ASSUMPTIONS,
   DEFAULT_MODEL_OVERRIDES,
@@ -61,10 +62,27 @@ const STAGES: StageMeta[] = [
   },
 ];
 
+type PricingFilter = 'all' | 'free' | 'paid';
+
 export function Settings() {
   const settings = useLiveQuery(() => loadSettings(), []);
   const apiKey = useAuth((s) => s.apiKey);
   const models = useAuth((s) => s.models);
+  const provider = useAuth((s) => s.provider);
+
+  // Pricing filter is session-only — not persisted. Defaults to "all"
+  // until the user picks; on OpenRouter most users will want "paid"
+  // since the free tier has aggressive rate limits.
+  const [pricingFilter, setPricingFilter] = useState<PricingFilter>('all');
+
+  // Surface pricing controls only when at least one model carries
+  // pricing data — i.e. when connected via OpenRouter. Ask Sage's
+  // /server/get-models doesn't return per-model pricing.
+  const hasPricingData = (models ?? []).some((m) => m.pricing !== undefined);
+  const filteredModels = useMemo(
+    () => filterModelsByPricing(models ?? [], pricingFilter),
+    [models, pricingFilter],
+  );
 
   if (!settings) {
     return (
@@ -88,12 +106,26 @@ export function Settings() {
       {!apiKey && (
         <EmptyState
           title="Not connected"
-          body="Connect to Ask Sage on the Connection tab to see the available models in the picker."
+          body={
+            provider === 'openrouter'
+              ? 'Connect to OpenRouter on the Connection tab to see the available models in the picker.'
+              : 'Connect to Ask Sage on the Connection tab to see the available models in the picker.'
+          }
         />
       )}
+
+      {hasPricingData && (
+        <PricingFilterControl
+          value={pricingFilter}
+          onChange={setPricingFilter}
+          totalCount={models?.length ?? 0}
+          filteredCount={filteredModels.length}
+        />
+      )}
+
       <ModelOverridesSection
         models={settings.models}
-        availableModelIds={models?.map((m) => m.id) ?? []}
+        availableModels={filteredModels}
       />
 
       <h2>Cost projection</h2>
@@ -125,10 +157,10 @@ export function Settings() {
 
 function ModelOverridesSection({
   models,
-  availableModelIds,
+  availableModels,
 }: {
   models: ModelOverrides;
-  availableModelIds: string[];
+  availableModels: ModelInfo[];
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -137,7 +169,7 @@ function ModelOverridesSection({
           key={meta.stage}
           meta={meta}
           current={models[meta.stage]}
-          availableModelIds={availableModelIds}
+          availableModels={availableModels}
         />
       ))}
     </div>
@@ -147,11 +179,11 @@ function ModelOverridesSection({
 function ModelOverrideRow({
   meta,
   current,
-  availableModelIds,
+  availableModels,
 }: {
   meta: StageMeta;
   current: string | null;
-  availableModelIds: string[];
+  availableModels: ModelInfo[];
 }) {
   // Local input state so the user can type a free-form id even if it
   // isn't in the connected models list. Saves on blur or button click.
@@ -162,12 +194,21 @@ function ModelOverrideRow({
     setDraft(current ?? '');
   }, [current]);
 
-  const knownIds = useMemo(() => {
-    const set = new Set(availableModelIds);
-    set.add(meta.default);
-    if (current) set.add(current);
-    return Array.from(set).sort();
-  }, [availableModelIds, meta.default, current]);
+  // Build the dropdown option list. We always include the stage
+  // default and the currently-selected override (even if the pricing
+  // filter would otherwise hide it) so the row never silently drops
+  // an active selection.
+  const options = useMemo(() => {
+    const byId = new Map<string, ModelInfo>();
+    for (const m of availableModels) byId.set(m.id, m);
+    if (!byId.has(meta.default)) {
+      byId.set(meta.default, syntheticModelInfo(meta.default));
+    }
+    if (current && !byId.has(current)) {
+      byId.set(current, syntheticModelInfo(current));
+    }
+    return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+  }, [availableModels, meta.default, current]);
 
   async function commit(value: string) {
     setSaving(true);
@@ -205,13 +246,13 @@ function ModelOverrideRow({
         <select
           value={draft}
           onChange={onSelect}
-          style={{ flex: '0 0 14rem' }}
+          style={{ flex: '0 0 18rem' }}
           disabled={saving}
         >
           <option value="">default — {meta.default}</option>
-          {knownIds.map((id) => (
-            <option key={id} value={id}>
-              {id}
+          {options.map((m) => (
+            <option key={m.id} value={m.id}>
+              {formatModelOptionLabel(m)}
             </option>
           ))}
         </select>
@@ -228,6 +269,92 @@ function ModelOverrideRow({
           disabled={saving}
         />
       </div>
+    </div>
+  );
+}
+
+// ─── Pricing helpers ──────────────────────────────────────────────
+
+function filterModelsByPricing(models: ModelInfo[], filter: PricingFilter): ModelInfo[] {
+  if (filter === 'all') return models;
+  if (filter === 'free') return models.filter((m) => m.pricing?.is_free === true);
+  // 'paid' — exclude both free models AND models with no pricing data
+  // (we don't know the cost so we can't promise they're paid). Ask
+  // Sage models will fall out here, which is correct: the filter only
+  // appears when at least one model has pricing.
+  return models.filter((m) => m.pricing && !m.pricing.is_free);
+}
+
+function formatModelOptionLabel(m: ModelInfo): string {
+  if (!m.pricing) return m.id;
+  if (m.pricing.is_free) return `${m.id} · free`;
+  // Render price per 1M tokens — easier to scan than per-token
+  // (e.g. "$3.00 / $15.00 per 1M" for Claude 3.5 Sonnet).
+  const inPer1M = (m.pricing.prompt_per_token * 1_000_000).toFixed(2);
+  const outPer1M = (m.pricing.completion_per_token * 1_000_000).toFixed(2);
+  return `${m.id} · $${inPer1M} in / $${outPer1M} out per 1M`;
+}
+
+function syntheticModelInfo(id: string): ModelInfo {
+  return { id, name: id, object: 'model', owned_by: 'unknown', created: 'na' };
+}
+
+function PricingFilterControl({
+  value,
+  onChange,
+  totalCount,
+  filteredCount,
+}: {
+  value: PricingFilter;
+  onChange: (next: PricingFilter) => void;
+  totalCount: number;
+  filteredCount: number;
+}) {
+  return (
+    <div className="card" style={{ marginBottom: 'var(--space-3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <strong>Pricing filter</strong>
+        <div role="radiogroup" aria-label="Pricing filter" style={{ display: 'flex', gap: '0.75rem' }}>
+          <label style={{ fontWeight: 'normal' }}>
+            <input
+              type="radio"
+              name="pricing-filter"
+              value="all"
+              checked={value === 'all'}
+              onChange={() => onChange('all')}
+            />{' '}
+            All
+          </label>
+          <label style={{ fontWeight: 'normal' }}>
+            <input
+              type="radio"
+              name="pricing-filter"
+              value="free"
+              checked={value === 'free'}
+              onChange={() => onChange('free')}
+            />{' '}
+            Free only
+          </label>
+          <label style={{ fontWeight: 'normal' }}>
+            <input
+              type="radio"
+              name="pricing-filter"
+              value="paid"
+              checked={value === 'paid'}
+              onChange={() => onChange('paid')}
+            />{' '}
+            Paid only
+          </label>
+        </div>
+        <span className="note">
+          Showing {filteredCount.toLocaleString()} of {totalCount.toLocaleString()} models.
+        </span>
+      </div>
+      <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0 }}>
+        Free OpenRouter models have aggressive rate limits and shorter
+        context windows — usable for cleanup and refinement passes, often
+        too slow or context-limited for full template synthesis.
+      </p>
     </div>
   );
 }

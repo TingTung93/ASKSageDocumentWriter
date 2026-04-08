@@ -47,14 +47,79 @@ describe('OpenRouterClient', () => {
     expect(headers['X-Title']).toBe('ASKSageDocumentWriter');
 
     expect(models).toHaveLength(2);
-    expect(models[0]).toEqual({
-      id: 'anthropic/claude-3.5-sonnet',
-      name: 'Claude 3.5 Sonnet',
-      object: 'model',
-      owned_by: 'anthropic',
-      created: '1717200000',
-    });
+    expect(models[0]?.id).toBe('anthropic/claude-3.5-sonnet');
+    expect(models[0]?.name).toBe('Claude 3.5 Sonnet');
+    expect(models[0]?.owned_by).toBe('anthropic');
+    expect(models[0]?.created).toBe('1717200000');
     expect(models[1]?.owned_by).toBe('openai');
+    // Models without pricing data have undefined pricing.
+    expect(models[0]?.pricing).toBeUndefined();
+  });
+
+  it('getModels() extracts paid pricing from /v1/models response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: 'anthropic/claude-3.5-sonnet',
+              name: 'Claude 3.5 Sonnet',
+              pricing: {
+                prompt: '0.000003',
+                completion: '0.000015',
+                request: '0',
+                image: '0',
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const models = await client.getModels();
+    expect(models[0]?.pricing).toEqual({
+      prompt_per_token: 0.000003,
+      completion_per_token: 0.000015,
+      is_free: false,
+    });
+  });
+
+  it('getModels() flags zero-priced models as free', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: 'meta-llama/llama-3.1-8b-instruct',
+              name: 'Llama 3.1 8B Instruct',
+              pricing: { prompt: '0', completion: '0' },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const models = await client.getModels();
+    expect(models[0]?.pricing?.is_free).toBe(true);
+    expect(models[0]?.pricing?.prompt_per_token).toBe(0);
+  });
+
+  it('getModels() flags `:free` suffix ids as free even without explicit pricing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: 'meta-llama/llama-3.1-8b-instruct:free', name: 'Llama 3.1 8B Instruct (free)' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const models = await client.getModels();
+    expect(models[0]?.pricing?.is_free).toBe(true);
   });
 
   it('query() POSTs to /v1/chat/completions and maps response to QueryResponse', async () => {

@@ -16,6 +16,8 @@ import {
   hasOrphanedV4Files,
   removeContextItem,
 } from '../lib/project/context';
+import { semanticChunkText } from '../lib/project/chunk';
+import { db as dexieDb } from '../lib/db/schema';
 import { DropZone } from '../components/DropZone';
 import { EmptyState } from '../components/EmptyState';
 import { useAuth } from '../lib/state/auth';
@@ -180,6 +182,12 @@ export function ProjectDetail() {
         </div>
       )}
 
+      <ProjectTemplatesEditor
+        project={project}
+        allTemplates={allTemplates}
+        currentlySelected={projectTemplates}
+      />
+
       <h2>Shared inputs ({sharedFields.length})</h2>
       {sharedFields.length === 0 && (
         <p className="note">
@@ -304,6 +312,166 @@ export function ProjectDetail() {
         />
       ))}
     </main>
+  );
+}
+
+function ProjectTemplatesEditor({
+  project,
+  allTemplates,
+  currentlySelected,
+}: {
+  project: ProjectRecord;
+  allTemplates: TemplateRecord[];
+  currentlySelected: TemplateRecord[];
+}) {
+  const [search, setSearch] = useState('');
+
+  const selectedIds = new Set(project.template_ids);
+  const available = allTemplates.filter((t) => !selectedIds.has(t.id));
+  const filteredAvailable = available.filter((t) =>
+    search.trim()
+      ? `${t.name} ${t.filename}`.toLowerCase().includes(search.trim().toLowerCase())
+      : true,
+  );
+
+  async function onAdd(templateId: string) {
+    if (selectedIds.has(templateId)) return;
+    try {
+      await updateProject(project.id, {
+        template_ids: [...project.template_ids, templateId],
+      });
+      const tpl = allTemplates.find((t) => t.id === templateId);
+      toast.success(`Added "${tpl?.name ?? templateId}" to the project`);
+    } catch (err) {
+      toast.error(`Add failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function onRemove(templateId: string) {
+    const next = project.template_ids.filter((id) => id !== templateId);
+    try {
+      await updateProject(project.id, { template_ids: next });
+      const tpl = allTemplates.find((t) => t.id === templateId);
+      toast.info(
+        `Removed "${tpl?.name ?? templateId}" from the project. Existing drafts for that template are kept on disk but no longer surfaced — re-add the template to see them.`,
+      );
+    } catch (err) {
+      toast.error(`Remove failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return (
+    <>
+      <h2>
+        Templates{' '}
+        <span className="badge" style={{ marginLeft: '0.4rem' }}>
+          {currentlySelected.length} selected · {available.length} available
+        </span>
+      </h2>
+      <p className="note">
+        The set of templates this project will draft. Add or remove freely.
+        Removing a template doesn't delete its drafts from disk — they're
+        just hidden until you re-add it.
+      </p>
+
+      {currentlySelected.length === 0 ? (
+        <EmptyState
+          title="No templates yet"
+          body="Pick at least one template below to enable drafting."
+        />
+      ) : (
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+          {currentlySelected.map((t) => (
+            <li
+              key={t.id}
+              className="card"
+              style={{
+                marginBottom: 'var(--space-2)',
+                padding: 'var(--space-2) var(--space-3)',
+              }}
+            >
+              <div className="row" style={{ alignItems: 'center' }}>
+                <strong>{t.name}</strong>
+                <span className="badge">
+                  {t.schema_json.sections.length} section
+                  {t.schema_json.sections.length === 1 ? '' : 's'}
+                </span>
+                {t.schema_json.source.semantic_synthesizer === null && (
+                  <span className="badge badge-warning">needs synthesis</span>
+                )}
+                <span style={{ marginLeft: 'auto' }} />
+                <button
+                  type="button"
+                  className="btn-danger btn-sm"
+                  onClick={() => void onRemove(t.id)}
+                >
+                  remove
+                </button>
+              </div>
+              <div className="note" style={{ marginTop: '0.3rem' }}>
+                {t.filename}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {available.length > 0 && (
+        <details style={{ marginTop: 'var(--space-3)' }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+            Add a template ({available.length} available)
+          </summary>
+          <div style={{ marginTop: 'var(--space-2)' }}>
+            <input
+              type="text"
+              placeholder="Filter by name or filename…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)', maxHeight: 280, overflow: 'auto' }}>
+              {filteredAvailable.map((t) => (
+                <li
+                  key={t.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    padding: 'var(--space-2) var(--space-3)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-sm)',
+                    marginBottom: '0.25rem',
+                    background: 'var(--color-surface)',
+                  }}
+                >
+                  <strong>{t.name}</strong>
+                  <span className="note">{t.filename}</span>
+                  <span className="badge">
+                    {t.schema_json.sections.length} sec
+                  </span>
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() => void onAdd(t.id)}
+                  >
+                    add
+                  </button>
+                </li>
+              ))}
+              {filteredAvailable.length === 0 && (
+                <p className="note">No templates match "{search}".</p>
+              )}
+            </ul>
+          </div>
+        </details>
+      )}
+      {available.length === 0 && currentlySelected.length > 0 && (
+        <p className="note">
+          All your templates are in this project. Ingest more on the{' '}
+          <Link to="/templates">Templates</Link> tab.
+        </p>
+      )}
+    </>
   );
 }
 
@@ -528,6 +696,7 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
   }
   const [previews, setPreviews] = useState<Record<string, ExtractionPreview>>({});
   const [previewLoading, setPreviewLoading] = useState<string | null>(null);
+  const [chunkingId, setChunkingId] = useState<string | null>(null);
 
   async function onAttach(file: File) {
     setAttaching(true);
@@ -582,6 +751,64 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
       );
     } finally {
       setPreviewLoading(null);
+    }
+  }
+
+  async function onSemanticChunk(fileItem: ProjectContextFile) {
+    if (!apiKey || !onAskSage) {
+      toast.error('Connect to Ask Sage on the Connection tab first.');
+      return;
+    }
+    setChunkingId(fileItem.id);
+    try {
+      // We need the extracted text to chunk. If we already previewed
+      // it, reuse that; otherwise call /server/file once.
+      const client = new AskSageClient(baseUrl, apiKey);
+      let text = previews[fileItem.id]?.snippet ?? '';
+      if (!previews[fileItem.id]) {
+        const fileObj = new File([fileItem.bytes], fileItem.filename, {
+          type: fileItem.mime_type || 'application/octet-stream',
+        });
+        const upload = await client.uploadFile(fileObj);
+        text = extractedTextFromRet(upload.ret);
+      } else {
+        // We need the FULL extracted text, not the 800-char snippet
+        // we cached for preview. Re-upload to get the full text.
+        const fileObj = new File([fileItem.bytes], fileItem.filename, {
+          type: fileItem.mime_type || 'application/octet-stream',
+        });
+        const upload = await client.uploadFile(fileObj);
+        text = extractedTextFromRet(upload.ret);
+      }
+      if (!text || text.trim().length === 0) {
+        throw new Error('Ask Sage extracted no text from this file.');
+      }
+      const chunks = await semanticChunkText(client, text, {
+        sourceLabel: fileItem.filename,
+      });
+
+      // Persist the chunks onto the file record.
+      const proj = await dexieDb.projects.get(project.id);
+      if (!proj) throw new Error('Project disappeared');
+      const nextItems = (proj.context_items ?? []).map((it) =>
+        it.kind === 'file' && it.id === fileItem.id ? { ...it, chunks } : it,
+      );
+      await dexieDb.projects.put({
+        ...proj,
+        context_items: nextItems,
+        updated_at: new Date().toISOString(),
+      });
+
+      const totalChars = chunks.reduce((acc, c) => acc + c.text.length, 0);
+      toast.success(
+        `${fileItem.filename}: ${chunks.length} semantic chunks · ${totalChars.toLocaleString()} chars`,
+      );
+    } catch (err) {
+      toast.error(
+        `Chunking failed for ${fileItem.filename}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setChunkingId(null);
     }
   }
 
@@ -714,6 +941,8 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
             if (f.kind !== 'file') return null;
             const preview = previews[f.id];
             const isLoading = previewLoading === f.id;
+            const isChunking = chunkingId === f.id;
+            const chunkCount = f.chunks?.length ?? 0;
             return (
               <li
                 key={f.id}
@@ -730,15 +959,31 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
                       {preview.tokens !== null && ` · ${preview.tokens.toLocaleString()} tok`}
                     </span>
                   )}
+                  {chunkCount > 0 ? (
+                    <span className="badge badge-primary">
+                      {chunkCount} semantic chunk{chunkCount === 1 ? '' : 's'}
+                    </span>
+                  ) : (
+                    <span className="badge">naive chunking</span>
+                  )}
                   <span style={{ marginLeft: 'auto' }} />
                   <button
                     type="button"
                     className="btn-secondary btn-sm"
-                    disabled={isLoading || !apiKey || !onAskSage}
+                    disabled={isLoading || isChunking || !apiKey || !onAskSage}
                     title="Upload to /server/file and tokenize. Useful for verifying Ask Sage can read this file before drafting."
                     onClick={() => void onTestExtraction(f)}
                   >
                     {isLoading ? 'extracting…' : preview ? 're-test' : 'test extract'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    disabled={isChunking || isLoading || !apiKey || !onAskSage}
+                    title="Run an LLM pass to split this file into semantically coherent chunks. Each chunk gets a title and one-sentence summary used for per-section relevance scoring at draft time."
+                    onClick={() => void onSemanticChunk(f)}
+                  >
+                    {isChunking ? 'chunking…' : chunkCount > 0 ? 're-chunk' : 'chunk'}
                   </button>
                   <button
                     type="button"
@@ -750,6 +995,14 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
                 </div>
                 <div className="note" style={{ marginTop: '0.3rem' }}>
                   Attached {new Date(f.created_at).toLocaleString()}
+                  {chunkCount === 0 && (
+                    <>
+                      {' · '}
+                      <em>
+                        will fall back to naive paragraph chunking at draft time
+                      </em>
+                    </>
+                  )}
                 </div>
                 {preview && (
                   <details style={{ marginTop: '0.4rem' }}>
@@ -772,6 +1025,45 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
                       {preview.snippet}
                       {preview.chars > 800 && '\n…'}
                     </pre>
+                  </details>
+                )}
+                {chunkCount > 0 && f.chunks && (
+                  <details style={{ marginTop: '0.4rem' }}>
+                    <summary className="note" style={{ cursor: 'pointer' }}>
+                      View {chunkCount} semantic chunk{chunkCount === 1 ? '' : 's'}
+                    </summary>
+                    <ul
+                      style={{
+                        listStyle: 'none',
+                        padding: 'var(--space-2)',
+                        margin: '0.4rem 0 0',
+                        background: 'var(--color-surface-alt)',
+                        borderRadius: 'var(--radius-sm)',
+                        maxHeight: 280,
+                        overflow: 'auto',
+                      }}
+                    >
+                      {f.chunks.map((c) => (
+                        <li
+                          key={c.id}
+                          style={{
+                            marginBottom: '0.5rem',
+                            paddingBottom: '0.5rem',
+                            borderBottom: '1px dashed var(--color-border)',
+                          }}
+                        >
+                          <strong style={{ fontSize: 12 }}>{c.title}</strong>
+                          <span className="badge" style={{ marginLeft: '0.4rem' }}>
+                            {c.text.length.toLocaleString()} chars
+                          </span>
+                          {c.summary && (
+                            <div className="note" style={{ marginTop: '0.2rem', fontStyle: 'italic' }}>
+                              {c.summary}
+                            </div>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   </details>
                 )}
               </li>
