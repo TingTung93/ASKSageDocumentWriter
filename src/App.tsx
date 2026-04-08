@@ -7,6 +7,7 @@ import { ProjectDetail } from './routes/ProjectDetail';
 import { Datasets } from './routes/Datasets';
 import { Documents } from './routes/Documents';
 import { AuditLog } from './routes/AuditLog';
+import { Settings } from './routes/Settings';
 import { DebugPanel } from './components/DebugPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -30,6 +31,7 @@ export function App() {
                 <Route path="/projects" element={<Projects />} />
                 <Route path="/projects/:id" element={<ProjectDetail />} />
                 <Route path="/audit" element={<AuditLog />} />
+                <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
