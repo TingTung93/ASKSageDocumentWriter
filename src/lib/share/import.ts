@@ -8,7 +8,13 @@
 // new ids. This guarantees that an import never overwrites the
 // recipient's existing data.
 
-import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '../db/schema';
+import {
+  db,
+  type DraftRecord,
+  type ProjectContextItem,
+  type ProjectRecord,
+  type TemplateRecord,
+} from '../db/schema';
 import {
   base64ToBlob,
   validateBundle,
@@ -79,8 +85,10 @@ export async function importProjectBundle(bundle: ProjectBundle): Promise<Import
     shared_inputs: bundle.project.shared_inputs,
     model_overrides: bundle.project.model_overrides,
     live_search: bundle.project.live_search,
-    context_items: bundle.project.context_items ?? [],
-    dataset_name: bundle.project.dataset_name ?? null,
+    // Rehydrate file context items: bundle file entries carry
+    // bytes_base64 (string), v5 ProjectContextFile needs bytes (Blob).
+    // Notes pass through unchanged.
+    context_items: rehydrateContextItems(bundle.project.context_items ?? []),
     created_at: bundle.project.created_at,
     updated_at: new Date().toISOString(),
   };
@@ -158,4 +166,37 @@ function newId(prefix: string): string {
     return `${prefix}_${crypto.randomUUID()}`;
   }
   return `${prefix}_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+}
+
+/**
+ * Convert each bundle file context item from its wire shape
+ * (`bytes_base64: string`) to the v5 in-memory shape (`bytes: Blob`).
+ * Notes pass through unchanged. File entries that lack a usable
+ * `bytes_base64` (e.g., from an older bundle that stripped them) are
+ * dropped — the recipient sees them as missing.
+ */
+function rehydrateContextItems(items: unknown[]): ProjectContextItem[] {
+  const out: ProjectContextItem[] = [];
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (item.kind === 'note') {
+      out.push(raw as ProjectContextItem);
+      continue;
+    }
+    if (item.kind !== 'file') continue;
+    const b64 = typeof item.bytes_base64 === 'string' ? item.bytes_base64 : '';
+    if (!b64) continue; // dropped — recipient will see "missing" via the orphan path
+    const mime = String(item.mime_type ?? 'application/octet-stream');
+    out.push({
+      kind: 'file',
+      id: String(item.id ?? newId('file')),
+      filename: String(item.filename ?? 'reference'),
+      mime_type: mime,
+      size_bytes: Number(item.size_bytes ?? 0),
+      bytes: base64ToBlob(b64, mime),
+      created_at: String(item.created_at ?? new Date().toISOString()),
+    });
+  }
+  return out;
 }

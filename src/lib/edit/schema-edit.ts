@@ -4,7 +4,7 @@
 // the change is localized (one section's intent, one validation rule,
 // banned phrases, etc.).
 
-import type { AskSageClient } from '../asksage/client';
+import type { LLMClient } from '../provider/types';
 import type { TemplateSchema } from '../template/types';
 import { applySchemaEdits } from './dispatcher';
 import type { ApplyResult, SchemaEditOutput } from './types';
@@ -78,7 +78,7 @@ export interface SchemaEditResponse {
 }
 
 export async function requestSchemaEdits(
-  client: AskSageClient,
+  client: LLMClient,
   args: SchemaEditRequest,
 ): Promise<SchemaEditResponse> {
   const model = args.model ?? DEFAULT_EDIT_MODEL;

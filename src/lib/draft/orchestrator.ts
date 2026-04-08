@@ -5,11 +5,22 @@
 // completes so a refresh mid-run doesn't lose work.
 
 import type { AskSageClient } from '../asksage/client';
-import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '../db/schema';
+import {
+  db,
+  type DraftRecord,
+  type ProjectContextFile,
+  type ProjectRecord,
+  type TemplateRecord,
+} from '../db/schema';
 import type { BodyFillRegion } from '../template/types';
 import { draftSection, summarizeDraft } from './drafter';
 import type { DraftingOptions, PriorSectionSummary } from './types';
-import { getContextItems, renderContextBlock } from '../project/context';
+import {
+  getContextItems,
+  renderInlinedReferences,
+  renderNotesBlock,
+} from '../project/context';
+import { extractParagraphs, type ParagraphInfo } from '../template/parser';
 
 export interface DraftProjectCallbacks {
   onSectionStart?: (template: TemplateRecord, section: BodyFillRegion) => void;
@@ -20,6 +31,10 @@ export interface DraftProjectCallbacks {
   ) => void;
   onSectionError?: (template: TemplateRecord, section: BodyFillRegion, err: Error) => void;
   onProjectComplete?: () => void;
+  /** Called when an attached reference file is being uploaded for extraction. */
+  onReferenceExtractStart?: (file: ProjectContextFile) => void;
+  /** Called when extraction completes (success or failure). */
+  onReferenceExtractDone?: (file: ProjectContextFile, chars: number, error?: string) => void;
 }
 
 export interface DraftProjectArgs {
@@ -69,12 +84,49 @@ export async function draftProject(
 ): Promise<void> {
   const { project, templates, options, callbacks } = args;
 
-  // Render the project's chat notes + attached file extracts ONCE for
-  // the whole run. The same block gets injected into every per-section
-  // drafting prompt — no point re-rendering it 30 times.
-  const contextBlock = renderContextBlock(getContextItems(project));
+  // ─── Pre-flight 1: extract attached reference files ──────────────
+  // Each file goes to /server/file ONCE per run; the extracted text
+  // is cached in memory and reused for every per-section call. This
+  // is the inline-references path — the model literally sees the file
+  // contents instead of relying on opaque RAG retrieval.
+  const items = getContextItems(project);
+  const files = items.filter((i): i is ProjectContextFile => i.kind === 'file');
+  const extractedById = new Map<string, string>();
+  for (const f of files) {
+    callbacks?.onReferenceExtractStart?.(f);
+    try {
+      const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
+      const upload = await client.uploadFile(fileObj);
+      const text = extractedTextFromRet(upload.ret);
+      extractedById.set(f.id, text);
+      callbacks?.onReferenceExtractDone?.(f, text.length);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[draftProject] failed to extract ${f.filename}:`, err);
+      callbacks?.onReferenceExtractDone?.(f, 0, msg);
+      // Don't bail the whole run; the section just won't see this file.
+    }
+  }
+
+  // Render notes and references ONCE for the run.
+  const notesBlock = renderNotesBlock(items);
+  const referencesBlock = renderInlinedReferences(items, extractedById);
 
   for (const template of templates) {
+    // ─── Pre-flight 2: parse the template DOCX once per template ───
+    // Used to slice per-section example text from the actual source.
+    let templateParagraphs: ParagraphInfo[] = [];
+    try {
+      templateParagraphs = await extractParagraphs(template.docx_bytes);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[draftProject] couldn't re-parse template ${template.id} for example text — sections will draft without TEMPLATE EXAMPLE blocks:`,
+        err,
+      );
+    }
+
     const ordered = orderSectionsByDependencies(template.schema_json.sections);
     const priorSummaries: PriorSectionSummary[] = [];
     const summariesById = new Map<string, PriorSectionSummary>();
@@ -111,14 +163,19 @@ export async function draftProject(
 
       // Dataset resolution priority:
       //   1. explicit per-call override in options
-      //   2. project's owned dataset (where attached files were trained)
-      //   3. first manually-typed reference dataset
-      //   4. 'none'
+      //   2. first manually-typed reference dataset (curated on Datasets tab)
+      //   3. 'none'
+      // The legacy project.dataset_name (train-into-dataset auto-provision)
+      // was dropped in v5 in favor of inlining attached files directly
+      // into the prompt.
       const resolvedDataset =
-        options?.dataset ??
-        project.dataset_name ??
-        project.reference_dataset_names[0] ??
-        'none';
+        options?.dataset ?? project.reference_dataset_names[0] ?? 'none';
+
+      // Slice the template's actual paragraphs for THIS section using
+      // the parser-recorded anchor range. This is the TEMPLATE EXAMPLE
+      // block — gives the model structural anchoring without baking in
+      // the template's example subject matter.
+      const templateExample = sliceTemplateExample(templateParagraphs, section);
 
       try {
         const result = await draftSection(client, {
@@ -127,7 +184,9 @@ export async function draftProject(
           project_description: project.description,
           shared_inputs: project.shared_inputs,
           prior_summaries: relevant,
-          context_block: contextBlock,
+          notes_block: notesBlock,
+          references_block: referencesBlock,
+          template_example: templateExample,
           options: {
             ...options,
             dataset: resolvedDataset,
@@ -156,6 +215,7 @@ export async function draftProject(
           ...pendingRecord,
           paragraphs: result.paragraphs,
           references: result.references,
+          prompt_sent: result.prompt_sent,
           status: 'ready',
           generated_at: new Date().toISOString(),
           model: result.model,
@@ -184,4 +244,80 @@ export async function draftProject(
   }
 
   callbacks?.onProjectComplete?.();
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────
+
+/** Per-section template example cap. ~6k chars ≈ ~1500 tokens. */
+const TEMPLATE_EXAMPLE_CAP_CHARS = 6000;
+
+/**
+ * Slice the parsed template paragraphs for a single section using its
+ * fill_region anchors. Returns the trimmed text joined with newlines,
+ * or null if we can't determine the anchor range. Caps at
+ * TEMPLATE_EXAMPLE_CAP_CHARS so a huge section doesn't blow the prompt.
+ */
+function sliceTemplateExample(
+  paragraphs: ParagraphInfo[],
+  section: BodyFillRegion,
+): string | null {
+  if (paragraphs.length === 0) return null;
+  const fr = section.fill_region;
+  if (fr.kind !== 'heading_bounded') {
+    // content_control / bookmark / placeholder regions don't carry
+    // paragraph anchors. We could widen to a heuristic but for v1
+    // we just skip these — the section spec still has its name and
+    // intent so the model isn't flying blind.
+    return null;
+  }
+  // Anchor is the heading paragraph itself; body content starts the
+  // paragraph after.
+  const start = Math.max(0, fr.anchor_paragraph_index + 1);
+  const end = Math.min(paragraphs.length - 1, fr.end_anchor_paragraph_index);
+  if (end < start) return null;
+  const slice = paragraphs.slice(start, end + 1);
+  const text = slice
+    .map((p) => p.text.trim())
+    .filter((t) => t.length > 0)
+    .join('\n');
+  if (text.length === 0) return null;
+  if (text.length <= TEMPLATE_EXAMPLE_CAP_CHARS) return text;
+  return text.slice(0, TEMPLATE_EXAMPLE_CAP_CHARS - 1).trimEnd() + '…';
+}
+
+/**
+ * Wrap a stored Blob as a File so client.uploadFile() can hand it to
+ * /server/file via FormData. The Blob lives in IndexedDB and may have
+ * been written under a different File constructor than the current
+ * window's, so this normalization avoids subtle FormData issues.
+ */
+function blobToFile(blob: Blob, filename: string, mime: string): File {
+  if (typeof File !== 'undefined') {
+    return new File([blob], filename, { type: mime || blob.type || 'application/octet-stream' });
+  }
+  // Pseudo-File for jsdom: callers only need name + type + bytes.
+  const stub = blob as Blob & { name?: string };
+  Object.defineProperty(stub, 'name', { value: filename, configurable: true });
+  return stub as unknown as File;
+}
+
+/**
+ * Best-effort plaintext extraction from /server/file's `ret` field.
+ * Health.mil returns a string; swagger v1.56 documents an object.
+ * Mirrors the same helper in lib/project/context.
+ */
+function extractedTextFromRet(ret: string | Record<string, unknown>): string {
+  if (typeof ret === 'string') return ret;
+  if (ret && typeof ret === 'object') {
+    const maybeText = (ret as { text?: unknown }).text;
+    if (typeof maybeText === 'string') return maybeText;
+    const maybeContent = (ret as { content?: unknown }).content;
+    if (typeof maybeContent === 'string') return maybeContent;
+    try {
+      return JSON.stringify(ret);
+    } catch {
+      return '';
+    }
+  }
+  return '';
 }

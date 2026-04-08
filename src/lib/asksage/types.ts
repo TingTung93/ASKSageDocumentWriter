@@ -99,30 +99,43 @@ export interface GetDatasetsResponse {
 // ─── /server/file ─────────────────────────────────────────────────
 // Multipart upload of a single file. Ask Sage runs its own extractor
 // (handles DOCX, PDF, audio/video, etc.) and returns the extracted
-// plaintext inline as `ret`. Max 250 MB for documents, 500 MB for A/V.
+// content inline as `ret`. Max 250 MB for documents, 500 MB for A/V.
+//
+// Per swagger v1.56, `ret` is documented as an object, but the
+// health.mil tenant returns the extracted plaintext as a string and
+// our `attachProjectFile()` consumer treats it as such. We type it as
+// `string | Record<string, unknown>` so callers must do an explicit
+// narrowing instead of being silently wrong on a tenant variant.
+
+export interface UploadFileFormFields {
+  /** Extraction strategy. `auto` (default) lets Ask Sage choose. */
+  strategy?: 'auto' | 'fast' | 'hi_res';
+  /** Special CSV handling — preserves row structure for tabular files. */
+  special_csv?: boolean;
+}
 
 export interface UploadFileResponse {
   response: string;
-  /** Extracted plaintext from the uploaded file */
-  ret: string;
+  /** Extracted content from the uploaded file. String on health tenant; object per swagger v1.56. */
+  ret: string | Record<string, unknown>;
+  /** Filename Ask Sage stored the upload under (per swagger v1.56). */
+  sent_filename?: string;
   status: number;
 }
 
 // ─── /server/train ────────────────────────────────────────────────
 // Adds a chunk of text to the user's knowledge base. Vectors live in
 // Ask Sage. force_dataset routes the content into a specific dataset
-// name; without it, Ask Sage picks the default. Optional summarize +
-// summarize_model lets Ask Sage compress before storage.
+// name; without it, Ask Sage picks the default.
 
 export interface TrainRequest {
-  /** Short metadata describing this content (e.g. "PWS reference, project X") */
-  context: string;
-  /** The actual text to ingest */
+  /** The actual text to ingest (required per swagger v1.56) */
   content: string;
-  /** Optional: have Ask Sage summarize before embedding */
-  summarize?: boolean;
-  summarize_model?: string;
-  /** Optional: route into a named dataset (creates it if it doesn't exist) */
+  /** Short metadata describing this content (e.g. "PWS reference, project X") */
+  context?: string;
+  /** Skip vector DB write — train without embedding (rare; default false). */
+  skip_vectordb?: boolean;
+  /** Route into a named dataset (creates it if it doesn't exist) */
   force_dataset?: string;
 }
 
@@ -151,16 +164,57 @@ export interface QueryWithFileInput {
 }
 
 // ─── /server/tokenizer ────────────────────────────────────────────
+// Per swagger v1.56, request takes content + model + optional flags;
+// response returns the count as a STRING in `response`. Callers should
+// use the `tokenize()` helper on the client which coerces to number.
 
 export interface TokenizerRequest {
   content: string;
-  model: string;
+  /** Tokenizer to use. Default `ada-002` per swagger. */
+  model?: string;
+  /** Convert to Ask Sage's internal token-counting model. */
+  convert_to_asksage?: boolean;
+  /** Add this many tokens as a completion-side estimate. */
+  completion_estimate?: number;
 }
 
 export interface TokenizerResponse {
-  /** Exact token count for the given content under the given model */
-  response?: number;
-  tokens?: number;
+  /** Token count, returned as a stringified integer per swagger v1.56. */
+  response: string;
   status?: number;
-  [key: string]: unknown;
+}
+
+// ─── /server/count-monthly-tokens ─────────────────────────────────
+// Authoritative server-side monthly token usage. GET form returns the
+// caller's full tenant count; POST form scopes by app. We use GET.
+
+export interface CountMonthlyTokensResponse {
+  /** Total tokens consumed in the current billing month. */
+  response: number;
+  status?: number;
+}
+
+// ─── Dataset & file management (all under /server/*) ─────────────
+// Per swagger v1.56 these all live on the permissive Server surface,
+// so they ARE reachable from the browser on the health.mil tenant.
+// Memory dated 2026-04-07 incorrectly placed them on /user/*.
+
+export interface DeleteDatasetRequest {
+  dataset: string;
+}
+
+export interface DeleteFilenameFromDatasetRequest {
+  dataset: string;
+  filename: string;
+}
+
+export interface SimpleResponse {
+  response: string;
+  status?: number;
+}
+
+export interface GetAllFilesIngestedResponse {
+  /** Array of file descriptors. Shape is tenant-dependent — passed through unchanged. */
+  response: unknown[];
+  status?: number;
 }

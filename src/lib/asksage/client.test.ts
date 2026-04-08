@@ -196,6 +196,130 @@ describe('AskSageClient', () => {
     expect(body.live).toBe(2);
   });
 
+  it('getServerDatasets() returns dataset names from /server/get-datasets', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ response: ['user_custom_42_far_clauses_content', 'asd_pws_drafts'], status: 200 }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const list = await client.getServerDatasets();
+    expect(list).toEqual(['user_custom_42_far_clauses_content', 'asd_pws_drafts']);
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/get-datasets');
+    expect(opts.method).toBe('POST');
+  });
+
+  it('tokenize() coerces stringified count to number per swagger v1.56', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: '1234', status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    const n = await client.tokenize({ content: 'hello', model: 'ada-002' });
+    expect(n).toBe(1234);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('https://api.asksage.health.mil/server/tokenizer');
+  });
+
+  it('tokenize() returns NaN when response is not coercible', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: 'oops', status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    const n = await client.tokenize({ content: 'hello' });
+    expect(Number.isNaN(n)).toBe(true);
+  });
+
+  it('countMonthlyTokens() issues GET /server/count-monthly-tokens with no body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: 87654, status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    const n = await client.countMonthlyTokens();
+    expect(n).toBe(87654);
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/count-monthly-tokens');
+    expect(opts.method).toBe('GET');
+    expect(opts.body).toBeUndefined();
+    const headers = opts.headers as Record<string, string>;
+    expect(headers['x-access-tokens']).toBe('test-key');
+    // GET must NOT carry Content-Type — that would add it to the preflight.
+    expect(headers['Content-Type']).toBeUndefined();
+  });
+
+  it('deleteDataset() issues DELETE /server/dataset with JSON body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: 'deleted', status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    const r = await client.deleteDataset('asd_old_pws');
+    expect(r.response).toBe('deleted');
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/dataset');
+    expect(opts.method).toBe('DELETE');
+    expect(JSON.parse(opts.body as string)).toEqual({ dataset: 'asd_old_pws' });
+  });
+
+  it('deleteFilenameFromDataset() POSTs to /server/delete-filename-from-dataset', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: 'removed', status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    await client.deleteFilenameFromDataset({ dataset: 'asd_pws', filename: 'old.docx' });
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/delete-filename-from-dataset');
+    expect(opts.method).toBe('POST');
+    expect(JSON.parse(opts.body as string)).toEqual({ dataset: 'asd_pws', filename: 'old.docx' });
+  });
+
+  it('uploadFile() forwards optional strategy and special_csv form fields', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ response: 'ok', ret: 'extracted text', sent_filename: 'a.docx', status: 200 }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const file = new File(['hello'], 'a.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+    const r = await client.uploadFile(file, { strategy: 'hi_res', special_csv: true });
+    expect(r.ret).toBe('extracted text');
+    expect(r.sent_filename).toBe('a.docx');
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/file');
+    expect(opts.method).toBe('POST');
+    const form = opts.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get('strategy')).toBe('hi_res');
+    expect(form.get('special_csv')).toBe('true');
+    // The browser sets Content-Type with boundary; we must NOT set it ourselves.
+    const headers = opts.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBeUndefined();
+    expect(headers['x-access-tokens']).toBe('test-key');
+  });
+
+  it('train() POSTs to /server/train with content + force_dataset', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: 'ok', embedding: 'emb-1', status: 200 }), { status: 200 }),
+    );
+    const client = makeClient();
+    const r = await client.train({
+      content: 'PWS reference text',
+      context: 'project ABC attachment',
+      force_dataset: 'asd_abc',
+    });
+    expect(r.embedding).toBe('emb-1');
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.asksage.health.mil/server/train');
+    expect(JSON.parse(opts.body as string)).toEqual({
+      content: 'PWS reference text',
+      context: 'project ABC attachment',
+      force_dataset: 'asd_abc',
+    });
+  });
+
   it('query() POSTs to /server/query with the input as JSON body', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

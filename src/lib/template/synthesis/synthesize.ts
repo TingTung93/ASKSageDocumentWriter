@@ -12,12 +12,13 @@
 // the caller can persist + display them. Throws AskSageError on any
 // network/parse failure with full diagnostic detail.
 
-import type { AskSageClient } from '../../asksage/client';
+import type { LLMClient } from '../../provider/types';
 import { extractParagraphs } from '../parser';
 import type { TemplateSchema } from '../types';
 import { extractSamples, extractFullBody } from './sample';
 import { buildSynthesisPrompt } from './prompt';
 import { mergeSemanticIntoSchema } from './merge';
+import { scanSchemaForSubjectLeakage } from './leakage';
 import type {
   LLMSemanticOutput,
   SynthesisOptions,
@@ -34,7 +35,7 @@ import type {
 export const DEFAULT_SYNTHESIS_MODEL = 'google-claude-46-sonnet';
 
 export async function synthesizeSchema(
-  client: AskSageClient,
+  client: LLMClient,
   structural: TemplateSchema,
   docx_bytes: Uint8Array | ArrayBuffer | Blob,
   opts: SynthesisOptions = {},
@@ -82,6 +83,12 @@ export async function synthesizeSchema(
     ingested_at: structural.source.ingested_at,
   });
 
+  // (7): sanity scan — flag any sections whose intent looks like it
+  // baked in subject matter from the template's example placeholder
+  // text. The drafter overrides this at draft time, but a clean
+  // schema is still better than a dirty one for downstream reuse.
+  const subject_leakage_warnings = scanSchemaForSubjectLeakage(merged.sections);
+
   return {
     schema: merged,
     llm_output: data,
@@ -92,5 +99,6 @@ export async function synthesizeSchema(
     body_paragraphs_sent: fullBody.lines.length,
     body_paragraphs_total: fullBody.total_paragraphs,
     body_chars_sent: fullBody.total_chars,
+    subject_leakage_warnings,
   };
 }

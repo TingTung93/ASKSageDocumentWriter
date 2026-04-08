@@ -57,18 +57,13 @@ export interface ProjectContextFile {
   /** Original byte size */
   size_bytes: number;
   /**
-   * Number of characters Ask Sage extracted from the file (the `ret`
-   * length from /server/file). Useful for sanity-checking that the
-   * upload worked and showing the user "Ask Sage saw N chars".
+   * Original file bytes. Stored locally so re-extraction via
+   * /server/file is the source of truth — we don't cache a stale
+   * extract. Drafting runs upload these to Ask Sage once per run
+   * (cached in memory) and feed the extracted text into every
+   * per-section prompt.
    */
-  extracted_chars: number;
-  /**
-   * Embedding id Ask Sage returned from /server/train, if any. We
-   * persist it so a future "remove from dataset" feature has a handle.
-   */
-  embedding_id?: string;
-  /** Dataset name the content was trained into (mirrors project.dataset_name at the time of attach). */
-  trained_into_dataset: string;
+  bytes: Blob;
   /** ISO timestamp when the file was attached */
   created_at: string;
 }
@@ -102,22 +97,14 @@ export interface ProjectRecord {
    */
   live_search: 0 | 1 | 2;
   /**
-   * Notes and file-attachment metadata for this project. Notes get
-   * inlined into every drafting prompt; files live in the project's
-   * Ask Sage dataset (see `dataset_name`) and are pulled in via RAG.
-   * Optional for migration compatibility — projects created before v4
-   * omit it.
+   * Notes and file-attachment metadata for this project. BOTH inline
+   * directly into every drafting prompt — notes verbatim, files via
+   * an /server/file extraction call at draft time. Files are NOT
+   * trained into any dataset by default; for that workflow, the user
+   * curates a dataset on the Datasets tab and references it via
+   * `reference_dataset_names` for an additional RAG layer.
    */
   context_items?: ProjectContextItem[];
-  /**
-   * Ask Sage dataset name this project owns. When set, /server/train
-   * routes attached file content into this dataset and drafting
-   * /server/query calls pass it as the `dataset` parameter.
-   *
-   * Conventionally a `user_custom_<USERID>_<NAME>_content` name picked
-   * by the user, but we accept whatever Ask Sage accepts.
-   */
-  dataset_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -132,6 +119,12 @@ export interface DraftRecord {
   paragraphs: DraftParagraph[];
   /** Free-form references string returned by Ask Sage from RAG */
   references: string;
+  /**
+   * The exact prompt body sent to /server/query. Persisted so the
+   * Sections view can show "what did the model actually see?" — the
+   * single most useful diagnostic when a section drafts off-topic.
+   */
+  prompt_sent?: string;
   /** Lifecycle state of this draft */
   status: 'pending' | 'drafting' | 'ready' | 'error';
   /** Set when status === 'error' */
@@ -219,11 +212,22 @@ class DocWriterDb extends Dexie {
       audit: '++id, ts, endpoint, ok',
       settings: 'id',
     });
-    // v4 adds project context_items (chat notes + attached file extracts).
-    // No new index — context_items lives inside the project row, so the
-    // index spec doesn't change. The version bump still matters because
-    // Dexie uses it to gate any future migration we might want to run.
+    // v4 added project context_items (chat notes + attached file extracts).
     this.version(4).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+    });
+    // v5 reshapes ProjectContextFile: drops the train-into-dataset
+    // fields (extracted_chars, embedding_id, trained_into_dataset) and
+    // adds `bytes: Blob` so files are stored locally and re-extracted
+    // via /server/file at draft time. Old project rows are normalized
+    // at read time by getContextItems(): file entries missing `bytes`
+    // are dropped with a one-time toast asking the user to re-attach.
+    this.version(5).stores({
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',

@@ -108,6 +108,60 @@ describe('share bundle', () => {
     expect(bundle.drafts).toBeUndefined();
   });
 
+  it('round-trips file context items including the bytes via base64', async () => {
+    const t = makeTemplate('tpl', 'T');
+    const fileBytes = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]);
+    const project: ProjectRecord = {
+      id: 'p',
+      name: 'P',
+      description: 'subject',
+      template_ids: ['tpl'],
+      reference_dataset_names: [],
+      shared_inputs: {},
+      model_overrides: {},
+      live_search: 0,
+      context_items: [
+        {
+          kind: 'note',
+          id: 'n1',
+          role: 'user',
+          text: 'a chat note',
+          created_at: '2026-04-08T12:00:00.000Z',
+        },
+        {
+          kind: 'file',
+          id: 'f1',
+          filename: 'reference.docx',
+          mime_type: 'application/octet-stream',
+          size_bytes: fileBytes.length,
+          bytes: new Blob([fileBytes]),
+          created_at: '2026-04-08T12:00:00.000Z',
+        },
+      ],
+      created_at: '',
+      updated_at: '',
+    };
+
+    const bundle = await buildProjectBundle(project, [t], []);
+    const json = JSON.stringify(bundle);
+    const parsed = JSON.parse(json);
+
+    // The note round-trips verbatim
+    const items = parsed.project.context_items as Array<Record<string, unknown>>;
+    expect(items).toHaveLength(2);
+    const note = items.find((i) => i.kind === 'note');
+    expect(note).toBeDefined();
+    expect(note?.text).toBe('a chat note');
+
+    // The file round-trips with bytes_base64 instead of a Blob
+    const file = items.find((i) => i.kind === 'file');
+    expect(file).toBeDefined();
+    expect(file?.filename).toBe('reference.docx');
+    expect(typeof file?.bytes_base64).toBe('string');
+    expect((file?.bytes_base64 as string).length).toBeGreaterThan(0);
+    expect(file?.size_bytes).toBe(fileBytes.length);
+  });
+
   it('includes drafts when includeDrafts is set', async () => {
     const t = makeTemplate('tpl_d', 'D');
     const project: ProjectRecord = {

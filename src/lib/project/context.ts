@@ -1,24 +1,23 @@
-// Project context — chat notes and file attachments.
+// Project context — chat notes and inlined-file references.
 //
-// Two flavors live on the project record:
+// Two flavors live on the project record, both inlined directly into
+// every drafting prompt:
 //
-//   1. Notes: short user-authored chat messages. Inlined verbatim into
-//      every drafting prompt as a PROJECT CONTEXT block. Cheap and
-//      high-signal.
+//   1. Notes: short user-authored chat messages (quotes, salient
+//      characteristics, scope hints). Inlined verbatim, no Ask Sage
+//      round-trip.
 //
-//   2. Files: reference documents the user attached. We hand the bytes
-//      to Ask Sage's /server/file endpoint, which runs its own
-//      extractor (DOCX, PDF, audio, video, etc.) and returns the text
-//      inline. We then call /server/train with force_dataset set to
-//      the project's owned dataset name. From that point on, every
-//      drafting call's /server/query passes that dataset name and Ask
-//      Sage's RAG handles retrieval.
+//   2. Files: reference documents the user attached. We store the raw
+//      bytes locally as a Blob on the project row. At drafting time,
+//      lib/draft/orchestrator uploads each file to /server/file ONCE
+//      per draft run, caches the extracted text in memory, and feeds
+//      it into every per-section prompt. The model literally sees the
+//      reference content — no chunking, no caps, no RAG opacity.
 //
-// This module owns NONE of the parsing or chunking — Ask Sage does it
-// all. We just store metadata locally so the UI can list and remove
-// attachments.
+// This module owns the local storage + render side. The actual
+// extraction at draft time lives in lib/draft/orchestrator so it can
+// be cached for the duration of one drafting run.
 
-import type { AskSageClient } from '../asksage/client';
 import {
   db,
   type ProjectContextFile,
@@ -27,18 +26,35 @@ import {
   type ProjectRecord,
 } from '../db/schema';
 
-/** Hard upper bound on the per-attachment file size (Ask Sage's own limit). */
+/** Ask Sage's hard cap on document upload size. */
 export const MAX_DOC_BYTES = 250 * 1024 * 1024; // 250 MB
+/** Ask Sage's hard cap on audio/video upload size. */
 export const MAX_AV_BYTES = 500 * 1024 * 1024; // 500 MB
 
 // ─── Read helpers ─────────────────────────────────────────────────
 
+/**
+ * Always-defined accessor for a project's context items. Also performs
+ * the v4 → v5 normalization: file entries from the old train-into-
+ * dataset shape (which lacked `bytes`) are dropped silently. The UI
+ * surfaces a one-time toast separately when it detects the same
+ * condition so the user knows to re-attach.
+ */
 export function getContextItems(project: ProjectRecord): ProjectContextItem[] {
-  return project.context_items ?? [];
+  const items = project.context_items ?? [];
+  return items.filter((i) => i.kind !== 'file' || isV5File(i));
 }
 
-export function getProjectDataset(project: ProjectRecord): string | null {
-  return project.dataset_name ?? null;
+/**
+ * True if `project.context_items` contains any v4-shaped file entry
+ * (no `bytes` field). Used by the UI to show a re-attach warning.
+ */
+export function hasOrphanedV4Files(project: ProjectRecord): boolean {
+  return (project.context_items ?? []).some((i) => i.kind === 'file' && !isV5File(i));
+}
+
+function isV5File(item: ProjectContextItem): boolean {
+  return item.kind === 'file' && item.bytes instanceof Blob;
 }
 
 // ─── Mutators ─────────────────────────────────────────────────────
@@ -61,94 +77,57 @@ export async function addProjectNote(
   await mutateContext(projectId, (items) => [...items, note]);
 }
 
-/** Set or clear the project's owned Ask Sage dataset name. */
-export async function setProjectDataset(
-  projectId: string,
-  datasetName: string | null,
-): Promise<void> {
-  const project = await db.projects.get(projectId);
-  if (!project) throw new Error(`Project not found: ${projectId}`);
-  await db.projects.put({
-    ...project,
-    dataset_name: datasetName ?? null,
-    updated_at: new Date().toISOString(),
-  });
-}
-
 /**
- * Attach a file to a project: upload to Ask Sage, train into the
- * project's dataset, record the metadata locally.
- *
- * Throws if the project doesn't have a dataset_name set yet — pick or
- * create one in the UI before calling this. The two-step error message
- * is intentional so the caller can render a clear "set a dataset
- * first" affordance.
+ * Attach a file to the project. The bytes are stored as a Blob on the
+ * project row; no Ask Sage call happens here. Drafting will upload
+ * via /server/file ONCE per run and cache the extracted text in
+ * memory for all section calls.
  */
 export async function attachProjectFile(
-  client: AskSageClient,
   projectId: string,
   file: File,
 ): Promise<ProjectContextFile> {
   const project = await db.projects.get(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
-  const dataset = getProjectDataset(project);
-  if (!dataset) {
-    throw new Error(
-      'This project has no Ask Sage dataset yet. Pick or create one in the Project context section before attaching files.',
-    );
-  }
 
-  // Size guard. We err on the side of the more permissive A/V limit
-  // since /server/file accepts both shapes; Ask Sage will reject if
-  // we're wrong about the type.
   if (file.size > MAX_AV_BYTES) {
     throw new Error(
-      `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Ask Sage hard cap is ${(MAX_AV_BYTES / 1024 / 1024).toFixed(0)} MB for audio/video and ${(MAX_DOC_BYTES / 1024 / 1024).toFixed(0)} MB for documents.`,
+      `File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Ask Sage hard caps are ${(MAX_DOC_BYTES / 1024 / 1024).toFixed(0)} MB for documents and ${(MAX_AV_BYTES / 1024 / 1024).toFixed(0)} MB for audio/video.`,
     );
   }
 
-  // Step 1 — upload, get extracted text back inline.
-  const upload = await client.uploadFile(file);
-  const extracted = (upload.ret ?? '').trim();
-  if (!extracted) {
-    throw new Error(
-      `Ask Sage returned no extractable text from ${file.name}. The file may be empty, image-only, or in an unsupported format.`,
-    );
-  }
+  // Wrap the File in a Blob so the type system stops conflating the
+  // two — File extends Blob in the browser but jsdom's shim is fussier
+  // about that distinction in tests.
+  const bytes = new Blob([file], { type: file.type });
 
-  // Step 2 — train into the project's dataset. Ask Sage handles
-  // chunking, embedding, and storage.
-  const train = await client.train({
-    context: `Project ${projectId} attachment: ${file.name}`,
-    content: extracted,
-    force_dataset: dataset,
-  });
-
-  // Step 3 — persist metadata locally so the UI can list it.
   const item: ProjectContextFile = {
     kind: 'file',
     id: newId('file'),
     filename: file.name,
     mime_type: file.type || guessMime(file.name),
     size_bytes: file.size,
-    extracted_chars: extracted.length,
-    embedding_id: train.embedding,
-    trained_into_dataset: dataset,
+    bytes,
     created_at: new Date().toISOString(),
   };
   await mutateContext(projectId, (items) => [...items, item]);
   return item;
 }
 
-/**
- * Remove a context item from the project record. NOTE: for files this
- * only removes the local registry entry — the trained content stays in
- * the Ask Sage dataset. We don't have a /server/* endpoint that can
- * delete a single embedding by id (only /user/delete-filename-from-dataset,
- * which is CORS-blocked). Document this in the UI.
- */
+/** Remove a context item by id. */
 export async function removeContextItem(projectId: string, itemId: string): Promise<void> {
   await mutateContext(projectId, (items) => items.filter((i) => i.id !== itemId));
+}
+
+/**
+ * Drop every v4-shaped file record from a project. Called when the
+ * user clicks "Clear orphaned files" in the migration warning UI so
+ * the warning goes away.
+ */
+export async function clearOrphanedFiles(projectId: string): Promise<void> {
+  await mutateContext(projectId, (items) =>
+    items.filter((i) => i.kind !== 'file' || isV5File(i)),
+  );
 }
 
 async function mutateContext(
@@ -157,7 +136,9 @@ async function mutateContext(
 ): Promise<void> {
   const project = await db.projects.get(projectId);
   if (!project) throw new Error(`Project not found: ${projectId}`);
-  const next = mutator(getContextItems(project));
+  // Important: read the RAW context_items here, not via getContextItems,
+  // so a write doesn't accidentally drop other rows during migration.
+  const next = mutator(project.context_items ?? []);
   await db.projects.put({
     ...project,
     context_items: next,
@@ -165,29 +146,72 @@ async function mutateContext(
   });
 }
 
-// ─── Prompt rendering (notes only) ────────────────────────────────
+// ─── Prompt rendering ─────────────────────────────────────────────
 
 /**
- * Render the project's chat notes as a PROJECT CONTEXT block to inline
- * into the drafting prompt. Files are NOT included here — they reach
- * the LLM via the dataset/RAG path. Returns null if there are no
- * notes.
+ * Render the project's chat notes as a NOTES block to inline into the
+ * drafting prompt. Returns null if there are no notes. Files are
+ * rendered separately by `renderInlinedReferences` so the orchestrator
+ * can pass extracted text in (we don't have it here).
  */
-export function renderContextBlock(items: ProjectContextItem[]): string | null {
+export function renderNotesBlock(items: ProjectContextItem[]): string | null {
   const notes = items.filter((i): i is ProjectContextNote => i.kind === 'note');
   if (notes.length === 0) return null;
 
   const lines: string[] = [];
-  lines.push(`=== PROJECT CONTEXT NOTES ===`);
+  lines.push(`=== PROJECT NOTES ===`);
   lines.push(
-    `User-authored guidance for this project. Treat as authoritative scope and tone hints. Where these conflict with the template's section spec, the section spec wins.`,
+    `Short user-authored guidance for this project. Treat as authoritative scope and tone hints. Where these conflict with the section spec, the SUBJECT block above is authoritative.`,
   );
   for (const n of notes) {
     lines.push(``);
     lines.push(`--- Note (${n.role}, ${n.created_at}) ---`);
     lines.push(n.text);
   }
-  lines.push(`=== END PROJECT CONTEXT NOTES ===`);
+  lines.push(`=== END PROJECT NOTES ===`);
+  return lines.join('\n');
+}
+
+/**
+ * Render attached files as an INLINED REFERENCES block. The
+ * orchestrator passes a Map<fileId, extractedText> populated by a
+ * single /server/file pass at the start of the drafting run.
+ *
+ * Files with no extracted text (e.g., extraction failed for one but
+ * not others) are skipped. Returns null if zero usable files.
+ */
+export function renderInlinedReferences(
+  items: ProjectContextItem[],
+  extractedById: Map<string, string>,
+): string | null {
+  const files = items.filter((i): i is ProjectContextFile => i.kind === 'file');
+  const usable = files.filter((f) => {
+    const text = extractedById.get(f.id);
+    return text && text.trim().length > 0;
+  });
+  if (usable.length === 0) return null;
+
+  const totalChars = usable.reduce(
+    (acc, f) => acc + (extractedById.get(f.id)?.length ?? 0),
+    0,
+  );
+
+  const lines: string[] = [];
+  lines.push(
+    `=== ATTACHED REFERENCES (${usable.length} file${usable.length === 1 ? '' : 's'}, ${totalChars.toLocaleString()} chars) ===`,
+  );
+  lines.push(
+    `These are the user's source documents for this project. Use them as authoritative subject-matter content. Quote, paraphrase, and synthesize from them as needed. Do NOT invent facts that aren't grounded in this material or the SUBJECT statement above.`,
+  );
+  for (const f of usable) {
+    const text = extractedById.get(f.id) ?? '';
+    lines.push(``);
+    lines.push(
+      `--- File: ${f.filename} (${f.mime_type}, ${f.size_bytes.toLocaleString()} bytes, ${text.length.toLocaleString()} chars extracted) ---`,
+    );
+    lines.push(text);
+  }
+  lines.push(`=== END ATTACHED REFERENCES ===`);
   return lines.join('\n');
 }
 
@@ -200,6 +224,7 @@ function guessMime(filename: string): string {
   if (lower.endsWith('.pdf')) return 'application/pdf';
   if (lower.endsWith('.txt')) return 'text/plain';
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'text/markdown';
+  if (lower.endsWith('.csv')) return 'text/csv';
   return 'application/octet-stream';
 }
 
@@ -207,22 +232,4 @@ function newId(prefix: string): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
     return `${prefix}_${crypto.randomUUID()}`;
   return `${prefix}_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
-}
-
-// ─── Dataset name suggestion ──────────────────────────────────────
-
-/**
- * Suggest a dataset name for a new project. Ask Sage's stored format
- * is `user_custom_<USERID>_<NAME>_content`, but we don't always know
- * the user id (no /user/* surface). Instead we suggest a clean,
- * project-derived stem and let `force_dataset` route content into
- * whatever name the server actually creates.
- */
-export function suggestDatasetName(projectName: string): string {
-  const slug = projectName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 40);
-  return `asd_${slug || 'project'}`;
 }
