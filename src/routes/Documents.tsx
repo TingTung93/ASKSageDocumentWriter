@@ -4,11 +4,11 @@
 // applied. The whole workflow lives in this single route file because
 // it's small and self-contained.
 
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useEffect, useState, type ChangeEvent, type CSSProperties, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type DocumentRecord } from '../lib/db/schema';
-import { parseDocx } from '../lib/template/parser';
+import { parseDocx, type ParagraphInfo } from '../lib/template/parser';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { requestDocumentEdits } from '../lib/document/edit';
@@ -164,9 +164,32 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const [running, setRunning] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
+  const [paragraphs, setParagraphs] = useState<ParagraphInfo[] | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   const proposed = doc.edits.filter((e) => e.status === 'proposed');
   const accepted = doc.edits.filter((e) => e.status === 'accepted');
+
+  // Re-parse the stored DOCX whenever the selected document changes so
+  // we have paragraphs available for the preview AND for the next edit
+  // request (no double-parse).
+  useEffect(() => {
+    let cancelled = false;
+    setParagraphs(null);
+    setParseError(null);
+    parseDocx(doc.docx_bytes, { filename: doc.filename, docx_blob_id: 'preview' })
+      .then((res) => {
+        if (!cancelled) setParagraphs(res.paragraphs);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setParseError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.id, doc.docx_bytes, doc.filename]);
 
   async function onRequestEdits(e: FormEvent) {
     e.preventDefault();
@@ -174,26 +197,25 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       setRequestError('Connect on the Connection tab first.');
       return;
     }
+    if (!paragraphs) {
+      setRequestError('Document is still parsing. Try again in a moment.');
+      return;
+    }
     setRequestError(null);
     setRunning(true);
     // eslint-disable-next-line no-console
     console.info(`[DocumentDetail] requesting cleanup edits for ${doc.id}`);
     try {
-      // Re-parse from stored bytes to get fresh paragraphs
-      const parsed = await parseDocx(doc.docx_bytes, {
-        filename: doc.filename,
-        docx_blob_id: 'reparse',
-      });
       const client = new AskSageClient(baseUrl, apiKey);
       const result = await requestDocumentEdits(client, {
         document_name: doc.name,
-        paragraphs: parsed.paragraphs,
+        paragraphs,
         instruction: instruction.trim(),
       });
 
       // Build a quick lookup from index → original text for diff display
       const originalByIndex = new Map<number, string>();
-      for (const p of parsed.paragraphs) originalByIndex.set(p.index, p.text);
+      for (const p of paragraphs) originalByIndex.set(p.index, p.text);
 
       const newEdits: ParagraphEdit[] = result.valid_edits.map((e) => ({
         index: e.index,
@@ -286,6 +308,20 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         {new Date(doc.ingested_at).toLocaleString()}
       </p>
 
+      <h3>Document preview</h3>
+      <p className="note">
+        Approximate rendering of the parsed paragraphs with their styles
+        applied. Paragraphs with accepted edits show the new text and a
+        green left border. Paragraphs with proposed edits keep the
+        original text and show an amber border. Click any highlighted
+        paragraph to scroll to its diff card below.
+      </p>
+      {parseError && <div className="error">Preview parse failed: {parseError}</div>}
+      {!paragraphs && !parseError && <p className="note">Parsing for preview…</p>}
+      {paragraphs && (
+        <DocumentPreview paragraphs={paragraphs} edits={doc.edits} />
+      )}
+
       <h3>Cleanup pass</h3>
       <form onSubmit={onRequestEdits}>
         <label htmlFor="cleanup-instruction">Instruction</label>
@@ -340,7 +376,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       {[...proposed, ...accepted]
         .sort((a, b) => a.index - b.index)
         .map((e) => (
-          <EditCard key={`${e.index}-${e.status}`} edit={e} onSetStatus={onSetStatus} />
+          <EditCard
+            key={`${e.index}-${e.status}`}
+            edit={e}
+            onSetStatus={onSetStatus}
+            anchorId={`edit-${e.index}`}
+          />
         ))}
 
       <h3>Export</h3>
@@ -366,9 +407,11 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
 function EditCard({
   edit,
   onSetStatus,
+  anchorId,
 }: {
   edit: ParagraphEdit;
   onSetStatus: (index: number, status: ParagraphEdit['status']) => void;
+  anchorId?: string;
 }) {
   const isAccepted = edit.status === 'accepted';
   const borderColor = isAccepted ? '#0a0' : '#d4a000';
@@ -376,6 +419,7 @@ function EditCard({
 
   return (
     <div
+      id={anchorId}
       style={{
         marginBottom: '0.5rem',
         padding: '0.5rem 0.75rem',
@@ -453,6 +497,252 @@ function DiffView({ before, after }: { before: string; after: string }) {
           {after}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Document preview rendering ───────────────────────────────────
+//
+// Approximates how the parsed DOCX would look in Word, using the
+// per-paragraph properties the parser already extracts (style_name,
+// alignment, indent_left_twips, bold, italic, numbering, table). Not
+// pixel-perfect — the goal is "readable approximation" so the user can
+// see what the document actually contains while reviewing edits.
+
+function DocumentPreview({
+  paragraphs,
+  edits,
+}: {
+  paragraphs: ParagraphInfo[];
+  edits: ParagraphEdit[];
+}) {
+  const editsByIndex = new Map<number, ParagraphEdit>();
+  for (const e of edits) editsByIndex.set(e.index, e);
+
+  function scrollToEdit(index: number) {
+    const el = document.getElementById(`edit-${index}`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  return (
+    <div
+      style={{
+        background: '#fff',
+        border: '1px solid #ccc',
+        borderRadius: 4,
+        padding: '1.5rem 2rem',
+        marginBottom: '1rem',
+        maxHeight: '70vh',
+        overflow: 'auto',
+        fontFamily: '"Times New Roman", Cambria, Georgia, serif',
+        fontSize: 14,
+        lineHeight: 1.5,
+        color: '#1a1a1a',
+      }}
+    >
+      {paragraphs.map((p) => (
+        <PreviewParagraph
+          key={p.index}
+          paragraph={p}
+          edit={editsByIndex.get(p.index)}
+          onClick={() => scrollToEdit(p.index)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PreviewParagraph({
+  paragraph,
+  edit,
+  onClick,
+}: {
+  paragraph: ParagraphInfo;
+  edit: ParagraphEdit | undefined;
+  onClick: () => void;
+}) {
+  // Determine which text to display: accepted edits show the new text;
+  // proposed and rejected edits keep the original (so the user can see
+  // the as-uploaded state until they accept).
+  const displayText =
+    edit?.status === 'accepted' ? edit.new_text : paragraph.text;
+
+  // Style mapping. We use the parser's style_id to detect headings and
+  // approximate sizes. Word uses "heading 1" / "Heading1" / "Heading 1 Char"
+  // depending on the template — match them all.
+  const styleId = paragraph.style_id ?? '';
+  const styleLower = styleId.toLowerCase();
+  let headingLevel: number | null = null;
+  const m = styleLower.match(/^heading\s*(\d+)/);
+  if (m) headingLevel = Math.min(6, Math.max(1, parseInt(m[1]!, 10)));
+  const isTitle = styleLower === 'title';
+  const isSubtitle = styleLower === 'subtitle';
+
+  // Indent: 1440 twips = 1 inch ≈ 96 px
+  const indentPx = paragraph.indent_left_twips
+    ? Math.min(96 * 4, Math.round((paragraph.indent_left_twips / 1440) * 96))
+    : 0;
+
+  const alignment: CSSProperties['textAlign'] =
+    paragraph.alignment === 'center'
+      ? 'center'
+      : paragraph.alignment === 'right'
+        ? 'right'
+        : paragraph.alignment === 'justify' || paragraph.alignment === 'both'
+          ? 'justify'
+          : 'left';
+
+  // Compose the inline text style
+  const textStyle: CSSProperties = {
+    margin: 0,
+    paddingLeft: indentPx,
+    textAlign: alignment,
+    fontWeight: paragraph.bold || headingLevel !== null || isTitle ? 700 : 400,
+    fontStyle: paragraph.italic ? 'italic' : 'normal',
+  };
+
+  if (isTitle) {
+    textStyle.fontSize = '1.6em';
+  } else if (isSubtitle) {
+    textStyle.fontSize = '1.2em';
+    textStyle.color = '#555';
+  } else if (headingLevel !== null) {
+    textStyle.fontSize = `${1.45 - (headingLevel - 1) * 0.15}em`;
+    textStyle.marginTop = '0.6em';
+    textStyle.marginBottom = '0.2em';
+  } else {
+    textStyle.marginBottom = '0.45em';
+  }
+
+  // Wrapper style — highlights edited paragraphs
+  const wrapperBorder =
+    edit?.status === 'accepted'
+      ? '#0a0'
+      : edit?.status === 'proposed'
+        ? '#d4a000'
+        : 'transparent';
+  const wrapperBg =
+    edit?.status === 'accepted'
+      ? 'rgba(0, 170, 0, 0.06)'
+      : edit?.status === 'proposed'
+        ? 'rgba(212, 160, 0, 0.08)'
+        : 'transparent';
+
+  return (
+    <div
+      onClick={edit ? onClick : undefined}
+      title={edit ? `Click to view edit for paragraph ${paragraph.index}` : undefined}
+      style={{
+        position: 'relative',
+        borderLeft: `3px solid ${wrapperBorder}`,
+        background: wrapperBg,
+        padding: '0.1rem 0.5rem 0.1rem 0.75rem',
+        marginLeft: -8,
+        marginBottom: 2,
+        cursor: edit ? 'pointer' : 'default',
+        borderRadius: 2,
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          left: -36,
+          top: '0.25em',
+          fontSize: 10,
+          color: '#aaa',
+          fontFamily: 'ui-monospace, Consolas, monospace',
+          width: 28,
+          textAlign: 'right',
+        }}
+      >
+        {paragraph.index}
+      </span>
+      {paragraph.in_table && (
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: 9,
+            background: '#eef',
+            color: '#446',
+            padding: '0 4px',
+            borderRadius: 2,
+            marginRight: 4,
+            verticalAlign: 'middle',
+          }}
+        >
+          table
+        </span>
+      )}
+      {paragraph.content_control_tag && (
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: 9,
+            background: '#fde',
+            color: '#933',
+            padding: '0 4px',
+            borderRadius: 2,
+            marginRight: 4,
+            verticalAlign: 'middle',
+          }}
+          title={`Word content control: ${paragraph.content_control_tag}`}
+        >
+          sdt:{paragraph.content_control_tag}
+        </span>
+      )}
+      {paragraph.numbering_id !== null && (
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: 9,
+            background: '#efe',
+            color: '#363',
+            padding: '0 4px',
+            borderRadius: 2,
+            marginRight: 4,
+            verticalAlign: 'middle',
+          }}
+        >
+          list·{paragraph.numbering_level ?? 0}
+        </span>
+      )}
+      {edit?.status === 'accepted' && (
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: 9,
+            background: '#0a0',
+            color: '#fff',
+            padding: '0 4px',
+            borderRadius: 2,
+            marginRight: 4,
+            verticalAlign: 'middle',
+          }}
+        >
+          ✓ edited
+        </span>
+      )}
+      {edit?.status === 'proposed' && (
+        <span
+          style={{
+            display: 'inline-block',
+            fontSize: 9,
+            background: '#d4a000',
+            color: '#fff',
+            padding: '0 4px',
+            borderRadius: 2,
+            marginRight: 4,
+            verticalAlign: 'middle',
+          }}
+        >
+          ? proposed
+        </span>
+      )}
+      {displayText.trim().length === 0 ? (
+        <span style={{ color: '#bbb', fontStyle: 'italic', fontSize: 11 }}>(empty)</span>
+      ) : (
+        <span style={textStyle}>{displayText}</span>
+      )}
     </div>
   );
 }
