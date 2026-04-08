@@ -8,7 +8,11 @@ import { useEffect, useState, type ChangeEvent, type CSSProperties, type FormEve
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type DocumentRecord } from '../lib/db/schema';
-import { parseDocx, type ParagraphInfo } from '../lib/template/parser';
+import {
+  parseDocx,
+  type HeaderFooterPartContent,
+  type ParagraphInfo,
+} from '../lib/template/parser';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { requestDocumentEdits } from '../lib/document/edit';
@@ -165,6 +169,8 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
   const [paragraphs, setParagraphs] = useState<ParagraphInfo[] | null>(null);
+  const [headerParts, setHeaderParts] = useState<HeaderFooterPartContent[]>([]);
+  const [footerParts, setFooterParts] = useState<HeaderFooterPartContent[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
 
   const proposed = doc.edits.filter((e) => e.status === 'proposed');
@@ -176,10 +182,15 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   useEffect(() => {
     let cancelled = false;
     setParagraphs(null);
+    setHeaderParts([]);
+    setFooterParts([]);
     setParseError(null);
     parseDocx(doc.docx_bytes, { filename: doc.filename, docx_blob_id: 'preview' })
       .then((res) => {
-        if (!cancelled) setParagraphs(res.paragraphs);
+        if (cancelled) return;
+        setParagraphs(res.paragraphs);
+        setHeaderParts(res.header_parts);
+        setFooterParts(res.footer_parts);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -319,7 +330,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       {parseError && <div className="error">Preview parse failed: {parseError}</div>}
       {!paragraphs && !parseError && <p className="note">Parsing for preview…</p>}
       {paragraphs && (
-        <DocumentPreview paragraphs={paragraphs} edits={doc.edits} />
+        <DocumentPreview
+          paragraphs={paragraphs}
+          headerParts={headerParts}
+          footerParts={footerParts}
+          edits={doc.edits}
+        />
       )}
 
       <h3>Cleanup pass</h3>
@@ -511,9 +527,13 @@ function DiffView({ before, after }: { before: string; after: string }) {
 
 function DocumentPreview({
   paragraphs,
+  headerParts,
+  footerParts,
   edits,
 }: {
   paragraphs: ParagraphInfo[];
+  headerParts: HeaderFooterPartContent[];
+  footerParts: HeaderFooterPartContent[];
   edits: ParagraphEdit[];
 }) {
   const editsByIndex = new Map<number, ParagraphEdit>();
@@ -540,12 +560,80 @@ function DocumentPreview({
         color: '#1a1a1a',
       }}
     >
+      {headerParts.map((hp) => (
+        <PartBlock
+          key={hp.part}
+          label={`HEADER · ${hp.label}`}
+          accentColor="#5566aa"
+          paragraphs={hp.paragraphs}
+        />
+      ))}
+
       {paragraphs.map((p) => (
         <PreviewParagraph
           key={p.index}
           paragraph={p}
           edit={editsByIndex.get(p.index)}
           onClick={() => scrollToEdit(p.index)}
+        />
+      ))}
+
+      {footerParts.map((fp) => (
+        <PartBlock
+          key={fp.part}
+          label={`FOOTER · ${fp.label}`}
+          accentColor="#666"
+          paragraphs={fp.paragraphs}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PartBlock({
+  label,
+  accentColor,
+  paragraphs,
+}: {
+  label: string;
+  accentColor: string;
+  paragraphs: ParagraphInfo[];
+}) {
+  return (
+    <div
+      style={{
+        margin: '0.5rem 0',
+        padding: '0.5rem 0.75rem',
+        background: '#f5f7fb',
+        border: `1px dashed ${accentColor}`,
+        borderRadius: 4,
+        fontSize: 13,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'ui-monospace, Consolas, monospace',
+          fontSize: 10,
+          color: accentColor,
+          letterSpacing: 0.5,
+          marginBottom: '0.4rem',
+          fontWeight: 600,
+        }}
+      >
+        {label}
+      </div>
+      {paragraphs.length === 0 && (
+        <div style={{ color: '#888', fontStyle: 'italic', fontSize: 11 }}>
+          (no paragraphs in this part)
+        </div>
+      )}
+      {paragraphs.map((p, i) => (
+        <PreviewParagraph
+          key={`${label}-${i}`}
+          paragraph={p}
+          edit={undefined}
+          onClick={() => undefined}
+          inHeaderFooter
         />
       ))}
     </div>
@@ -556,10 +644,12 @@ function PreviewParagraph({
   paragraph,
   edit,
   onClick,
+  inHeaderFooter = false,
 }: {
   paragraph: ParagraphInfo;
   edit: ParagraphEdit | undefined;
   onClick: () => void;
+  inHeaderFooter?: boolean;
 }) {
   // Determine which text to display: accepted edits show the new text;
   // proposed and rejected edits keep the original (so the user can see
@@ -592,13 +682,16 @@ function PreviewParagraph({
           ? 'justify'
           : 'left';
 
-  // Compose the inline text style
+  // Compose the inline text style. The whole-paragraph wrapper uses
+  // pre-wrap so tab and newline characters from <w:tab/>/<w:br/> in
+  // the parsed text actually show as visible whitespace.
   const textStyle: CSSProperties = {
     margin: 0,
     paddingLeft: indentPx,
     textAlign: alignment,
     fontWeight: paragraph.bold || headingLevel !== null || isTitle ? 700 : 400,
     fontStyle: paragraph.italic ? 'italic' : 'normal',
+    whiteSpace: 'pre-wrap',
   };
 
   if (isTitle) {
@@ -738,13 +831,24 @@ function PreviewParagraph({
           ? proposed
         </span>
       )}
-      {displayText.trim().length === 0 ? (
-        <span style={{ color: '#bbb', fontStyle: 'italic', fontSize: 11 }}>(empty)</span>
-      ) : (
-        <span style={textStyle}>{displayText}</span>
-      )}
+      {/*
+        Empty paragraphs in DOCX are intentional vertical spacing —
+        render them as a non-breaking space (single visible blank
+        line of normal height) instead of an "(empty)" placeholder.
+        Whitespace-only paragraphs (e.g. " ") fall through to the
+        same path because we use pre-wrap on the text span.
+      */}
+      <span style={textStyle}>
+        {displayText.length === 0 ? '\u00a0' : displayText}
+      </span>
     </div>
   );
+
+  // (return is above; this comment kept for clarity)
+  // The wrapper for header/footer paragraphs gets a slightly more
+  // compact style — no per-paragraph hover behavior since they
+  // aren't editable in v1.
+  void inHeaderFooter;
 }
 
 function triggerDownload(blob: Blob, filename: string): void {

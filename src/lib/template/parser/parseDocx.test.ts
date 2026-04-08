@@ -179,4 +179,43 @@ describe('parseDocx — real DHA templates', () => {
       }),
     ).rejects.toThrow();
   });
+
+  describe('header and footer parts', () => {
+    it('parses header part contents into ParagraphInfo lists for the policy memo', async () => {
+      const result = await parseDocx(loadFixture(DHA_POLICY_MEMO), {
+        filename: DHA_POLICY_MEMO,
+        docx_blob_id: 'fixture://memo',
+      });
+      expect(result.header_parts.length).toBeGreaterThan(0);
+      const totalHeaderParas = result.header_parts.reduce(
+        (acc, hp) => acc + hp.paragraphs.length,
+        0,
+      );
+      expect(totalHeaderParas).toBeGreaterThan(0);
+    });
+
+    it('parses footer part contents into ParagraphInfo lists for the policy memo', async () => {
+      const result = await parseDocx(loadFixture(DHA_POLICY_MEMO), {
+        filename: DHA_POLICY_MEMO,
+        docx_blob_id: 'fixture://memo',
+      });
+      expect(result.footer_parts.length).toBeGreaterThan(0);
+      const totalFooterParas = result.footer_parts.reduce(
+        (acc, fp) => acc + fp.paragraphs.length,
+        0,
+      );
+      expect(totalFooterParas).toBeGreaterThan(0);
+    });
+
+    it('header part labels are derived from the part filename', async () => {
+      const result = await parseDocx(loadFixture(DHA_POLICY_MEMO), {
+        filename: DHA_POLICY_MEMO,
+        docx_blob_id: 'fixture://memo',
+      });
+      for (const hp of result.header_parts) {
+        expect(hp.label).toMatch(/^header\d+$/i);
+        expect(hp.part).toMatch(/^word\/header\d+\.xml$/);
+      }
+    });
+  });
 });
