@@ -19,6 +19,10 @@ import { createLLMClient } from '../lib/provider/factory';
 import { requestDocumentEdits } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
+import { computeAnchor } from '../lib/document/anchors';
+import { DocxDiffPreview, type DocxDiffPreviewMode } from '../components/DocxDiffPreview';
+import { SelectionPopover } from '../components/SelectionPopover';
+import { runScopedEdit } from '../lib/document/scopedEdit';
 import {
   attachDocumentReference,
   removeDocumentReference,
@@ -195,6 +199,24 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const cleanupModelOverride = settings?.models.cleanup ?? null;
   const cost: CostAssumptions = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
   const [instruction, setInstruction] = useState('Review this document for grammar, language, clarity, and obvious errors. Propose surgical edits only — leave clean paragraphs alone.');
+  // Phase F (item #4): two-call pre-pass that first identifies which
+  // paragraphs need editing, then runs the fix pass narrowed to those
+  // paragraphs. Off by default to preserve legacy behavior; flip on
+  // for documents where the model is wasting attention scanning clean
+  // sections.
+  const [usePrepass, setUsePrepass] = useState(false);
+  // Phase F (item #2): how many chunks to process in parallel.
+  // Default 3 — empirically a good balance between wall-time speedup
+  // and rate-limit pressure on the health.mil tenant.
+  const [chunkConcurrency, setChunkConcurrency] = useState(3);
+  // Phase F (item #5): scoped/targeted edit popover state. The user
+  // picks a paragraph range, types an instruction, and the system
+  // fires ONE LLM call against that region. Result lands in the same
+  // accept/reject queue as the chunked pass.
+  const [scopedSelection, setScopedSelection] = useState<number[]>([]);
+  const [scopedPopoverOpen, setScopedPopoverOpen] = useState(false);
+  const [scopedRunning, setScopedRunning] = useState(false);
+  const [scopedRangeText, setScopedRangeText] = useState('');
   const [running, setRunning] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [exportInfo, setExportInfo] = useState<string | null>(null);
@@ -312,6 +334,8 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         ...(onAskSage && referenceFiles.length > 0
           ? { references: referenceFiles }
           : {}),
+        chunk_concurrency: chunkConcurrency,
+        use_prepass: usePrepass,
         on_chunk_done: (info) =>
           setChunkProgress({ done: info.chunk_index + 1, total: info.chunk_count }),
       });
@@ -322,18 +346,30 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
 
       // Convert each LLM-proposed op into a StoredEdit, capturing
       // before-state metadata so the diff cards have what they need.
+      // Also stamp a content-based anchor on the op so the writer can
+      // resolve it independently of integer-index drift caused by
+      // earlier structural ops in the same batch.
+      const paragraphsByIndex = new Map<number, ParagraphInfo>();
+      for (const p of paragraphs) paragraphsByIndex.set(p.index, p);
       const newEdits: StoredEdit[] = result.all_valid_ops.map((op, i) => {
         const id = `prop_${Date.now()}_${i}`;
         const created_at = new Date().toISOString();
-        const before_text = beforeTextForOp(op, paragraphs, originalByIndex);
-        const before_value = beforeValueForOp(op, paragraphs);
+        const targetParagraphIndex = targetIndexFor(op);
+        const targetParagraph =
+          targetParagraphIndex !== null ? paragraphsByIndex.get(targetParagraphIndex) : undefined;
+        const opWithAnchor: DocumentEditOp = targetParagraph
+          ? { ...op, anchor: computeAnchor(targetParagraph) }
+          : op;
+        const before_text = beforeTextForOp(opWithAnchor, paragraphs, originalByIndex);
+        const before_value = beforeValueForOp(opWithAnchor, paragraphs);
         return {
           id,
-          op,
+          op: opWithAnchor,
           status: 'proposed',
           before_text,
           before_value,
-          rationale: op.rationale,
+          rationale: opWithAnchor.rationale,
+          references_used: opWithAnchor.references_used,
           created_at,
         };
       });
@@ -405,6 +441,121 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         `Update failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  /**
+   * Item #5 — selection-driven targeted edit. Sends ONE LLM call
+   * scoped to a small range of paragraphs (parsed from the user's
+   * input), with the user's instruction as the dominant signal.
+   * Result ops land in the same accept/reject queue as the chunked
+   * pass.
+   */
+  async function onScopedEdit(instruction: string) {
+    if (!apiKey) {
+      toast.error('Connect on the Connection tab first.');
+      return;
+    }
+    if (!paragraphs) {
+      toast.error('Document is still parsing.');
+      return;
+    }
+    if (scopedSelection.length === 0) {
+      toast.error('No paragraph indices in the selection.');
+      return;
+    }
+    setScopedRunning(true);
+    try {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const result = await runScopedEdit(client, {
+        all_paragraphs: paragraphs,
+        selected_indices: scopedSelection,
+        instruction,
+      });
+      // Build StoredEdits with anchors, same shape as the chunked
+      // pass produces. Drop in next to existing proposed/accepted.
+      const originalByIndex = new Map<number, string>();
+      for (const p of paragraphs) originalByIndex.set(p.index, p.text);
+      const paragraphsByIndex = new Map<number, ParagraphInfo>();
+      for (const p of paragraphs) paragraphsByIndex.set(p.index, p);
+      const newEdits: StoredEdit[] = result.ops.map((op, i) => {
+        const id = `scoped_${Date.now()}_${i}`;
+        const targetIdx = targetIndexFor(op);
+        const targetParagraph =
+          targetIdx !== null ? paragraphsByIndex.get(targetIdx) : undefined;
+        const opWithAnchor: DocumentEditOp = targetParagraph
+          ? { ...op, anchor: computeAnchor(targetParagraph) }
+          : op;
+        return {
+          id,
+          op: opWithAnchor,
+          status: 'proposed',
+          before_text: beforeTextForOp(opWithAnchor, paragraphs, originalByIndex),
+          before_value: beforeValueForOp(opWithAnchor, paragraphs),
+          rationale: opWithAnchor.rationale,
+          references_used: opWithAnchor.references_used,
+          created_at: new Date().toISOString(),
+        };
+      });
+      const merged: StoredEdit[] = [...doc.edits, ...newEdits];
+      const updated: DocumentRecord = {
+        ...doc,
+        edits: merged,
+        last_edit_model: result.model,
+        total_tokens_in: doc.total_tokens_in + result.tokens_in,
+        total_tokens_out: doc.total_tokens_out + result.tokens_out,
+      };
+      await db.documents.put(updated);
+      if (newEdits.length === 0) {
+        toast.info('Scoped edit returned no changes — region looks clean.');
+      } else {
+        toast.success(
+          `Scoped edit produced ${newEdits.length} proposed edit${newEdits.length === 1 ? '' : 's'}`,
+        );
+      }
+      setScopedPopoverOpen(false);
+      setScopedSelection([]);
+      setScopedRangeText('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Scoped edit failed: ${message}`);
+    } finally {
+      setScopedRunning(false);
+    }
+  }
+
+  /**
+   * Parse a user-typed paragraph range like "37" or "37-42" or
+   * "5,7,9" into an array of unique indices that exist in the
+   * current paragraph list. Used by the targeted-fix entry point.
+   */
+  function parseRangeInput(input: string): number[] {
+    if (!paragraphs) return [];
+    const validIndices = new Set(paragraphs.map((p) => p.index));
+    const out = new Set<number>();
+    for (const part of input.split(/[,\s]+/).map((s) => s.trim()).filter((s) => s.length > 0)) {
+      const dashMatch = part.match(/^(\d+)-(\d+)$/);
+      if (dashMatch) {
+        const start = Number(dashMatch[1]);
+        const end = Number(dashMatch[2]);
+        for (let i = Math.min(start, end); i <= Math.max(start, end); i++) {
+          if (validIndices.has(i)) out.add(i);
+        }
+        continue;
+      }
+      const single = Number(part);
+      if (Number.isFinite(single) && validIndices.has(single)) out.add(single);
+    }
+    return Array.from(out).sort((a, b) => a - b);
+  }
+
+  function onOpenScopedPopover() {
+    const indices = parseRangeInput(scopedRangeText);
+    if (indices.length === 0) {
+      toast.error('Enter at least one valid paragraph index (e.g. "37" or "37-42" or "5,7,9").');
+      return;
+    }
+    setScopedSelection(indices);
+    setScopedPopoverOpen(true);
   }
 
   async function onSetStatus(id: string, status: StoredEdit['status']) {
@@ -544,6 +695,69 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           formal and consistent"</em> · <em>"Convert active voice to passive
           voice for the procedure section"</em>
         </p>
+
+        <details style={{ marginTop: '0.5rem' }}>
+          <summary className="note" style={{ cursor: 'pointer' }}>
+            Advanced cleanup options
+          </summary>
+          <div className="row" style={{ marginTop: '0.4rem', flexWrap: 'wrap', gap: '0.6rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 400, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={usePrepass}
+                onChange={(e) => setUsePrepass(e.target.checked)}
+                style={{ width: 'auto' }}
+                disabled={running}
+              />
+              Use pre-pass (identify problem paragraphs first, then narrow the fix pass)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 400, fontSize: 12 }}>
+              Chunk concurrency:
+              <select
+                value={chunkConcurrency}
+                onChange={(e) => setChunkConcurrency(Number(e.target.value))}
+                style={{ flex: '0 0 5rem' }}
+                disabled={running}
+              >
+                <option value="1">1 (sequential)</option>
+                <option value="2">2</option>
+                <option value="3">3 (default)</option>
+                <option value="5">5</option>
+              </select>
+            </label>
+          </div>
+          <p className="note" style={{ marginTop: '0.3rem' }}>
+            Pre-pass adds one cheap LLM call per chunk to identify which paragraphs need editing, then narrows the fix pass to those plus a small neighbor window. Total tokens are usually lower than the single-pass approach because the fix pass has less to read. Concurrency controls how many chunks process in parallel.
+          </p>
+        </details>
+
+        <details style={{ marginTop: '0.5rem' }}>
+          <summary className="note" style={{ cursor: 'pointer' }}>
+            Targeted fix (one-shot edit on a specific paragraph range)
+          </summary>
+          <div className="row" style={{ marginTop: '0.4rem', gap: '0.4rem', alignItems: 'center' }}>
+            <input
+              type="text"
+              value={scopedRangeText}
+              onChange={(e) => setScopedRangeText(e.target.value)}
+              placeholder='e.g. "37" or "37-42" or "5,7,9"'
+              style={{ flex: 1, minWidth: 200 }}
+              disabled={scopedRunning || running || !apiKey}
+            />
+            <button
+              type="button"
+              className="btn-secondary btn-sm"
+              onClick={onOpenScopedPopover}
+              disabled={scopedRunning || running || !apiKey || !paragraphs}
+            >
+              fix this region…
+            </button>
+          </div>
+          <p className="note" style={{ marginTop: '0.3rem' }}>
+            Cheaper and faster than the full cleanup pass. The system sends just the selected paragraphs (plus a small context window) to the LLM with a one-line instruction you provide. Result lands in the same accept/reject queue below.
+          </p>
+        </details>
+
         <button type="submit" disabled={running || !apiKey}>
           {running ? (
             <Spinner
@@ -560,6 +774,37 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         </button>
       </form>
       {requestError && <div className="error">Request failed: {requestError}</div>}
+
+      {scopedPopoverOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.2)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          onClick={(e) => {
+            // Click outside the popover dismisses
+            if (e.target === e.currentTarget) {
+              setScopedPopoverOpen(false);
+            }
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()}>
+            <SelectionPopover
+              anchorTop={0}
+              anchorLeft={0}
+              selectedIndices={scopedSelection}
+              onSubmit={(instr) => void onScopedEdit(instr)}
+              onCancel={() => setScopedPopoverOpen(false)}
+              loading={scopedRunning}
+            />
+          </div>
+        </div>
+      )}
 
       <h3>
         Proposed edits ({proposed.length}) · Accepted ({accepted.length})
@@ -825,7 +1070,16 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
  * control). Used for highlighting paragraphs in the document preview.
  */
 function paragraphAnchorOf(edit: StoredEdit): number | null {
-  const op = edit.op;
+  return targetIndexFor(edit.op);
+}
+
+/**
+ * Returns the absolute paragraph index a document edit op targets,
+ * or null if the op targets a non-paragraph element (table cell,
+ * content control). Used both for the inline preview anchor and for
+ * stamping a content-based anchor at op-creation time.
+ */
+function targetIndexFor(op: DocumentEditOp): number | null {
   switch (op.op) {
     case 'replace_paragraph_text':
     case 'set_paragraph_style':
@@ -1046,6 +1300,62 @@ function EditCard({
           <em>{edit.rationale}</em>
         </p>
       )}
+      {edit.references_used && edit.references_used.length > 0 && (
+        <CitationList citations={edit.references_used} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render the citations the LLM emitted alongside an edit. Each
+ * citation is a small chip showing the source filename + an
+ * expandable verbatim excerpt + the model's one-line rationale.
+ * Citations are advisory — they're spot-checks for the user, not a
+ * load-bearing trust mechanism.
+ */
+function CitationList({ citations }: { citations: NonNullable<StoredEdit['references_used']> }) {
+  return (
+    <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+      {citations.map((c, i) => (
+        <details
+          key={i}
+          style={{
+            background: 'var(--color-surface-alt)',
+            border: '1px solid var(--color-border)',
+            borderLeft: '3px solid var(--color-primary)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.3rem 0.5rem',
+            fontSize: 11,
+          }}
+        >
+          <summary style={{ cursor: 'pointer' }}>
+            📎 cited from <strong>{c.source_filename}</strong>
+            {c.rationale && (
+              <span style={{ color: 'var(--color-text-muted)', marginLeft: '0.5rem' }}>
+                — {c.rationale}
+              </span>
+            )}
+          </summary>
+          <pre
+            style={{
+              marginTop: '0.4rem',
+              padding: '0.4rem 0.6rem',
+              background: 'var(--color-surface)',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-sm)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              maxHeight: 120,
+              overflow: 'auto',
+            }}
+          >
+            {c.excerpt}
+          </pre>
+        </details>
+      ))}
     </div>
   );
 }
@@ -1251,11 +1561,12 @@ function PreviewTabs({
   footerParts: HeaderFooterPartContent[];
   parseError: string | null;
 }) {
-  const [tab, setTab] = useState<'visual' | 'editable'>('visual');
+  const [tab, setTab] = useState<'visual' | 'diff' | 'editable'>('visual');
+  const [diffMode, setDiffMode] = useState<DocxDiffPreviewMode>('with_accepted');
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem' }}>
+      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
         <button
           type="button"
           onClick={() => setTab('visual')}
@@ -1269,7 +1580,22 @@ function PreviewTabs({
             fontSize: 12,
           }}
         >
-          Visual (docx-preview)
+          Visual
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('diff')}
+          style={{
+            margin: 0,
+            padding: '0.35rem 0.75rem',
+            background: tab === 'diff' ? '#2050a0' : '#ddd',
+            color: tab === 'diff' ? '#fff' : '#333',
+            borderColor: tab === 'diff' ? '#2050a0' : '#bbb',
+            fontWeight: 600,
+            fontSize: 12,
+          }}
+        >
+          Diff preview
         </button>
         <button
           type="button"
@@ -1288,11 +1614,31 @@ function PreviewTabs({
         </button>
       </div>
       <p className="note" style={{ marginTop: 0 }}>
-        {tab === 'visual'
-          ? 'High-fidelity render via docx-preview. Read-only — switch to Editable to navigate edits paragraph-by-paragraph.'
-          : 'Data-driven render of parsed paragraphs. Lower fidelity but every paragraph is clickable. Accepted edits show the new text in green; proposed edits show the original text in amber.'}
+        {tab === 'visual' &&
+          'High-fidelity render via docx-preview. Read-only — switch to Diff preview to see proposed edits applied.'}
+        {tab === 'diff' &&
+          'Speculative render with the LLM-proposed edits applied. Toggle the mode below to compare against the original or to see inline insert/delete coloring.'}
+        {tab === 'editable' &&
+          'Data-driven render of parsed paragraphs. Lower fidelity but every paragraph is clickable. Accepted edits show the new text in green; proposed edits show the original text in amber.'}
       </p>
       {tab === 'visual' && <VisualPreview doc={doc} />}
+      {tab === 'diff' && (
+        <div>
+          <div className="row" style={{ marginBottom: '0.5rem', gap: '0.4rem' }}>
+            <label style={{ fontSize: 12, fontWeight: 600 }}>Mode:</label>
+            <select
+              value={diffMode}
+              onChange={(e) => setDiffMode(e.target.value as DocxDiffPreviewMode)}
+              style={{ flex: '0 0 18rem' }}
+            >
+              <option value="original">Original (no edits)</option>
+              <option value="with_accepted">With accepted edits</option>
+              <option value="diff_overlay">Diff overlay (accepted + proposed, colorized)</option>
+            </select>
+          </div>
+          <DocxDiffPreview document={doc} edits={doc.edits} mode={diffMode} />
+        </div>
+      )}
       {tab === 'editable' && (
         <>
           {!paragraphs && !parseError && <p className="note">Parsing for preview…</p>}

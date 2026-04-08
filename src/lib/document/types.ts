@@ -29,8 +29,35 @@ export interface StoredEdit {
   before_value?: boolean;
   /** Explanation surfaced from the LLM (mirrors op.rationale for convenience) */
   rationale?: string;
+  /**
+   * Optional citations from ATTACHED REFERENCES the LLM used to
+   * justify this edit. Each entry names the source file and a
+   * short verbatim excerpt the model says it drew from. Surfaced
+   * in the EditCard as clickable citation chips so the user can
+   * see "this edit came from FAR 12.602(a) in far_clauses.docx".
+   */
+  references_used?: EditCitation[];
   /** When this edit was proposed */
   created_at: string;
+}
+
+/**
+ * One citation the LLM emitted alongside an edit. The model is
+ * instructed to populate these only when ATTACHED REFERENCES were
+ * provided AND the edit was actually justified by something in those
+ * references. Hallucinated citations are out of scope; the citations
+ * are advisory text the user can spot-check, not load-bearing.
+ */
+export interface EditCitation {
+  /** Filename the model drew from. Must match an attached reference filename verbatim. */
+  source_filename: string;
+  /** Short verbatim excerpt (~80 chars) of the passage the model used. */
+  excerpt: string;
+  /**
+   * Optional one-line summary of how this passage supports the edit.
+   * Format: "introductory phrase requires comma per FAR 12.602(a)".
+   */
+  rationale?: string;
 }
 
 /**
@@ -61,77 +88,85 @@ export interface ParagraphEdit {
  *   - sdt_*        : Word content control (sdt) value mutations
  *                    (Phase D)
  */
+/**
+ * Optional fields every op carries. Live in a separate type for
+ * brevity in the union members below. The model populates them when
+ * the relevant grounding is available; the writer ignores them.
+ */
+export interface CommonOpFields {
+  rationale?: string;
+  /** Citations the model says it drew from ATTACHED REFERENCES. */
+  references_used?: EditCitation[];
+  /**
+   * Optional content-based anchor stamped at op-creation time. The
+   * writer uses this to resolve the op's target paragraph
+   * independently of integer-index drift caused by structural ops
+   * earlier in the same batch. See lib/document/anchors.ts.
+   */
+  anchor?: import('./anchors').ParagraphAnchor;
+}
+
 export type DocumentEditOp =
   // ── Phase B (paragraph + run) ──
-  | {
+  | ({
       op: 'replace_paragraph_text';
       index: number;
       new_text: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'replace_run_text';
       paragraph_index: number;
       run_index: number;
       new_text: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_run_property';
       paragraph_index: number;
       run_index: number;
       property: 'bold' | 'italic' | 'underline' | 'strike';
       value: boolean;
-      rationale?: string;
-    }
+    } & CommonOpFields)
   // ── Phase C (tables) ──
-  | {
+  | ({
       op: 'set_cell_text';
       table_index: number;
       row_index: number;
       cell_index: number;
       new_text: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'insert_table_row';
       table_index: number;
       after_row_index: number;
       cells: string[];
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'delete_table_row';
       table_index: number;
       row_index: number;
-      rationale?: string;
-    }
+    } & CommonOpFields)
   // ── Phase D (content controls + structural) ──
-  | {
+  | ({
       op: 'set_content_control_value';
       tag: string;
       value: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_paragraph_style';
       index: number;
       style_id: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_paragraph_alignment';
       index: number;
       alignment: 'left' | 'center' | 'right' | 'justify' | 'both';
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'delete_paragraph';
       index: number;
-      rationale?: string;
-    }
+    } & CommonOpFields)
   // ── Phase E (structural inserts / merges / splits) ──
-  | {
+  | ({
       op: 'insert_paragraph_after';
       /** Paragraph after which the new paragraph is inserted. */
       index: number;
@@ -142,9 +177,8 @@ export type DocumentEditOp =
        * the new paragraph inherits formatting from the anchor paragraph.
        */
       style_id?: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'merge_paragraphs';
       /** Index of the FIRST paragraph in the merge (the one that will be kept). */
       index: number;
@@ -154,9 +188,8 @@ export type DocumentEditOp =
        * separation.
        */
       separator?: string;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'split_paragraph';
       index: number;
       /**
@@ -166,10 +199,9 @@ export type DocumentEditOp =
        * text or the op fails validation.
        */
       split_at_text: string;
-      rationale?: string;
-    }
+    } & CommonOpFields)
   // ── Phase F (paragraph & run formatting) ──
-  | {
+  | ({
       op: 'set_paragraph_indent';
       paragraph_index: number;
       /** Left indent in twips (1440 twips = 1 inch). Pass null to clear. */
@@ -178,9 +210,8 @@ export type DocumentEditOp =
       first_line_twips?: number | null;
       /** Hanging indent in twips. */
       hanging_twips?: number | null;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_paragraph_spacing';
       paragraph_index: number;
       /** Space before the paragraph in twips. Pass null to clear. */
@@ -194,9 +225,8 @@ export type DocumentEditOp =
        */
       line_value?: number | null;
       line_rule?: 'auto' | 'exact' | 'atLeast';
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_run_font';
       paragraph_index: number;
       run_index: number;
@@ -204,9 +234,8 @@ export type DocumentEditOp =
       family?: string | null;
       /** Font size in points (e.g. 12). Pass null to clear. */
       size_pt?: number | null;
-      rationale?: string;
-    }
-  | {
+    } & CommonOpFields)
+  | ({
       op: 'set_run_color';
       paragraph_index: number;
       run_index: number;
@@ -217,8 +246,7 @@ export type DocumentEditOp =
        * "green", "cyan"). Pass null to clear.
        */
       highlight?: string | null;
-      rationale?: string;
-    };
+    } & CommonOpFields);
 
 export interface DocumentEditOutput {
   edits: DocumentEditOp[];

@@ -155,18 +155,56 @@ export async function applyDocumentEdits(
 
   const applied: ApplyOpsResult['applied'] = [];
 
+  // Anchor-aware paragraph resolver. When an op carries an `anchor`
+  // (a content fingerprint stamped at op-creation time), we use it
+  // to find the current paragraph independently of integer-index
+  // drift caused by earlier structural ops in the same batch. Falls
+  // back to the raw integer index when:
+  //   - the op has no anchor
+  //   - the anchor's text_prefix doesn't disambiguate
+  //   - the raw index still points at a paragraph whose first chars
+  //     match the anchor's text_prefix (the "you guessed right
+  //     anyway" path)
+  function resolveParagraph(rawIndex: number, anchor?: import('./types').CommonOpFields['anchor']): Element | undefined {
+    if (!anchor) return paragraphs[rawIndex];
+    // Tier 1 — full match (style + numbering + text prefix)
+    let candidates = paragraphs.filter(
+      (p) =>
+        readPStyleId(p) === anchor.style_id &&
+        readNumId(p) === anchor.numbering_id &&
+        readVisibleTextPrefix(p) === anchor.text_prefix,
+    );
+    if (candidates.length === 1) return candidates[0];
+    // Tier 2 — text-only match
+    candidates = paragraphs.filter(
+      (p) => readVisibleTextPrefix(p) === anchor.text_prefix,
+    );
+    if (candidates.length === 1) return candidates[0];
+    // Tier 3 — raw index points at a paragraph whose text matches
+    const candidate = paragraphs[rawIndex];
+    if (candidate && readVisibleTextPrefix(candidate) === anchor.text_prefix) {
+      return candidate;
+    }
+    // Tier 4 — anchor's recorded fallback index
+    const fallback = paragraphs[anchor.fallback_index];
+    if (fallback && readVisibleTextPrefix(fallback) === anchor.text_prefix) {
+      return fallback;
+    }
+    return undefined;
+  }
+
   for (const op of ops) {
     try {
       switch (op.op) {
         case 'replace_paragraph_text': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           replaceParagraphText(dom, p, op.new_text);
           applied.push({ op: op.op, success: true });
           break;
         }
         case 'replace_run_text': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           const runs = listRuns(p);
           const r = runs[op.run_index];
@@ -176,7 +214,7 @@ export async function applyDocumentEdits(
           break;
         }
         case 'set_run_property': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           const runs = listRuns(p);
           const r = runs[op.run_index];
@@ -219,21 +257,21 @@ export async function applyDocumentEdits(
           break;
         }
         case 'set_paragraph_style': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           setParagraphStyle(dom, p, op.style_id);
           applied.push({ op: op.op, success: true });
           break;
         }
         case 'set_paragraph_alignment': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           setParagraphAlignment(dom, p, op.alignment);
           applied.push({ op: op.op, success: true });
           break;
         }
         case 'delete_paragraph': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           p.parentNode?.removeChild(p);
           // Recompute caches because indices have shifted
@@ -243,7 +281,7 @@ export async function applyDocumentEdits(
           break;
         }
         case 'insert_paragraph_after': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           insertParagraphAfter(dom, p, op.new_text, op.style_id);
           paragraphs = listBodyParagraphs(dom);
@@ -252,10 +290,12 @@ export async function applyDocumentEdits(
           break;
         }
         case 'merge_paragraphs': {
-          const p1 = paragraphs[op.index];
-          const p2 = paragraphs[op.index + 1];
+          const p1 = resolveParagraph(op.index, op.anchor);
           if (!p1) throw new Error(`paragraph index ${op.index} out of range`);
-          if (!p2) throw new Error(`merge_paragraphs: no paragraph at index ${op.index + 1} to merge into ${op.index}`);
+          // Merging is positional — the "next" paragraph is whatever
+          // physically follows p1 in the parent, not paragraphs[index+1].
+          const p2 = nextParagraphSibling(p1);
+          if (!p2) throw new Error(`merge_paragraphs: no paragraph follows ${op.index}`);
           mergeParagraphs(dom, p1, p2, op.separator ?? ' ');
           paragraphs = listBodyParagraphs(dom);
           tables = listTables(dom);
@@ -263,7 +303,7 @@ export async function applyDocumentEdits(
           break;
         }
         case 'split_paragraph': {
-          const p = paragraphs[op.index];
+          const p = resolveParagraph(op.index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.index} out of range`);
           splitParagraph(dom, p, op.split_at_text);
           paragraphs = listBodyParagraphs(dom);
@@ -272,21 +312,21 @@ export async function applyDocumentEdits(
           break;
         }
         case 'set_paragraph_indent': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           setParagraphIndent(dom, p, op.left_twips, op.first_line_twips, op.hanging_twips);
           applied.push({ op: op.op, success: true });
           break;
         }
         case 'set_paragraph_spacing': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           setParagraphSpacing(dom, p, op.before_twips, op.after_twips, op.line_value, op.line_rule);
           applied.push({ op: op.op, success: true });
           break;
         }
         case 'set_run_font': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           const runs = listRuns(p);
           const r = runs[op.run_index];
@@ -296,7 +336,7 @@ export async function applyDocumentEdits(
           break;
         }
         case 'set_run_color': {
-          const p = paragraphs[op.paragraph_index];
+          const p = resolveParagraph(op.paragraph_index, op.anchor);
           if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
           const runs = listRuns(p);
           const r = runs[op.run_index];
@@ -698,6 +738,55 @@ function splitParagraph(dom: Document, p: Element, splitAtText: string): void {
 function collectVisibleText(p: Element): string {
   const ts = Array.from(p.getElementsByTagNameNS(W_NS, 't'));
   return ts.map((t) => t.textContent ?? '').join('');
+}
+
+// ─── Anchor resolution helpers ────────────────────────────────────
+// Used by the writer's anchor-aware paragraph resolver. Same matching
+// logic as lib/document/anchors.ts but operates directly on <w:p>
+// elements so we don't have to round-trip through ParagraphInfo.
+
+const ANCHOR_TEXT_LENGTH = 60;
+
+function readPStyleId(p: Element): string | null {
+  const pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (!pPr) return null;
+  const pStyle = pPr.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+  if (!pStyle) return null;
+  return pStyle.getAttributeNS(W_NS, 'val') ?? pStyle.getAttribute('w:val') ?? null;
+}
+
+function readNumId(p: Element): number | null {
+  const pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (!pPr) return null;
+  const numPr = pPr.getElementsByTagNameNS(W_NS, 'numPr')[0];
+  if (!numPr) return null;
+  const numId = numPr.getElementsByTagNameNS(W_NS, 'numId')[0];
+  if (!numId) return null;
+  const raw = numId.getAttributeNS(W_NS, 'val') ?? numId.getAttribute('w:val');
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function readVisibleTextPrefix(p: Element): string {
+  return collectVisibleText(p).trim().slice(0, ANCHOR_TEXT_LENGTH);
+}
+
+/**
+ * Walk forward from `p` to its next sibling that's also a `<w:p>`.
+ * Used by merge_paragraphs so the merge target is structurally
+ * adjacent rather than picked by integer index, which can drift.
+ */
+function nextParagraphSibling(p: Element): Element | undefined {
+  let n: ChildNode | null = p.nextSibling;
+  while (n) {
+    if (n.nodeType === 1) {
+      const el = n as Element;
+      if (el.namespaceURI === W_NS && el.localName === 'p') return el;
+    }
+    n = n.nextSibling;
+  }
+  return undefined;
 }
 
 // ─── Phase F: paragraph & run formatting ────────────────────────

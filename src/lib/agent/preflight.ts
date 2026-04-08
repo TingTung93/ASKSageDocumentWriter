@@ -38,6 +38,8 @@ import type { LLMClient } from '../provider/types';
 import type { ProjectRecord, TemplateRecord, ProjectContextFile } from '../db/schema';
 import type { SharedInputField } from '../project/helpers';
 import { deriveSharedInputFields } from '../project/helpers';
+import { AskSageClient } from '../asksage/client';
+import { blobToFile, extractedTextFromRet } from '../asksage/extract';
 
 // ─── Public types ────────────────────────────────────────────────────
 
@@ -166,7 +168,7 @@ GUIDANCE per field:
 
 - subject_warnings: be SPECIFIC. "Missing the equipment make/model" — not "needs more detail". "Does not state the period of performance" — not "vague timeframe". Each warning is one line, actionable, no apology language. Empty array if vague_subject is false.
 
-- coverage: for EVERY template in the input, produce one entry. Bucket each section_id into exactly one of covered / thin / no_coverage based on whether the attached reference files (file names, chunk titles, chunk summaries) appear to contain source material the drafter could pull from for that section. A "Definitions" or "Signature Block" section with no reference material is usually fine and should be marked covered. A "Performance Requirements" section with no relevant references is no_coverage.
+- coverage: for EVERY template in the input, produce one entry. Bucket each section_id into exactly one of covered / thin / no_coverage based on whether the attached reference files appear to contain source material the drafter could pull from for that section. The reference block below contains the actual extracted text of each file (or a leading excerpt for very long files), or chunk titles+summaries when the file has been semantically chunked — read the content carefully and judge coverage on substance, not on filename. A "Definitions" or "Signature Block" section with no reference material is usually fine and should be marked covered. A "Performance Requirements" section with no relevant references is no_coverage.
 
 - actions: mixed advisories. Severities:
     "error"   — drafting will probably fail or produce a useless document
@@ -179,6 +181,8 @@ CRITICAL CONSTRAINTS:
 - Never invent section_ids. Only emit ids that appear in the input.
 - Never invent template_ids. Only emit ids that appear in the input.
 - Do NOT compute or emit "missing_shared_inputs" or "ready_to_draft" — those are computed deterministically by the caller.
+- Files do NOT need to be "semantically chunked" to be usable. The drafter inlines the full extracted text of every attached file into every section prompt at draft time. NEVER emit an action that says missing chunks make a file unusable. NEVER recommend "reprocess_files" / chunking as a prerequisite for drafting — at most, mention it as an info-severity optimization for very long files.
+- Judge file content from the EXTRACTED TEXT shown in the reference block, not from the filename alone. If a file's extracted text covers a section's topic, that section is covered.
 - Return STRICT JSON. No markdown, no commentary.`;
 
 const TEMPLATE_SUGGEST_SYSTEM_PROMPT = `You are matching a project description to the best-fitting template from a small library of government document templates. The user has loaded several templates and described what they need to draft. Your job is to pick ONE template — the strongest match — and explain in one sentence why.
@@ -239,16 +243,46 @@ Return STRICT JSON. No markdown, no commentary.`;
 
 const DEFAULT_MODEL = 'google-claude-46-sonnet';
 
-function summarizeFile(file: ProjectContextFile): string {
-  // Prefer chunk titles + summaries; fall back to filename + chunk count.
+/** Per-file extracted-text cap when inlining into the preflight prompt. */
+const PREFLIGHT_FILE_CAP_CHARS = 12_000;
+/** Aggregate cap across ALL files in the preflight prompt. */
+const PREFLIGHT_TOTAL_CAP_CHARS = 60_000;
+
+function summarizeFile(
+  file: ProjectContextFile,
+  extractedText: string | null,
+  remainingBudget: number,
+): { rendered: string; chars_used: number } {
+  // Priority order: chunks > extracted text > metadata-only stub.
   if (file.chunks && file.chunks.length > 0) {
     const chunkLines = file.chunks
       .slice(0, 20)
       .map((c) => `    - ${c.title}: ${c.summary}`)
       .join('\n');
-    return `  - ${file.filename} (${file.chunks.length} chunks)\n${chunkLines}`;
+    const rendered = `  - ${file.filename} (${file.chunks.length} chunks)\n${chunkLines}`;
+    return { rendered, chars_used: rendered.length };
   }
-  return `  - ${file.filename} (${file.mime_type}, ${file.size_bytes} bytes; no semantic chunks)`;
+
+  if (extractedText && extractedText.trim().length > 0) {
+    const cap = Math.max(0, Math.min(PREFLIGHT_FILE_CAP_CHARS, remainingBudget));
+    const truncated =
+      extractedText.length > cap
+        ? extractedText.slice(0, Math.max(0, cap - 1)).trimEnd() + '…'
+        : extractedText;
+    const header = `  - ${file.filename} (${file.mime_type}, ${file.size_bytes.toLocaleString()} bytes, ${extractedText.length.toLocaleString()} chars extracted${extractedText.length > cap ? `, showing first ${truncated.length.toLocaleString()}` : ''})`;
+    const body = truncated
+      .split('\n')
+      .map((line) => `    ${line}`)
+      .join('\n');
+    const rendered = `${header}\n${body}`;
+    return { rendered, chars_used: rendered.length };
+  }
+
+  // Last resort: extraction failed AND no chunks available. The model
+  // is told the file exists but has no content visibility — it should
+  // NOT treat this as drafter-blocking per the system prompt.
+  const rendered = `  - ${file.filename} (${file.mime_type}, ${file.size_bytes.toLocaleString()} bytes; extraction unavailable in preflight — drafter will still inline this file at draft time)`;
+  return { rendered, chars_used: rendered.length };
 }
 
 function compactTemplateForReadiness(tpl: TemplateRecord): string {
@@ -269,9 +303,66 @@ function compactTemplateForSuggest(tpl: TemplateRecord): string {
   return `  - id: ${tpl.id}\n    name: ${tpl.name}\n    source_filename: ${tpl.schema_json.source.filename}\n    sections: ${sectionNames || '(none parsed)'}`;
 }
 
-function buildReferenceCorpus(files: ProjectContextFile[]): string {
+function buildReferenceCorpus(
+  files: ProjectContextFile[],
+  extractedById: Map<string, string>,
+): string {
   if (files.length === 0) return '(no attached reference files)';
-  return files.map(summarizeFile).join('\n');
+  const sections: string[] = [];
+  let used = 0;
+  for (const f of files) {
+    const remaining = PREFLIGHT_TOTAL_CAP_CHARS - used;
+    if (remaining <= 200) {
+      sections.push(
+        `  - ${f.filename} (truncated — total preflight reference budget exhausted; drafter will still see the full file at draft time)`,
+      );
+      continue;
+    }
+    const text = extractedById.get(f.id) ?? null;
+    const { rendered, chars_used } = summarizeFile(f, text, remaining);
+    sections.push(rendered);
+    used += chars_used;
+  }
+  return sections.join('\n');
+}
+
+/**
+ * Upload + extract every reference file via /server/file ONCE so the
+ * preflight prompt can see actual file content (not just filenames).
+ * Mirrors the same pattern used by lib/draft/orchestrator and
+ * lib/document/edit. Failures are non-fatal — the file falls back to
+ * the metadata-only stub and the preflight prompt warns the model not
+ * to gate drafting on those.
+ */
+async function extractReferencesForPreflight(
+  client: LLMClient,
+  files: ProjectContextFile[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (files.length === 0) return out;
+  // /server/file is Ask-Sage-only. On OpenRouter we skip extraction
+  // entirely; the preflight prompt still tells the model that missing
+  // text is not a blocker, so it should not over-flag.
+  if (!(client instanceof AskSageClient)) {
+    return out;
+  }
+  for (const f of files) {
+    try {
+      const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
+      const upload = await client.uploadFile(fileObj);
+      const text = extractedTextFromRet(upload.ret);
+      if (text && text.trim().length > 0) {
+        out.set(f.id, text);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[preflight] failed to extract ${f.filename}; falling back to metadata-only stub:`,
+        err,
+      );
+    }
+  }
+  return out;
 }
 
 /**
@@ -301,6 +392,10 @@ export async function runReadinessCheck(
 ): Promise<ReadinessReport> {
   const model = args.model ?? DEFAULT_MODEL;
 
+  // Pre-flight pre-flight: extract reference file text once so the
+  // LLM can judge coverage on actual content, not on filenames.
+  const extractedById = await extractReferencesForPreflight(client, args.reference_files);
+
   const messageLines: string[] = [];
   messageLines.push(`=== PROJECT SUBJECT ===`);
   messageLines.push(args.project.description?.trim() || '(empty)');
@@ -317,7 +412,7 @@ export async function runReadinessCheck(
   messageLines.push(`=== END SELECTED TEMPLATES ===`);
   messageLines.push('');
   messageLines.push(`=== ATTACHED REFERENCE FILES (${args.reference_files.length}) ===`);
-  messageLines.push(buildReferenceCorpus(args.reference_files));
+  messageLines.push(buildReferenceCorpus(args.reference_files, extractedById));
   messageLines.push(`=== END ATTACHED REFERENCE FILES ===`);
   messageLines.push('');
   messageLines.push(
@@ -479,6 +574,10 @@ export async function proposeSharedInputs(
   if (args.shared_fields.length === 0) return {};
   const model = args.model ?? DEFAULT_MODEL;
 
+  // Same pre-flight pre-flight: extract file text so the model can
+  // actually find values to propose.
+  const extractedById = await extractReferencesForPreflight(client, args.reference_files);
+
   const messageLines: string[] = [];
   messageLines.push(`=== REQUESTED FIELDS (${args.shared_fields.length}) ===`);
   for (const f of args.shared_fields) {
@@ -494,7 +593,7 @@ export async function proposeSharedInputs(
   messageLines.push(`=== END PROJECT SUBJECT ===`);
   messageLines.push('');
   messageLines.push(`=== ATTACHED REFERENCE FILES (${args.reference_files.length}) ===`);
-  messageLines.push(buildReferenceCorpus(args.reference_files));
+  messageLines.push(buildReferenceCorpus(args.reference_files, extractedById));
   messageLines.push(`=== END ATTACHED REFERENCE FILES ===`);
   messageLines.push('');
   messageLines.push(

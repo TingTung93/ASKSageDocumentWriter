@@ -34,12 +34,13 @@ export function detectFillRegions(ctx: DetectionContext): FillRegions {
   const bodyFromControls: BodyFillRegion[] = [];
 
   // ─── Pass 1: content controls ──────────────────────────────────────
-  let order = 0;
+  let bodyOrder = 0;
+  let metadataOrder = 0;
   for (const cc of ctx.contentControls) {
     if (cc.is_metadata) {
-      metadata.push(toMetadataRegion(cc));
+      metadata.push(toMetadataRegion(cc, metadataOrder++));
     } else {
-      bodyFromControls.push(toBodyRegionFromControl(cc, order++, ctx));
+      bodyFromControls.push(toBodyRegionFromControl(cc, bodyOrder++, ctx));
     }
   }
 
@@ -89,8 +90,30 @@ function createWholeBodyFallback(ctx: DetectionContext): BodyFillRegion[] {
   ];
 }
 
-function toMetadataRegion(cc: ContentControlInfo): MetadataFillRegion {
-  const id = cc.tag ? snakeify(cc.tag) : `metadata_${Math.floor(Math.random() * 1e6)}`;
+function toMetadataRegion(cc: ContentControlInfo, order: number): MetadataFillRegion {
+  // Tag-based id is the happy path: a Word author who set <w:tag w:val="..."/>
+  // told us exactly what they want this field called. The alias is the
+  // user-facing label and is also a usable identifier source.
+  //
+  // For UNTAGGED sdts (very common in DHA templates that use sdts as
+  // visual placeholders), we used to mint `metadata_<random6>` as the
+  // id, which (a) was unstable across re-ingests and (b) bloated the
+  // required-shared-inputs list with 12+ keys the user couldn't
+  // recognize. We now use a STABLE positional id and mark the field
+  // as NOT required so it doesn't gate readiness — it still appears
+  // in the editor for users who want to fill it.
+  let id: string;
+  let required: boolean;
+  if (cc.tag) {
+    id = snakeify(cc.tag);
+    required = true;
+  } else if (cc.alias) {
+    id = snakeify(cc.alias);
+    required = true;
+  } else {
+    id = `metadata_unnamed_${order}`;
+    required = false;
+  }
   return {
     id,
     kind: 'content_control',
@@ -98,7 +121,7 @@ function toMetadataRegion(cc: ContentControlInfo): MetadataFillRegion {
     control_type: cc.control_type,
     allowed_values: cc.allowed_values.length > 0 ? cc.allowed_values : undefined,
     project_input_field: id,
-    required: true,
+    required,
   };
 }
 

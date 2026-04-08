@@ -558,3 +558,26 @@ hr {
   border-top: 1px solid var(--color-border);
   margin: var(--space-4) 0;
 }
+
+/* ─── Diff overlay (DocxDiffPreview) ──────────────────────────────
+ * Used by the Documents-tab cleanup workflow to colorize insertions
+ * and deletions in the rendered docx-preview output. Backgrounds
+ * are kept subtle so docx-preview's existing text styling stays
+ * readable through the highlight.
+ */
+.diff-keep {
+  /* intentionally neutral — inherits paragraph styling */
+}
+.diff-insert {
+  background-color: #d4f7d4;
+  color: #064e06;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.diff-delete {
+  background-color: #fdd;
+  color: #7a0000;
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 1px;
+}

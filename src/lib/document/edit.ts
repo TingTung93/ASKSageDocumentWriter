@@ -24,6 +24,7 @@ import type { ProjectContextFile } from '../db/schema';
 import { AskSageClient } from '../asksage/client';
 import { blobToFile, extractedTextFromRet } from '../asksage/extract';
 import type { DocumentEditOp, DocumentEditOutput } from './types';
+import { runProblemIdentificationPass, narrowChunkToFocus } from './prepass';
 
 export const DEFAULT_DOCUMENT_EDIT_MODEL = 'google-claude-46-sonnet';
 
@@ -135,6 +136,9 @@ CRITICAL CONSTRAINTS:
 - Do NOT use markdown formatting (**, _, -). Inline formatting is encoded in run properties; use set_run_property and set_run_font and set_run_color.
 - Preserve specialized terminology, acronyms, citations, dates, names, and section numbers exactly as written unless they are demonstrably wrong.
 - If ATTACHED REFERENCES are provided, they are AUTHORITATIVE for facts, terminology, and citations — prefer the reference's wording over the draft's when they disagree on a verifiable fact.
+- When you make an edit that was specifically justified by an ATTACHED REFERENCE, populate a \`references_used\` field on the op as an array of one or more entries:
+    "references_used": [{ "source_filename": "<exact filename of the attached reference>", "excerpt": "<short verbatim excerpt of the passage you used, ~80 chars>", "rationale": "<one-line explanation of how this passage supports the edit>" }]
+  Only populate this when the reference actually drove the edit. Do NOT cite a reference for generic grammar/typo fixes that have nothing to do with the references. Do NOT invent excerpts — they must be verbatim substrings of the reference text. The user will spot-check.
 - Honor the user's instruction — it controls scope and tone of edits.
 
 Return STRICT JSON only.`;
@@ -160,6 +164,30 @@ export interface DocumentEditRequest {
   references?: ProjectContextFile[];
   /** Progress callback fired after each chunk completes. */
   on_chunk_done?: (info: ChunkProgress) => void;
+  /**
+   * Maximum number of chunks the orchestrator processes in parallel.
+   * Each chunk is its own /server/query call, so the cost is one
+   * concurrent request per slot. Default 3 — empirically a good
+   * trade-off between wall-time speedup and rate-limit pressure on
+   * the health.mil tenant. Set to 1 for the legacy sequential
+   * behavior.
+   */
+  chunk_concurrency?: number;
+  /**
+   * Enable the two-call pre-pass: first call identifies which
+   * paragraphs in each chunk need editing, second call runs the full
+   * fix pass narrowed to those paragraphs (plus a small neighbor
+   * context window). Total tokens are usually LOWER than the single-
+   * pass approach because the fix pass has less to read. Defaults
+   * false to preserve legacy behavior.
+   */
+  use_prepass?: boolean;
+  /**
+   * When use_prepass is true, the model used for the cheap
+   * identification pass. Defaults to the same model as the fix pass;
+   * users can downgrade to a faster/cheaper model here.
+   */
+  prepass_model?: string;
 }
 
 export interface ChunkProgress {
@@ -211,18 +239,72 @@ export async function requestDocumentEdits(
   const significant = args.paragraphs.filter((p) => p.text.trim().length > 0);
   const chunks = chunkParagraphs(significant, EDIT_CHUNK_SIZE, EDIT_CHUNK_OVERLAP);
 
-  // 3. Walk chunks sequentially. Per-chunk responses that come back
-  //    empty are silently absorbed (no toast, no rationale).
-  const allOps: DocumentEditOp[] = [];
+  // 3. Process chunks. Each chunk is processed independently — the
+  //    only per-chunk shared state is the seen-op-keys dedup set,
+  //    which we synchronize after the fact since each chunk's results
+  //    are merged at completion time. Concurrency is capped via
+  //    `chunk_concurrency` (default 3) so we don't slam the tenant
+  //    with parallel requests.
   const seenOpKeys = new Set<string>();
-  const promptParts: string[] = [];
-  let tokensIn = 0;
-  let tokensOut = 0;
-
   const validIndices = new Set(args.paragraphs.map((p) => p.index));
+  const concurrency = Math.max(1, args.chunk_concurrency ?? 3);
+  const usePrepass = args.use_prepass === true;
+  const prepassModel = args.prepass_model ?? model;
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
+  interface ChunkResult {
+    chunk_index: number;
+    ops: DocumentEditOp[];
+    prompt_sent: string;
+    tokens_in: number;
+    tokens_out: number;
+  }
+
+  async function runOneChunk(i: number): Promise<ChunkResult> {
+    let chunk = chunks[i];
+    let prepassTokensIn = 0;
+    let prepassTokensOut = 0;
+
+    // OPTIONAL Phase A: pre-pass problem identification. Narrows the
+    // chunk to only the paragraphs the model thinks have issues, plus
+    // a small read-only neighbor window. Skips this chunk entirely if
+    // pre-pass returns zero focus indices.
+    if (usePrepass) {
+      try {
+        const prepass = await runProblemIdentificationPass(client, {
+          paragraphs: chunk.paragraphs,
+          instruction: args.instruction,
+          model: prepassModel,
+        });
+        prepassTokensIn = prepass.tokens_in;
+        prepassTokensOut = prepass.tokens_out;
+        if (prepass.focus_indices.length === 0) {
+          // Nothing to fix in this chunk. Return early with prepass cost only.
+          return {
+            chunk_index: i,
+            ops: [],
+            prompt_sent: `--- CHUNK ${i + 1} / ${chunks.length} (prepass: clean, skipped) ---`,
+            tokens_in: prepassTokensIn,
+            tokens_out: prepassTokensOut,
+          };
+        }
+        const narrowed = narrowChunkToFocus({
+          paragraphs: chunk.paragraphs,
+          focus_indices: prepass.focus_indices,
+          neighbor_window: 1,
+        });
+        chunk = {
+          paragraphs: narrowed.paragraphs,
+          editableIndices: narrowed.editable_indices,
+        };
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[requestDocumentEdits] chunk ${i + 1}/${chunks.length} prepass failed (continuing with full chunk):`,
+          err,
+        );
+      }
+    }
+
     const message = buildEditMessage({
       document_name: args.document_name,
       instruction: args.instruction,
@@ -233,7 +315,6 @@ export async function requestDocumentEdits(
       total_paragraphs: args.paragraphs.length,
       references_block: referencesBlock,
     });
-    promptParts.push(`--- CHUNK ${i + 1} / ${chunks.length} ---\n${message}`);
 
     const queryInput: Parameters<LLMClient['queryJson']>[0] = {
       message,
@@ -252,9 +333,6 @@ export async function requestDocumentEdits(
       queryInput.live = args.live;
     }
 
-    let chunkOpsCount = 0;
-    let chunkIn = 0;
-    let chunkOut = 0;
     try {
       const { data, raw } = await client.queryJson<DocumentEditOutput>(queryInput);
       const rawOps = (data.edits ?? []).filter((op) =>
@@ -265,36 +343,76 @@ export async function requestDocumentEdits(
       // the original paragraph stranded after the new content. See
       // maybePromoteRunOp() for the rule and the rationale.
       const ops = rawOps.map((op) => maybePromoteRunOp(op, args.paragraphs));
-      for (const op of ops) {
-        const key = opDedupKey(op);
-        if (seenOpKeys.has(key)) continue;
-        seenOpKeys.add(key);
-        allOps.push(op);
-        chunkOpsCount += 1;
-      }
       const usage =
         (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
-      chunkIn = usage.prompt_tokens ?? 0;
-      chunkOut = usage.completion_tokens ?? 0;
-      tokensIn += chunkIn;
-      tokensOut += chunkOut;
+      return {
+        chunk_index: i,
+        ops,
+        prompt_sent: `--- CHUNK ${i + 1} / ${chunks.length} ---\n${message}`,
+        tokens_in: prepassTokensIn + (usage.prompt_tokens ?? 0),
+        tokens_out: prepassTokensOut + (usage.completion_tokens ?? 0),
+      };
     } catch (err) {
-      // Silent absorption per spec: a single chunk failing should not
-      // abort the whole pass. Log to console for diagnostics.
       // eslint-disable-next-line no-console
       console.warn(
         `[requestDocumentEdits] chunk ${i + 1}/${chunks.length} failed:`,
         err,
       );
+      return {
+        chunk_index: i,
+        ops: [],
+        prompt_sent: `--- CHUNK ${i + 1} / ${chunks.length} (failed) ---\n${message}`,
+        tokens_in: prepassTokensIn,
+        tokens_out: prepassTokensOut,
+      };
     }
+  }
 
-    args.on_chunk_done?.({
-      chunk_index: i,
-      chunk_count: chunks.length,
-      ops_emitted: chunkOpsCount,
-      tokens_in: chunkIn,
-      tokens_out: chunkOut,
-    });
+  // Concurrency-capped fan-out. We don't use Promise.all over the
+  // whole list because that would unleash all chunks at once and
+  // pile up requests against the tenant. The pool walks the index
+  // queue, picking the next index whenever a slot frees up.
+  const chunkResults: ChunkResult[] = new Array(chunks.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= chunks.length) return;
+      const result = await runOneChunk(i);
+      chunkResults[i] = result;
+      // Fire the per-chunk progress callback as soon as the result
+      // lands, even though chunks may complete out of order.
+      args.on_chunk_done?.({
+        chunk_index: i,
+        chunk_count: chunks.length,
+        ops_emitted: result.ops.length,
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+      });
+    }
+  }
+  const workers: Promise<void>[] = [];
+  for (let w = 0; w < Math.min(concurrency, chunks.length); w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+
+  // Merge results in original chunk order so dedup is deterministic.
+  const allOps: DocumentEditOp[] = [];
+  const promptParts: string[] = [];
+  let tokensIn = 0;
+  let tokensOut = 0;
+  for (const result of chunkResults) {
+    if (!result) continue;
+    promptParts.push(result.prompt_sent);
+    tokensIn += result.tokens_in;
+    tokensOut += result.tokens_out;
+    for (const op of result.ops) {
+      const key = opDedupKey(op);
+      if (seenOpKeys.has(key)) continue;
+      seenOpKeys.add(key);
+      allOps.push(op);
+    }
   }
 
   const valid_edits: ReplaceParagraphTextOp[] = allOps.filter(
