@@ -1,8 +1,11 @@
 import Dexie, { type Table } from 'dexie';
 import type { TemplateSchema } from '../template/types';
+import type { DraftParagraph } from '../draft/types';
 
-// The shape will grow as Phase 1b/2/3 land. Each table here corresponds
-// to an artifact category from PRD §7.
+// Phase 1a stores template DOCX bytes alongside the parsed schema.
+// Phase 1b adds the semantic half. Phase 2 introduces projects and
+// drafts. Phase 3 (export) reuses TemplateRecord.docx_bytes as the
+// clone-and-mutate skeleton.
 
 export interface TemplateRecord {
   id: string;
@@ -18,22 +21,43 @@ export interface TemplateRecord {
 export interface ProjectRecord {
   id: string;
   name: string;
+  /** Free-form description of the project's intent (user input) */
   description: string;
+  /** TemplateRecord ids included in this project */
   template_ids: string[];
+  /** Ask Sage dataset names to use for RAG context during drafting */
   reference_dataset_names: string[];
-  shared_inputs: Record<string, unknown>;
+  /**
+   * User-provided values for shared inputs derived from the union of
+   * metadata_fill_regions across selected templates. Keys are
+   * project_input_field names (e.g. "cui_banner", "document_number").
+   */
+  shared_inputs: Record<string, string>;
+  /** Optional model overrides per stage */
+  model_overrides: {
+    drafting?: string;
+    critic?: string;
+  };
   created_at: string;
   updated_at: string;
 }
 
 export interface DraftRecord {
+  /** Composite id: `${project_id}::${template_id}::${section_id}` */
   id: string;
   project_id: string;
   template_id: string;
   section_id: string;
   /** Structured paragraph array with role tags; see PRD §6. */
-  paragraphs: unknown;
+  paragraphs: DraftParagraph[];
+  /** Free-form references string returned by Ask Sage from RAG */
   references: string;
+  /** Lifecycle state of this draft */
+  status: 'pending' | 'drafting' | 'ready' | 'error';
+  /** Set when status === 'error' */
+  error?: string;
+  /** Issues detected by the critic pass (Phase 4) */
+  validation_issues?: string[];
   generated_at: string;
   model: string;
   tokens_in: number;
