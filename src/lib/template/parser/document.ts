@@ -10,6 +10,40 @@ import { wAll, wAttr, wAttrInt, wFirst, W_NS } from './ns';
 
 export type Alignment = 'left' | 'center' | 'right' | 'justify' | 'both' | null;
 
+/**
+ * One <w:r> run inside a paragraph. Runs are the unit of inline
+ * formatting in OOXML — each run has its own rPr (run properties)
+ * controlling bold/italic/underline/color/font, and contains the
+ * actual text in <w:t> children. A paragraph can contain many runs;
+ * mixed formatting (e.g. one bold span inside a sentence) shows up as
+ * adjacent runs with different rPr.
+ *
+ * The run index is sequential within the paragraph (0..N-1) following
+ * document order, recursing into containers (w:sdt, w:hyperlink, etc.).
+ */
+export interface RunInfo {
+  /** 0-based index within the parent paragraph */
+  index: number;
+  /** Concatenated text of all w:t/w:tab/w:br children */
+  text: string;
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  strike: boolean;
+  /** Hex color from rPr/color @w:val, or null if not set */
+  color: string | null;
+  /** Highlight name from rPr/highlight @w:val, or null */
+  highlight: string | null;
+  /** Font family from rPr/rFonts @w:ascii, or null */
+  font_family: string | null;
+  /** Font size in points (rPr/sz is in half-points; we divide by 2) */
+  font_size_pt: number | null;
+  superscript: boolean;
+  subscript: boolean;
+  /** Reference to the underlying <w:r> element for the writer */
+  el: Element;
+}
+
 export interface ParagraphInfo {
   /** Document-order index */
   index: number;
@@ -50,13 +84,37 @@ export interface ParagraphInfo {
   content_control_tag: string | null;
   /** True if this paragraph is inside a table cell (w:tc ancestor). */
   in_table: boolean;
+  /**
+   * Sequential list of <w:r> runs in this paragraph, in document order.
+   * Each carries its own rPr-derived formatting and the index needed
+   * to address it from a writer edit.
+   */
+  runs: RunInfo[];
   /** Reference to the underlying element for fill region detection */
   el: Element;
+}
+
+export interface TableCellInfo {
+  index: number;
+  /** Indices into the parent ParsedDocument.paragraphs[] array */
+  paragraph_indices: number[];
+}
+
+export interface TableRowInfo {
+  index: number;
+  cells: TableCellInfo[];
+}
+
+export interface TableInfo {
+  /** 0-based table index in document order */
+  index: number;
+  rows: TableRowInfo[];
 }
 
 export interface ParsedDocument {
   page_setup: PageSetup;
   paragraphs: ParagraphInfo[];
+  tables: TableInfo[];
 }
 
 const DEFAULT_PAGE_SETUP: PageSetup = {
@@ -81,7 +139,46 @@ export function parseDocumentXml(dom: Document): ParsedDocument {
     });
   }
 
-  return { page_setup, paragraphs };
+  const tables = body ? parseTables(body, paragraphs) : [];
+
+  return { page_setup, paragraphs, tables };
+}
+
+/**
+ * Walk the body for <w:tbl> elements and produce a TableInfo[] with
+ * row/cell structure. Each cell records the indices of its contained
+ * paragraphs (which are also present in the flat paragraphs[] list,
+ * so the LLM can address them either by paragraph index or by
+ * table/row/cell coordinates).
+ */
+function parseTables(body: Element, paragraphs: ParagraphInfo[]): TableInfo[] {
+  // Build a fast lookup: <w:p> element → flat paragraph index
+  const elToIndex = new Map<Element, number>();
+  for (const p of paragraphs) elToIndex.set(p.el, p.index);
+
+  const tables: TableInfo[] = [];
+  const tblEls = Array.from(body.getElementsByTagNameNS(W_NS, 'tbl'));
+  let tblIdx = 0;
+  for (const tbl of tblEls) {
+    const rowEls = Array.from(tbl.getElementsByTagNameNS(W_NS, 'tr'));
+    const rows: TableRowInfo[] = [];
+    let rowIdx = 0;
+    for (const tr of rowEls) {
+      const tcEls = Array.from(tr.getElementsByTagNameNS(W_NS, 'tc'));
+      const cells: TableCellInfo[] = [];
+      let cellIdx = 0;
+      for (const tc of tcEls) {
+        const cellPs = Array.from(tc.getElementsByTagNameNS(W_NS, 'p'));
+        const paragraph_indices = cellPs
+          .map((p) => elToIndex.get(p))
+          .filter((i): i is number => i !== undefined);
+        cells.push({ index: cellIdx++, paragraph_indices });
+      }
+      rows.push({ index: rowIdx++, cells });
+    }
+    tables.push({ index: tblIdx++, rows });
+  }
+  return tables;
 }
 
 function walkParagraphs(scope: Element, visit: (p: Element) => void): void {
@@ -192,6 +289,9 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
   // mark structured layouts (responsibility matrices, etc.).
   const ancestors = scanAncestors(p);
 
+  // Sequential runs within the paragraph
+  const runs = parseRuns(p);
+
   return {
     index,
     style_id,
@@ -209,7 +309,87 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     bookmark_ends,
     content_control_tag: ancestors.content_control_tag,
     in_table: ancestors.in_table,
+    runs,
     el: p,
+  };
+}
+
+/**
+ * Walk a paragraph and return its <w:r> children in document order,
+ * recursing into containers (w:sdt, w:sdtContent, w:hyperlink,
+ * w:smartTag) so runs nested inside content controls and links are
+ * still surfaced. Run indices are assigned sequentially within the
+ * paragraph regardless of nesting depth.
+ */
+function parseRuns(p: Element): RunInfo[] {
+  const runs: RunInfo[] = [];
+  let runIdx = 0;
+  function walk(node: Element) {
+    for (let i = 0; i < node.childNodes.length; i++) {
+      const child = node.childNodes[i]!;
+      if (child.nodeType !== 1) continue;
+      const el = child as Element;
+      if (el.namespaceURI !== W_NS) continue;
+      if (el.localName === 'r') {
+        runs.push(parseRun(el, runIdx++));
+      } else if (
+        el.localName === 'sdt' ||
+        el.localName === 'sdtContent' ||
+        el.localName === 'hyperlink' ||
+        el.localName === 'smartTag' ||
+        el.localName === 'ins' ||
+        el.localName === 'del'
+      ) {
+        walk(el);
+      }
+    }
+  }
+  walk(p);
+  return runs;
+}
+
+function parseRun(r: Element, index: number): RunInfo {
+  const rPr = wFirst(r, 'rPr');
+  const text = extractRunText(r);
+
+  const bold = rPr ? isToggleOn(wFirst(rPr, 'b') ?? undefined) : false;
+  const italic = rPr ? isToggleOn(wFirst(rPr, 'i') ?? undefined) : false;
+  const underline = rPr ? wFirst(rPr, 'u') !== null : false;
+  const strike = rPr ? isToggleOn(wFirst(rPr, 'strike') ?? undefined) : false;
+
+  const colorEl = rPr ? wFirst(rPr, 'color') : null;
+  const colorVal = wAttr(colorEl, 'val');
+  const color = colorVal && colorVal !== 'auto' ? `#${colorVal}` : null;
+
+  const highlightEl = rPr ? wFirst(rPr, 'highlight') : null;
+  const highlight = wAttr(highlightEl, 'val');
+
+  const rFonts = rPr ? wFirst(rPr, 'rFonts') : null;
+  const font_family = wAttr(rFonts, 'ascii') ?? wAttr(rFonts, 'hAnsi') ?? null;
+
+  const szEl = rPr ? wFirst(rPr, 'sz') : null;
+  const halfPoints = wAttrInt(szEl, 'val');
+  const font_size_pt = halfPoints !== null ? halfPoints / 2 : null;
+
+  const vertAlign = rPr ? wFirst(rPr, 'vertAlign') : null;
+  const vertAlignVal = wAttr(vertAlign, 'val');
+  const superscript = vertAlignVal === 'superscript';
+  const subscript = vertAlignVal === 'subscript';
+
+  return {
+    index,
+    text,
+    bold,
+    italic,
+    underline,
+    strike,
+    color,
+    highlight,
+    font_family,
+    font_size_pt,
+    superscript,
+    subscript,
+    el: r,
   };
 }
 
