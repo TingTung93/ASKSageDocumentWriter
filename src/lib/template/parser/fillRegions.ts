@@ -43,10 +43,10 @@ export function detectFillRegions(ctx: DetectionContext): FillRegions {
     }
   }
 
-  // ─── Pass 2: heading-bounded sections (fallback) ───────────────────
-  // Only run this if we found NO body fill regions from content controls,
-  // because mixing both would create overlapping regions. In v1 we treat
-  // these as alternatives, not complementary.
+  // ─── Pass 2: heading-bounded sections (deterministic generic) ─────
+  // Uses OOXML outline_level / Heading\d+ style markers — a generic
+  // signal that any DOCX can use, not a heuristic about specific
+  // document types.
   let bodyRegions = bodyFromControls;
   if (bodyFromControls.length === 0) {
     bodyRegions = detectHeadingBoundedSections(ctx);

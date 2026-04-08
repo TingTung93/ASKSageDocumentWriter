@@ -133,9 +133,19 @@ export function buildSynthesisPrompt(args: BuildPromptArgs): BuiltPrompt {
   lines.push(
     `This is the verbatim text of the template document with structural annotations. Each line has the format:`,
   );
-  lines.push(`  [<paragraph_index>] (<style_name> [num=<list_id>·<level>] [table] [sdt=<content_control_tag>] [bookmark=<name>]) "<text>"`);
+  lines.push(`  [<paragraph_index>] (<style_name> [num=<list_id>·<level>] [align=<center|right|justify>] [indent=<twips>] [bold] [italic] [table] [sdt=<content_control_tag>] [bookmark=<name>]) "<text>"`);
   lines.push(
-    `Annotations in parentheses tell you the paragraph's ROLE: the named style (Heading 1, Body Text, List Bullet, etc.), whether it's in a numbered list, whether it sits inside a table cell, whether it's wrapped by a Word content control (sdt — these are metadata fields like CUI banner, document number, classification), and any bookmarks. Use these annotations together with the text content to infer purpose. Bracketed instructional text like "[Insert purpose statement]" is the strongest signal of section intent.`,
+    `Annotations in parentheses tell you the paragraph's STRUCTURAL ROLE:
+  - style_name: the paragraph's named style (Heading 1, Body Text, List Bullet, Title, etc.)
+  - num=<id>·<level>: paragraph is in a numbered or bulleted list at the given list level
+  - align=...: non-left alignment (center / right / justify) — often signals headings, banners, or signature blocks
+  - indent=<twips>: left indent in twips (1440 twips = 1 inch); larger values mean nested or sub-content
+  - bold / italic: paragraph-level run properties — often signal headings, callouts, or instructional notes
+  - table: paragraph is inside a table cell — often a structured field, responsibility matrix entry, or signature block
+  - sdt=<tag>: paragraph is wrapped by a Word content control — these are explicit metadata placeholders (CUI banner, document number, classification, etc.) that the LLM should NOT include in body sections
+  - bookmark=<name>: a Word bookmark starts on this paragraph — often marks a fillable region
+
+Use these annotations together with the text content to infer each paragraph's purpose. Bracketed instructional text like "[Insert purpose statement]" combined with style/alignment/bold annotations is the strongest signal of section intent.`,
   );
   for (const line of full_body.lines) {
     lines.push(formatBodyLine(line));
@@ -184,6 +194,14 @@ function formatBodyLine(line: ParagraphLine): string {
   if (line.numbering_id !== null) {
     annotations.push(`num=${line.numbering_id}·${line.numbering_level ?? 0}`);
   }
+  if (line.alignment && line.alignment !== 'left') {
+    annotations.push(`align=${line.alignment}`);
+  }
+  if (line.indent_left_twips && line.indent_left_twips > 0) {
+    annotations.push(`indent=${line.indent_left_twips}`);
+  }
+  if (line.bold) annotations.push('bold');
+  if (line.italic) annotations.push('italic');
   if (line.in_table) annotations.push('table');
   if (line.content_control_tag) annotations.push(`sdt=${line.content_control_tag}`);
   for (const b of line.bookmark_starts) annotations.push(`bookmark=${b}`);

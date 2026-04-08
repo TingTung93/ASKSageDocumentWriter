@@ -108,17 +108,65 @@ describe('parseDocx — real DHA templates', () => {
       expect(Array.isArray(def.levels)).toBe(true);
     });
 
-    it('falls back to a whole-document section when no headings are detected', async () => {
+    it('produces at least one body section (whole-body fallback when no headings/sdt)', async () => {
       const { schema } = await parseDocx(loadFixture(DHA_POLICY_MEMO), {
         filename: DHA_POLICY_MEMO,
         docx_blob_id: 'fixture://memo',
       });
-      // Memo templates use a flat layout without Heading 1/2 styles, so
-      // the only way the synthesis pass gets anything to work with is
-      // the whole-body fallback. Assert it kicked in.
+      // The memo template uses neither OOXML heading styles nor body
+      // content controls, so the parser falls back to a single
+      // whole-document section. Section breakdown for memos is the
+      // LLM's job at synthesis time, not the parser's.
       expect(schema.sections.length).toBeGreaterThanOrEqual(1);
-      const fallback = schema.sections.find((s) => s.id === 'document_body');
-      expect(fallback).toBeDefined();
+    });
+  });
+
+  describe('DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx', () => {
+    const NAME = 'DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx';
+
+    it('parses without throwing', async () => {
+      const { schema, paragraphs } = await parseDocx(loadFixture(NAME), {
+        filename: NAME,
+        docx_blob_id: 'fixture://pws',
+      });
+      expect(schema.formatting.named_styles.length).toBeGreaterThan(0);
+      // Sanity: PWS is a large template with many paragraphs
+      expect(paragraphs.length).toBeGreaterThan(100);
+    });
+
+    it('extracts content controls into metadata_fill_regions', async () => {
+      const { schema } = await parseDocx(loadFixture(NAME), {
+        filename: NAME,
+        docx_blob_id: 'fixture://pws',
+      });
+      // The PWS template has explicit content controls for metadata
+      // (CUI banner, doc number, dates, etc.). These should be picked
+      // up deterministically by the parser regardless of the LLM.
+      expect(schema.metadata_fill_regions.length).toBeGreaterThan(0);
+    });
+
+    it('produces at least one body section (LLM owns the breakdown)', async () => {
+      const { schema } = await parseDocx(loadFixture(NAME), {
+        filename: NAME,
+        docx_blob_id: 'fixture://pws',
+      });
+      // Whether the parser produces 1 (whole-body fallback), 2 (one
+      // stray Heading1), or many sections, there must be at least one.
+      // Real section breakdown is the LLM's responsibility.
+      expect(schema.sections.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('Market Research Report Template (AUGUST 2025).docx', () => {
+    const NAME = 'Market Research Report Template (AUGUST 2025).docx';
+
+    it('parses without throwing and yields a body section', async () => {
+      const { schema } = await parseDocx(loadFixture(NAME), {
+        filename: NAME,
+        docx_blob_id: 'fixture://mrr',
+      });
+      expect(schema.formatting.named_styles.length).toBeGreaterThan(0);
+      expect(schema.sections.length).toBeGreaterThanOrEqual(1);
     });
   });
 

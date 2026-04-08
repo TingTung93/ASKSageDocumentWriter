@@ -24,7 +24,14 @@ import type {
   SynthesisResult,
 } from './types';
 
-export const DEFAULT_SYNTHESIS_MODEL = 'google-gemini-2.5-flash';
+// Synthesis runs ONCE per template and the result is cached. Quality
+// matters far more than cost on this call. Sonnet 4.6 produces much
+// better section breakdowns and structured JSON than Flash on complex
+// templates (PWS, market research) — Flash routinely runs out of output
+// budget on schemas with 30+ sections and produces only the first few.
+// Switched as the default after empirical comparison on real DHA
+// templates 2026-04-07.
+export const DEFAULT_SYNTHESIS_MODEL = 'google-claude-46-sonnet';
 
 export async function synthesizeSchema(
   client: AskSageClient,
