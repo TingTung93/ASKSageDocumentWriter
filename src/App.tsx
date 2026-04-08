@@ -10,6 +10,7 @@ import { AuditLog } from './routes/AuditLog';
 import { Settings } from './routes/Settings';
 import { DebugPanel } from './components/DebugPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ToastContainer } from './components/ToastContainer';
 
 // HashRouter (not BrowserRouter) so the built app works from file://,
 // from an internal share, or from any static server without rewrite rules.
@@ -38,6 +39,7 @@ export function App() {
           </Shell>
         </HashRouter>
       </ErrorBoundary>
+      <ToastContainer />
       <DebugPanel />
     </>
   );

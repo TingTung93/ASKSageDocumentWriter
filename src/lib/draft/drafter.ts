@@ -22,6 +22,12 @@ export interface DraftSectionArgs {
   project_description: string;
   shared_inputs: Record<string, string>;
   prior_summaries: PriorSectionSummary[];
+  /**
+   * Pre-rendered project context block (notes + extracted file text).
+   * Built once per project run by the orchestrator and passed to every
+   * section call so the drafter doesn't re-render it 30 times.
+   */
+  context_block?: string | null;
   options?: DraftingOptions;
 }
 
@@ -39,6 +45,7 @@ export async function draftSection(
     project_description: args.project_description,
     shared_inputs: args.shared_inputs,
     prior_summaries: args.prior_summaries,
+    context_block: args.context_block,
   });
 
   const { data, raw } = await client.queryJson<LLMDraftOutput>({

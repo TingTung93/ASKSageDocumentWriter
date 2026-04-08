@@ -11,7 +11,12 @@ import type { ApplyResult } from '../lib/edit/types';
 import { DropZone } from '../components/DropZone';
 import { SearchFilter, matchesSearch } from '../components/SearchFilter';
 import { EmptyState } from '../components/EmptyState';
+import { Spinner } from '../components/Spinner';
 import { loadSettings } from '../lib/settings/store';
+import { toast } from '../lib/state/toast';
+import { buildTemplateBundle } from '../lib/share/bundle';
+import { downloadBundle, bundleFilename } from '../lib/share/download';
+import { importBundleFromText } from '../lib/share/import';
 
 // Phase 1a UI: drop a DOCX file → parser produces structural schema →
 // row in the local template library → click to view the schema.
@@ -63,16 +68,22 @@ export function Templates() {
         schema_json: result.schema,
       };
       await db.templates.put(updated);
-      // eslint-disable-next-line no-console
-      console.info(
-        `[Templates] synthesis complete; ${result.schema.sections.filter((s) => s.intent).length}/${result.schema.sections.length} sections have intent; usage:`,
-        result.usage,
+      const intentCount = result.schema.sections.filter((s) => s.intent).length;
+      toast.success(
+        `Synthesis complete · ${intentCount}/${result.schema.sections.length} sections have intent`,
       );
+      if (result.body_truncated) {
+        toast.sticky(
+          'error',
+          `Document body was truncated: only ${result.body_paragraphs_sent}/${result.body_paragraphs_total} paragraphs (${result.body_chars_sent.toLocaleString()} chars) fit under the cap. Sections beyond that point may be missing. Raise body_cap_chars or use a smaller template.`,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error('[Templates] synthesis failed:', err);
       setSynthError(message);
+      toast.error(`Synthesis failed: ${message}`);
     } finally {
       setSynthesizingId(null);
     }
@@ -80,8 +91,15 @@ export function Templates() {
 
   async function onFile(file: File) {
     setParseError(null);
-    if (!file.name.toLowerCase().endsWith('.docx')) {
-      setParseError(`Not a DOCX: ${file.name}`);
+    // Two accepted file types: a raw .docx (parse it) or a .json
+    // bundle exported from this app (import it).
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith('.json')) {
+      await importBundleFile(file);
+      return;
+    }
+    if (!lower.endsWith('.docx')) {
+      setParseError(`Not a DOCX or share bundle: ${file.name}`);
       return;
     }
     setParsing(true);
@@ -103,14 +121,16 @@ export function Templates() {
         schema_json: schema,
       };
       await db.templates.put(record);
-      // eslint-disable-next-line no-console
-      console.info(`[Templates] stored template ${schema.id} with ${schema.sections.length} sections`);
       setSelectedId(schema.id);
+      toast.success(
+        `Ingested ${file.name} · ${schema.sections.length} section${schema.sections.length === 1 ? '' : 's'}`,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error('[Templates] parse failed:', err);
       setParseError(message);
+      toast.error(`Parse failed: ${message}`);
     } finally {
       setParsing(false);
     }
@@ -119,6 +139,40 @@ export function Templates() {
   async function onDelete(id: string) {
     await db.templates.delete(id);
     if (selectedId === id) setSelectedId(null);
+  }
+
+  async function importBundleFile(file: File) {
+    setParsing(true);
+    try {
+      const text = await file.text();
+      const summary = await importBundleFromText(text);
+      if (summary.kind !== 'template') {
+        toast.error(
+          `That bundle is a ${summary.kind} bundle. Drop it on the Projects tab instead.`,
+        );
+        return;
+      }
+      setSelectedId(summary.template_ids[0] ?? null);
+      toast.success(`Imported template "${summary.display_name}"`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setParseError(message);
+      toast.error(`Bundle import failed: ${message}`);
+    } finally {
+      setParsing(false);
+    }
+  }
+
+  async function onShareTemplate(template: TemplateRecord) {
+    try {
+      const bundle = await buildTemplateBundle(template);
+      const filename = bundleFilename(template.name, 'template');
+      downloadBundle(filename, bundle);
+      toast.success(`Exported ${filename}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Export failed: ${message}`);
+    }
   }
 
   return (
@@ -132,11 +186,11 @@ export function Templates() {
       </p>
 
       <DropZone
-        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        accept=".docx,.json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/json"
         onFile={onFile}
         disabled={parsing}
-        label="Drop a DOCX template here, or click to choose"
-        hint="Parsed locally — never uploaded anywhere."
+        label="Drop a DOCX template OR a shared .asdbundle.json file here"
+        hint="DOCX files are parsed locally. Bundle files import a template a teammate exported from this tool."
       />
       {parsing && <p className="note">Parsing…</p>}
       {parseError && <div className="error">Parse failed: {parseError}</div>}
@@ -180,11 +234,24 @@ export function Templates() {
             </span>
             <button
               type="button"
+              className="btn-secondary btn-sm"
+              title="Export this template as a shareable bundle file"
+              onClick={(e) => {
+                e.stopPropagation();
+                void onShareTemplate(t);
+              }}
+              style={{ marginLeft: '0.25rem' }}
+            >
+              share
+            </button>
+            <button
+              type="button"
+              className="btn-danger btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(t.id);
               }}
-              style={{ marginLeft: '0.25rem', background: '#a33', borderColor: '#a33', padding: '0.25rem 0.5rem', fontSize: 11 }}
+              style={{ marginLeft: '0.25rem' }}
             >
               delete
             </button>
@@ -229,22 +296,18 @@ function SchemaViewer({ schema, templateId, onSynthesize, synthesizing, synthErr
         <span style={{ flex: 1 }} />
         <button
           type="button"
+          className={hasSemantic ? 'btn-secondary btn-sm' : 'btn-sm'}
           onClick={onSynthesize}
           disabled={synthesizing || !canSynthesize}
           title={!canSynthesize ? 'Connect on the Connection tab first' : `Calls ${DEFAULT_SYNTHESIS_MODEL} via /server/query`}
-          style={{
-            margin: 0,
-            padding: '0.4rem 0.8rem',
-            background: hasSemantic ? '#666' : '#2050a0',
-            borderColor: hasSemantic ? '#666' : '#2050a0',
-            fontSize: 12,
-          }}
         >
-          {synthesizing
-            ? 'Synthesizing…'
-            : hasSemantic
-              ? 'Re-synthesize semantic'
-              : 'Synthesize semantic'}
+          {synthesizing ? (
+            <Spinner light label="Synthesizing…" />
+          ) : hasSemantic ? (
+            'Re-synthesize semantic'
+          ) : (
+            'Synthesize semantic'
+          )}
         </button>
       </div>
       {synthError && <div className="error">Synthesis failed: {synthError}</div>}
@@ -426,11 +489,11 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
               </li>
             ))}
           </ul>
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-            <button type="button" onClick={onAccept} style={{ background: '#060', borderColor: '#060' }}>
+          <div className="btn-row" style={{ marginTop: '0.5rem' }}>
+            <button type="button" className="btn-success" onClick={onAccept}>
               Accept and save
             </button>
-            <button type="button" onClick={onReject} style={{ background: '#666', borderColor: '#666' }}>
+            <button type="button" className="btn-secondary" onClick={onReject}>
               Reject
             </button>
           </div>

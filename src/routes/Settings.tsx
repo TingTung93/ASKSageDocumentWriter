@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useAuth } from '../lib/state/auth';
 import { loadSettings, saveSettings } from '../lib/settings/store';
+import { toast } from '../lib/state/toast';
 import {
   DEFAULT_COST_ASSUMPTIONS,
   DEFAULT_MODEL_OVERRIDES,
@@ -106,14 +107,15 @@ export function Settings() {
       <h2>Reset</h2>
       <button
         type="button"
+        className="btn-danger"
         onClick={async () => {
           if (!confirm('Reset all settings to defaults?')) return;
           await saveSettings({
             models: { ...DEFAULT_MODEL_OVERRIDES },
             cost: { ...DEFAULT_COST_ASSUMPTIONS },
           });
+          toast.success('Settings reset to defaults');
         }}
-        style={{ background: '#a33', borderColor: '#a33' }}
       >
         Reset to defaults
       </button>
@@ -155,7 +157,6 @@ function ModelOverrideRow({
   // isn't in the connected models list. Saves on blur or button click.
   const [draft, setDraft] = useState(current ?? '');
   const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   useEffect(() => {
     setDraft(current ?? '');
@@ -174,7 +175,9 @@ function ModelOverrideRow({
       const next = value.trim() === '' ? null : value.trim();
       const settings = await loadSettings();
       await saveSettings({ models: { ...settings.models, [meta.stage]: next } });
-      setSavedAt(Date.now());
+      toast.success(`${meta.label}: ${next ?? `default (${meta.default})`}`);
+    } catch (err) {
+      toast.error(`Failed to save: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSaving(false);
     }
@@ -186,11 +189,14 @@ function ModelOverrideRow({
     void commit(value);
   }
 
+  const isOverridden = current !== null;
   return (
-    <div style={{ border: '1px solid #ddd', borderRadius: 6, padding: '0.75rem 1rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '1rem' }}>
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
         <strong>{meta.label}</strong>
-        <span className="note">default: {meta.default}</span>
+        <span className={`badge ${isOverridden ? 'badge-primary' : ''}`}>
+          {isOverridden ? 'override' : 'default'}
+        </span>
       </div>
       <p className="note" style={{ marginTop: '0.25rem' }}>
         {meta.description}
@@ -199,10 +205,10 @@ function ModelOverrideRow({
         <select
           value={draft}
           onChange={onSelect}
-          style={{ flex: '0 0 14rem', padding: '0.5rem', font: 'inherit' }}
+          style={{ flex: '0 0 14rem' }}
           disabled={saving}
         >
-          <option value="">(default — {meta.default})</option>
+          <option value="">default — {meta.default}</option>
           {knownIds.map((id) => (
             <option key={id} value={id}>
               {id}
@@ -211,6 +217,7 @@ function ModelOverrideRow({
         </select>
         <input
           type="text"
+          className="mono"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => {
@@ -220,11 +227,6 @@ function ModelOverrideRow({
           style={{ flex: 1 }}
           disabled={saving}
         />
-        {savedAt && Date.now() - savedAt < 3000 && (
-          <span className="note" style={{ alignSelf: 'center' }}>
-            saved
-          </span>
-        )}
       </div>
     </div>
   );
@@ -244,14 +246,26 @@ function CostAssumptionsSection({ cost }: { cost: CostAssumptions }) {
         value={cost.drafting_tokens_out_per_section}
       />
       <CostField
-        label="Cleanup tokens-in per paragraph"
-        field="cleanup_tokens_in_per_paragraph"
-        value={cost.cleanup_tokens_in_per_paragraph}
+        label="Characters per token"
+        field="chars_per_token"
+        value={cost.chars_per_token}
+        step={0.1}
       />
       <CostField
-        label="Cleanup tokens-out per paragraph"
-        field="cleanup_tokens_out_per_paragraph"
-        value={cost.cleanup_tokens_out_per_paragraph}
+        label="Cleanup system prompt overhead (tokens)"
+        field="cleanup_system_prompt_tokens"
+        value={cost.cleanup_system_prompt_tokens}
+      />
+      <CostField
+        label="Cleanup framing tokens per paragraph"
+        field="cleanup_paragraph_overhead_tokens"
+        value={cost.cleanup_paragraph_overhead_tokens}
+      />
+      <CostField
+        label="Cleanup output ratio (out / in)"
+        field="cleanup_output_ratio"
+        value={cost.cleanup_output_ratio}
+        step={0.05}
       />
       <CostField
         label="USD per 1k input tokens"
@@ -281,7 +295,6 @@ function CostField({
   step?: number;
 }) {
   const [draft, setDraft] = useState(String(value));
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
   useEffect(() => {
     setDraft(String(value));
@@ -294,22 +307,19 @@ function CostField({
       return;
     }
     if (parsed === value) return;
-    const settings = await loadSettings();
-    const nextCost: CostAssumptions = { ...settings.cost, [field]: parsed };
-    await saveSettings({ cost: nextCost });
-    setSavedAt(Date.now());
+    try {
+      const settings = await loadSettings();
+      const nextCost: CostAssumptions = { ...settings.cost, [field]: parsed };
+      await saveSettings({ cost: nextCost });
+      toast.success(`${label}: ${parsed}`);
+    } catch (err) {
+      toast.error(`Failed to save: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontWeight: 400 }}>
-      <span style={{ fontSize: 12, color: '#555' }}>
-        {label}
-        {savedAt && Date.now() - savedAt < 3000 && (
-          <span className="note" style={{ marginLeft: '0.5rem' }}>
-            saved
-          </span>
-        )}
-      </span>
+      <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{label}</span>
       <input
         type="number"
         min={0}
@@ -317,7 +327,6 @@ function CostField({
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => void commit()}
-        style={{ padding: '0.4rem' }}
       />
     </label>
   );

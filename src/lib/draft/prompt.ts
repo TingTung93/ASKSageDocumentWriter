@@ -19,6 +19,12 @@ export interface BuildDraftingPromptArgs {
    * body text per call.
    */
   prior_summaries: PriorSectionSummary[];
+  /**
+   * Pre-rendered project context block (chat notes + extracted file
+   * text). The drafter only needs the final string; rendering and
+   * capping happen in lib/project/context.
+   */
+  context_block?: string | null;
 }
 
 export interface BuiltDraftingPrompt {
@@ -64,7 +70,7 @@ DRAFTING GUIDANCE:
 Return STRICT JSON only.`;
 
 export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftingPrompt {
-  const { template, section, project_description, shared_inputs, prior_summaries } = args;
+  const { template, section, project_description, shared_inputs, prior_summaries, context_block } = args;
   const lines: string[] = [];
 
   // ─── Document context ─────────────────────────────────────────────
@@ -78,6 +84,12 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
     for (const [k, v] of Object.entries(shared_inputs)) {
       if (v && v.trim()) lines.push(`  ${k}: ${v}`);
     }
+  }
+
+  // ─── Project context (chat notes + attached file text) ────────────
+  if (context_block) {
+    lines.push(``);
+    lines.push(context_block);
   }
 
   // ─── Style block (overall document voice) ─────────────────────────

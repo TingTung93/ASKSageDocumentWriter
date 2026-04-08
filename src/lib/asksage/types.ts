@@ -74,31 +74,6 @@ export class AskSageError extends Error {
   }
 }
 
-// ─── Dataset / file management types (User API surface) ────────────
-
-export interface DatasetInfo {
-  /** Dataset name as it appears in Ask Sage's UI */
-  name: string;
-  /** Optional description if the API returns one */
-  description?: string;
-  /** Optional file count if the API returns it */
-  file_count?: number;
-}
-
-export interface IngestedFileInfo {
-  filename: string;
-  dataset: string;
-  /** Free-form metadata the API returns; passed through unchanged */
-  [key: string]: unknown;
-}
-
-export interface DatasetsResponse {
-  /** Some Ask Sage tenants return { response: string[] } or { data: ... } */
-  response?: string[] | DatasetInfo[];
-  data?: string[] | DatasetInfo[];
-  status?: number | string;
-}
-
 export interface VerifyDatasetResult {
   name: string;
   /** True if the call to /server/query against the dataset succeeded */
@@ -111,4 +86,81 @@ export interface VerifyDatasetResult {
   vectors_down: boolean;
   /** Error message if the verification call failed */
   error: string | null;
+}
+
+// ─── /server/get-datasets ─────────────────────────────────────────
+
+export interface GetDatasetsResponse {
+  /** Flat list of dataset names. May include user_custom_<USERID>_<NAME>_content entries. */
+  response: string[];
+  status?: number;
+}
+
+// ─── /server/file ─────────────────────────────────────────────────
+// Multipart upload of a single file. Ask Sage runs its own extractor
+// (handles DOCX, PDF, audio/video, etc.) and returns the extracted
+// plaintext inline as `ret`. Max 250 MB for documents, 500 MB for A/V.
+
+export interface UploadFileResponse {
+  response: string;
+  /** Extracted plaintext from the uploaded file */
+  ret: string;
+  status: number;
+}
+
+// ─── /server/train ────────────────────────────────────────────────
+// Adds a chunk of text to the user's knowledge base. Vectors live in
+// Ask Sage. force_dataset routes the content into a specific dataset
+// name; without it, Ask Sage picks the default. Optional summarize +
+// summarize_model lets Ask Sage compress before storage.
+
+export interface TrainRequest {
+  /** Short metadata describing this content (e.g. "PWS reference, project X") */
+  context: string;
+  /** The actual text to ingest */
+  content: string;
+  /** Optional: have Ask Sage summarize before embedding */
+  summarize?: boolean;
+  summarize_model?: string;
+  /** Optional: route into a named dataset (creates it if it doesn't exist) */
+  force_dataset?: string;
+}
+
+export interface TrainResponse {
+  response: string;
+  /** Embedding id Ask Sage assigned to this chunk */
+  embedding?: string;
+  status: number;
+}
+
+// ─── /server/query_with_file ──────────────────────────────────────
+// Same response shape as /server/query. The `file` parameter takes a
+// filename (or array of filenames) that's already been uploaded via
+// /server/file in a prior call — it is NOT a multipart upload itself.
+
+export interface QueryWithFileInput {
+  message: string;
+  file: string | string[];
+  model?: string;
+  dataset?: string | string[];
+  temperature?: number;
+  limit_references?: number;
+  live?: 0 | 1 | 2;
+  system_prompt?: string;
+  usage?: boolean;
+}
+
+// ─── /server/tokenizer ────────────────────────────────────────────
+
+export interface TokenizerRequest {
+  content: string;
+  model: string;
+}
+
+export interface TokenizerResponse {
+  /** Exact token count for the given content under the given model */
+  response?: number;
+  tokens?: number;
+  status?: number;
+  [key: string]: unknown;
 }

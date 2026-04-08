@@ -1,11 +1,16 @@
 import {
   AskSageError,
-  type DatasetInfo,
-  type DatasetsResponse,
+  type GetDatasetsResponse,
   type GetModelsResponse,
   type ModelInfo,
   type QueryInput,
   type QueryResponse,
+  type QueryWithFileInput,
+  type TokenizerRequest,
+  type TokenizerResponse,
+  type TrainRequest,
+  type TrainResponse,
+  type UploadFileResponse,
   type VerifyDatasetResult,
 } from './types';
 import { writeAuditEntry } from './audit';
@@ -160,37 +165,171 @@ export class AskSageClient {
     return parsed;
   }
 
+  /**
+   * Multipart-form POST. Used for `/server/file` (and any future
+   * upload endpoints). Critical CORS notes:
+   *
+   *   - We do NOT set the Content-Type header ourselves. The browser
+   *     auto-generates `multipart/form-data; boundary=...` when given
+   *     a FormData body. Setting it manually breaks the boundary.
+   *   - The preflight will list `x-access-tokens` (non-safelisted) and
+   *     content-type (with multipart value). Ask Sage's
+   *     Access-Control-Allow-Headers already permits both for /server/*
+   *     since /server/query works with the same custom header.
+   *   - As with `post()`, do NOT add cache: 'no-store' or other options
+   *     that introduce extra headers into the preflight — that's the
+   *     trap we documented in `post()` above.
+   */
+  private async postMultipart<T>(path: string, form: FormData): Promise<T> {
+    const url = this.url(path);
+    const startedAt = Date.now();
+    // Capture a short summary of the form fields for the audit log.
+    const fieldSummary: string[] = [];
+    for (const [k, v] of form.entries()) {
+      if (v instanceof File) {
+        fieldSummary.push(`${k}=<File:${v.name},${v.size}b,${v.type || 'unknown'}>`);
+      } else {
+        const s = String(v);
+        fieldSummary.push(`${k}=${s.length > 80 ? `${s.slice(0, 80)}…` : s}`);
+      }
+    }
+    const reqSummary = `multipart {${fieldSummary.join(', ')}}`;
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(url, {
+        method: 'POST',
+        mode: 'cors',
+        headers: {
+          // NO Content-Type — let the browser set it with the boundary.
+          'x-access-tokens': this.apiKey,
+        },
+        body: form,
+      });
+    } catch (err) {
+      const ms = Date.now() - startedAt;
+      const message = err instanceof Error ? err.message : String(err);
+      void writeAuditEntry({
+        endpoint: path,
+        prompt_excerpt: reqSummary,
+        response_excerpt: '',
+        ms,
+        ok: false,
+        error: `network: ${message}`,
+      });
+      throw new AskSageError(
+        null,
+        `Ask Sage POST ${url}: network failure (${message}). Likely CORS — verify /server/file is allowed from this origin.`,
+      );
+    }
+
+    const ms = Date.now() - startedAt;
+    const text = await res.text();
+    if (!res.ok) {
+      void writeAuditEntry({
+        endpoint: path,
+        prompt_excerpt: reqSummary,
+        response_excerpt: text.slice(0, 1500),
+        ms,
+        ok: false,
+        error: `HTTP ${res.status}`,
+      });
+      throw new AskSageError(
+        res.status,
+        `Ask Sage POST ${url} returned HTTP ${res.status}: ${text.slice(0, 500)}`,
+        text,
+      );
+    }
+
+    let parsed: T;
+    try {
+      parsed = JSON.parse(text) as T;
+    } catch {
+      void writeAuditEntry({
+        endpoint: path,
+        prompt_excerpt: reqSummary,
+        response_excerpt: text.slice(0, 1500),
+        ms,
+        ok: false,
+        error: 'non-JSON body',
+      });
+      throw new AskSageError(
+        res.status,
+        `Ask Sage POST ${url} returned non-JSON body: ${text.slice(0, 500)}`,
+        text,
+      );
+    }
+
+    void writeAuditEntry({
+      endpoint: path,
+      prompt_excerpt: reqSummary,
+      response_excerpt: text.slice(0, 1500),
+      ms,
+      ok: true,
+    });
+    return parsed;
+  }
+
   /** Enumerate models available to the authenticated tenant. */
   async getModels(): Promise<ModelInfo[]> {
     const r = await this.post<GetModelsResponse>('/server/get-models', {});
     return r.data ?? [];
   }
 
-  /** Primary completion endpoint. Used by every drafting/synthesis stage. */
-  async query(input: QueryInput): Promise<QueryResponse> {
-    return this.post<QueryResponse>('/server/query', input);
+  /**
+   * Enumerate datasets via the SERVER surface. The /user/get-datasets
+   * twin is CORS-blocked on the health.mil tenant; /server/get-datasets
+   * works because /server/* is the permissive surface. Returns the flat
+   * list of dataset names exactly as Ask Sage stores them — typically
+   * `user_custom_<USERID>_<NAME>_content`.
+   */
+  async getServerDatasets(): Promise<string[]> {
+    const r = await this.post<GetDatasetsResponse>('/server/get-datasets', {});
+    return Array.isArray(r.response) ? r.response : [];
   }
 
   /**
-   * List datasets available to the authenticated user.
+   * Upload a file via /server/file. Ask Sage runs its own extractor
+   * (DOCX, PDF, audio/video) and returns the extracted plaintext
+   * inline as `ret`. The filename is preserved on the server side and
+   * can be referenced later by /server/query_with_file.
    *
-   * NOTE: this calls `/user/get-datasets` which on the DHA health.mil
-   * tenant is CORS-blocked from the browser (see PRD §5 / memory).
-   * The call may throw an AskSageError with status === null. The
-   * caller should catch and fall back to manual dataset entry. On
-   * tenants with permissive CORS this returns the dataset list.
-   *
-   * The Ask Sage API has been observed to return either a flat array
-   * of strings or an array of {name, description?} objects depending
-   * on tenant version. We normalize both to DatasetInfo[].
+   * Limits: 250 MB for documents, 500 MB for audio/video.
    */
-  async getDatasets(): Promise<DatasetInfo[]> {
-    const r = await this.post<DatasetsResponse>('/user/get-datasets', {});
-    const raw = r.response ?? r.data ?? [];
-    if (!Array.isArray(raw)) return [];
-    return raw.map((entry) =>
-      typeof entry === 'string' ? { name: entry } : (entry as DatasetInfo),
-    );
+  async uploadFile(file: File): Promise<UploadFileResponse> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.postMultipart<UploadFileResponse>('/server/file', form);
+  }
+
+  /**
+   * Add content to the user's knowledge base. Pass `force_dataset` to
+   * route the chunk into a specific dataset (creates one with that
+   * name if it doesn't exist yet). Pass `summarize: true` to have Ask
+   * Sage compress the content with `summarize_model` before embedding.
+   */
+  async train(input: TrainRequest): Promise<TrainResponse> {
+    return this.post<TrainResponse>('/server/train', input);
+  }
+
+  /**
+   * /server/query_with_file. The `file` parameter is a path or filename
+   * already known to Ask Sage — typically the original filename of a
+   * file you previously uploaded via /server/file. This is one-shot
+   * file context per query (NOT a multipart upload itself).
+   */
+  async queryWithFile(input: QueryWithFileInput): Promise<QueryResponse> {
+    return this.post<QueryResponse>('/server/query_with_file', input);
+  }
+
+  /** Exact token count for a given content + model via /server/tokenizer. */
+  async tokenize(input: TokenizerRequest): Promise<TokenizerResponse> {
+    return this.post<TokenizerResponse>('/server/tokenizer', input);
+  }
+
+  /** Primary completion endpoint. Used by every drafting/synthesis stage. */
+  async query(input: QueryInput): Promise<QueryResponse> {
+    return this.post<QueryResponse>('/server/query', input);
   }
 
   /**

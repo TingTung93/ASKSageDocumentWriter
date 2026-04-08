@@ -47,7 +47,9 @@ export async function synthesizeSchema(
   // text, instructions, example wording) — not just heading text.
   const paragraphs = await extractParagraphs(docx_bytes);
   const samples = extractSamples(structural, paragraphs);
-  const fullBody = extractFullBody(paragraphs, structural);
+  const fullBody = extractFullBody(paragraphs, structural, {
+    body_cap_chars: opts.body_cap_chars,
+  });
 
   // (3): build prompt.
   const prompt = buildSynthesisPrompt({
@@ -86,5 +88,9 @@ export async function synthesizeSchema(
     usage: raw.usage ?? null,
     prompt_sent: prompt.message,
     model,
+    body_truncated: fullBody.truncated,
+    body_paragraphs_sent: fullBody.lines.length,
+    body_paragraphs_total: fullBody.total_paragraphs,
+    body_chars_sent: fullBody.total_chars,
   };
 }

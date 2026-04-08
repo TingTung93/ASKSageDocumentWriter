@@ -48,6 +48,14 @@ export interface NamedStyle {
   outline_level: number | null;
   /** Numbering id this style references, if any */
   numbering_id: number | null;
+  /** w:pPr/w:jc — paragraph alignment defined by this style (NOT yet resolved through basedOn) */
+  alignment: 'left' | 'center' | 'right' | 'justify' | 'both' | null;
+  /** w:pPr/w:ind/@w:left in twips */
+  indent_left_twips: number | null;
+  /** w:pPr/w:ind/@w:firstLine in twips */
+  indent_first_line_twips: number | null;
+  /** w:pPr/w:ind/@w:hanging in twips */
+  indent_hanging_twips: number | null;
 }
 
 export interface NumberingLevel {

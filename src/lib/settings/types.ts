@@ -25,10 +25,28 @@ export interface CostAssumptions {
   drafting_tokens_in_per_section: number;
   /** Estimated output tokens per drafted section */
   drafting_tokens_out_per_section: number;
-  /** Estimated input tokens per paragraph during a cleanup pass */
-  cleanup_tokens_in_per_paragraph: number;
-  /** Estimated output tokens per paragraph during a cleanup pass */
-  cleanup_tokens_out_per_paragraph: number;
+  /**
+   * Average characters per token. ~4 is a reasonable default for English
+   * with the GPT/Claude tokenizers; tune downward for code-heavy or
+   * acronym-heavy documents.
+   */
+  chars_per_token: number;
+  /**
+   * Fixed token overhead for the cleanup system prompt (op catalog,
+   * instructions). Roughly 600 for the current prompt.
+   */
+  cleanup_system_prompt_tokens: number;
+  /**
+   * Token overhead per paragraph from the `[<index>] ` framing the
+   * cleanup pass adds around each line of body text.
+   */
+  cleanup_paragraph_overhead_tokens: number;
+  /**
+   * Output-to-input ratio used to estimate cleanup output tokens.
+   * Surgical edit passes typically return 10–20% of the input volume
+   * because only changed paragraphs are echoed back.
+   */
+  cleanup_output_ratio: number;
   /** USD per 1k input tokens (display only — Ask Sage isn't billed this way) */
   usd_per_1k_in: number;
   /** USD per 1k output tokens */
@@ -56,8 +74,10 @@ export const DEFAULT_COST_ASSUMPTIONS: CostAssumptions = {
   // can tune these in the Settings route once they have real data.
   drafting_tokens_in_per_section: 4000,
   drafting_tokens_out_per_section: 1500,
-  cleanup_tokens_in_per_paragraph: 250,
-  cleanup_tokens_out_per_paragraph: 80,
+  chars_per_token: 4,
+  cleanup_system_prompt_tokens: 600,
+  cleanup_paragraph_overhead_tokens: 5,
+  cleanup_output_ratio: 0.15,
   usd_per_1k_in: 0,
   usd_per_1k_out: 0,
 };

@@ -12,6 +12,7 @@ import {
   SCHEMA_VERSION,
   type FormattingHalf,
   type HeaderFooterPart,
+  type NamedStyle,
   type TemplateSchema,
 } from '../types';
 import { parseDocumentXml, parseHeaderFooterXml, type ParagraphInfo } from './document';
@@ -109,6 +110,13 @@ export async function parseDocx(
     : { default_font: { family: null, size_pt: null }, named_styles: [] };
   const numbering = numberingDom ? parseNumberingXml(numberingDom) : [];
   const document = parseDocumentXml(docDom);
+  // Resolve style-inherited alignment / indent into each paragraph that
+  // didn't override the value at the pPr level. Without this pass,
+  // headings and titles that derive their centering / indent from a
+  // paragraph style end up looking left-aligned with no indent in the
+  // preview and to the LLM.
+  resolveInheritedFormatting(document.paragraphs, styles.named_styles);
+  // Resolve header / footer parts the same way once we've loaded them.
   const contentControls = findContentControls(docDom);
 
   const fillRegions = detectFillRegions({
@@ -159,6 +167,8 @@ export async function parseDocx(
   // self-contained XML document rooted at <w:hdr> or <w:ftr>.
   const header_parts = await loadPartContents(zip, headers.map((h) => h.part));
   const footer_parts = await loadPartContents(zip, footers.map((f) => f.part));
+  for (const hp of header_parts) resolveInheritedFormatting(hp.paragraphs, styles.named_styles);
+  for (const fp of footer_parts) resolveInheritedFormatting(fp.paragraphs, styles.named_styles);
 
   return {
     schema,
@@ -207,6 +217,67 @@ export async function extractParagraphs(
 // Re-export so other modules can build their own header/footer rendering
 // against parsed parts.
 export type { PartContent as HeaderFooterPartContent };
+
+/**
+ * Walk the basedOn chain for a given style id and return the first
+ * non-null value of `pick(style)` encountered. Cycles are guarded by a
+ * visited set; depth is bounded by the number of styles.
+ */
+function inheritedStyleValue<T>(
+  styleId: string | null,
+  styleMap: Map<string, NamedStyle>,
+  pick: (s: NamedStyle) => T | null,
+): T | null {
+  let current = styleId;
+  const visited = new Set<string>();
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    const style = styleMap.get(current);
+    if (!style) return null;
+    const value = pick(style);
+    if (value !== null && value !== undefined) return value;
+    current = style.based_on;
+  }
+  return null;
+}
+
+/**
+ * Mutate `paragraphs` in place: for any paragraph whose pPr did NOT
+ * specify alignment / indent, walk its style chain and fill in the
+ * inherited value. This is what makes "centered title", "right-aligned
+ * date", and indented heading styles render correctly in the preview
+ * and show up to the LLM during cleanup.
+ */
+function resolveInheritedFormatting(
+  paragraphs: ParagraphInfo[],
+  namedStyles: NamedStyle[],
+): void {
+  if (namedStyles.length === 0) return;
+  const styleMap = new Map(namedStyles.map((s) => [s.id, s]));
+  for (const p of paragraphs) {
+    if (!p.style_id) continue;
+    if (p.alignment === null) {
+      p.alignment = inheritedStyleValue(p.style_id, styleMap, (s) => s.alignment);
+    }
+    if (p.indent_left_twips === null) {
+      p.indent_left_twips = inheritedStyleValue(p.style_id, styleMap, (s) => s.indent_left_twips);
+    }
+    if (p.indent_first_line_twips === null) {
+      p.indent_first_line_twips = inheritedStyleValue(
+        p.style_id,
+        styleMap,
+        (s) => s.indent_first_line_twips,
+      );
+    }
+    if (p.indent_hanging_twips === null) {
+      p.indent_hanging_twips = inheritedStyleValue(
+        p.style_id,
+        styleMap,
+        (s) => s.indent_hanging_twips,
+      );
+    }
+  }
+}
 
 function parseXml(xml: string): Document {
   const dom = new DOMParser().parseFromString(xml, 'text/xml');

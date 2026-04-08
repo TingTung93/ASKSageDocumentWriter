@@ -70,10 +70,10 @@ export function AuditLog() {
       </p>
 
       <h2>Totals (last {records?.length ?? 0} calls)</h2>
-      <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', fontSize: 13, marginBottom: '1rem' }}>
+      <div className="stat-grid">
         <Stat label="Calls" value={totals.calls.toLocaleString()} />
-        <Stat label="OK" value={totals.ok.toLocaleString()} color="#060" />
-        <Stat label="Errors" value={totals.errors.toLocaleString()} color="#900" />
+        <Stat label="OK" value={totals.ok.toLocaleString()} variant="success" />
+        <Stat label="Errors" value={totals.errors.toLocaleString()} variant="danger" />
         <Stat label="Tokens in" value={totals.tokens_in.toLocaleString()} />
         <Stat label="Tokens out" value={totals.tokens_out.toLocaleString()} />
         <Stat label="Total tokens" value={(totals.tokens_in + totals.tokens_out).toLocaleString()} />
@@ -109,11 +109,7 @@ export function AuditLog() {
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          onClick={onClearAll}
-          style={{ background: '#a33', borderColor: '#a33' }}
-        >
+        <button type="button" className="btn-danger" onClick={onClearAll}>
           Clear all
         </button>
       </div>
@@ -135,56 +131,60 @@ export function AuditLog() {
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+function Stat({
+  label,
+  value,
+  variant,
+}: {
+  label: string;
+  value: string;
+  variant?: 'success' | 'danger';
+}) {
+  const cls = variant ? `stat is-${variant}` : 'stat';
   return (
-    <div
-      style={{
-        padding: '0.5rem 0.75rem',
-        background: '#f5f5f5',
-        border: '1px solid #ddd',
-        borderRadius: 4,
-        minWidth: 100,
-      }}
-    >
-      <div style={{ fontSize: 11, color: '#666', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: color ?? '#1a1a1a' }}>{value}</div>
+    <div className={cls}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
     </div>
   );
 }
 
 function AuditRow({ record }: { record: AuditRecord }) {
   const [expanded, setExpanded] = useState(false);
-  const borderColor = record.ok ? '#0a0' : '#b00';
   return (
     <li
       style={{
-        padding: '0.5rem 0.75rem',
-        border: '1px solid #ddd',
-        borderLeft: `3px solid ${borderColor}`,
-        borderRadius: 4,
+        padding: 'var(--space-2) var(--space-3)',
+        border: '1px solid var(--color-border)',
+        borderLeft: `3px solid ${record.ok ? 'var(--color-success)' : 'var(--color-danger)'}`,
+        borderRadius: 'var(--radius-sm)',
         marginBottom: '0.25rem',
         fontSize: 12,
-        background: '#fff',
+        background: 'var(--color-surface)',
       }}
     >
       <div
-        style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', cursor: 'pointer' }}
+        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
         onClick={() => setExpanded(!expanded)}
       >
-        <span style={{ fontFamily: 'ui-monospace, Consolas, monospace', color: '#666', fontSize: 11 }}>
+        <span className="muted" style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
           {new Date(record.ts).toLocaleString()}
         </span>
-        <strong style={{ color: borderColor }}>{record.ok ? 'OK' : 'ERR'}</strong>
+        <span className={`badge ${record.ok ? 'badge-success' : 'badge-danger'}`}>
+          {record.ok ? 'OK' : 'ERR'}
+        </span>
         <code>{record.endpoint}</code>
-        {record.model && <span style={{ color: '#446' }}>· {record.model}</span>}
-        <span style={{ color: '#666' }}>· {record.ms}ms</span>
+        {record.model && <span className="muted">· {record.model}</span>}
+        <span className="muted">· {record.ms}ms</span>
         {(record.tokens_in || record.tokens_out) && (
-          <span style={{ color: '#666' }}>
+          <span className="muted">
             · {record.tokens_in ?? 0}+{record.tokens_out ?? 0} tokens
           </span>
         )}
-        {record.error && <span style={{ color: '#900', marginLeft: '0.5rem' }}>{record.error}</span>}
-        <span style={{ marginLeft: 'auto', color: '#888' }}>{expanded ? '▾' : '▸'}</span>
+        {record.error && (
+          <span style={{ color: 'var(--color-danger)', marginLeft: '0.5rem' }}>{record.error}</span>
+        )}
+        <span className="muted" style={{ marginLeft: 'auto' }}>{expanded ? '▾' : '▸'}</span>
       </div>
       {expanded && (
         <div style={{ marginTop: '0.5rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
