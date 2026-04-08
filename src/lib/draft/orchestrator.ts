@@ -22,6 +22,13 @@ import {
 } from '../project/chunk';
 import { extractParagraphs, type ParagraphInfo } from '../template/parser';
 import { blobToFile, extractedTextFromRet } from '../asksage/extract';
+import { runDraftWithCriticLoop } from './critique';
+import {
+  runCrossSectionReview,
+  type CrossSectionResult,
+  type DraftedSectionInput,
+} from './cross_section';
+import { loadSettings } from '../settings/store';
 
 export interface DraftProjectCallbacks {
   onSectionStart?: (template: TemplateRecord, section: BodyFillRegion) => void;
@@ -36,6 +43,10 @@ export interface DraftProjectCallbacks {
   onReferenceExtractStart?: (file: ProjectContextFile) => void;
   /** Called when extraction completes (success or failure). */
   onReferenceExtractDone?: (file: ProjectContextFile, chars: number, error?: string) => void;
+  /** Called once after every section has converged, before the cross-section review pass. */
+  onCrossSectionStart?: (sectionCount: number) => void;
+  /** Called when the cross-section review completes. */
+  onCrossSectionComplete?: (result: CrossSectionResult) => void;
 }
 
 export interface DraftProjectArgs {
@@ -112,6 +123,19 @@ export async function draftProject(
 
   // Notes are global to the run (cheap, high-signal).
   const notesBlock = renderNotesBlock(items);
+
+  // Read critic settings ONCE for the run. Disabled by default unless
+  // settings.critic.enabled is true. Single-pass behavior preserved
+  // when disabled (max_iterations: 0 in the loop runner short-circuits).
+  const settings = await loadSettings();
+  const criticEnabled = settings.critic?.enabled ?? false;
+  const criticMaxIterations = criticEnabled ? settings.critic?.max_iterations ?? 2 : 0;
+  const criticStrictness = settings.critic?.strictness ?? 'moderate';
+  const criticModel = settings.critic?.critic_model ?? settings.models.critic ?? undefined;
+
+  // Accumulate drafted section inputs for the post-loop cross-section
+  // review pass. Each successful section is appended.
+  const draftedSectionInputs: DraftedSectionInput[] = [];
 
   // Compute total chunk pool size once for the references-block header.
   // Used by every section's render call so the header reads "X of Y
@@ -203,7 +227,12 @@ export async function draftProject(
       const referencesBlock = renderSelectedChunks(selectedChunks, totalChunkCount);
 
       try {
-        const result = await draftSection(client, {
+        // Phase 3: wrap the section call in the critic loop. The
+        // closure captures the per-section context so the loop can
+        // re-invoke draftSection with revision notes inlined into
+        // the prompt. When max_iterations is 0 the loop short-circuits
+        // to a single-pass behavior identical to the legacy flow.
+        const baseDraftArgs = {
           template: template.schema_json,
           section,
           project_description: project.description,
@@ -215,19 +244,38 @@ export async function draftProject(
           options: {
             ...options,
             dataset: resolvedDataset,
-            // Project-level live search applies to every section unless
-            // an explicit per-call override was passed in options.
             live: options?.live ?? project.live_search ?? 0,
           },
+        };
+
+        const loopResult = await runDraftWithCriticLoop({
+          client,
+          draftFn: async (revisionNotes) => {
+            const r = await draftSection(client, {
+              ...baseDraftArgs,
+              revision_notes_block: revisionNotes,
+            });
+            return {
+              paragraphs: r.paragraphs,
+              prompt_sent: r.prompt_sent,
+              references: r.references,
+              tokens_in: r.tokens_in,
+              tokens_out: r.tokens_out,
+              model: r.model,
+            };
+          },
+          template: template.schema_json,
+          section,
+          project_description: project.description,
+          references_block: referencesBlock,
+          template_example: templateExample,
+          prior_summaries: relevant,
+          max_iterations: criticMaxIterations,
+          strictness: criticStrictness,
+          model: criticModel,
         });
 
-        const summary = summarizeDraft(
-          result.paragraphs,
-          // The LLM's self_summary lives in the raw response — drafter
-          // doesn't return it directly. Pull from the first paragraph
-          // as a fallback for now; future iteration can plumb it through.
-          undefined,
-        );
+        const summary = summarizeDraft(loopResult.paragraphs, undefined);
         const ps: PriorSectionSummary = {
           section_id: section.id,
           name: section.name,
@@ -238,16 +286,28 @@ export async function draftProject(
 
         const ready: DraftRecord = {
           ...pendingRecord,
-          paragraphs: result.paragraphs,
-          references: result.references,
-          prompt_sent: result.prompt_sent,
+          paragraphs: loopResult.paragraphs,
+          references: loopResult.references,
+          prompt_sent: loopResult.prompt_sent,
           status: 'ready',
           generated_at: new Date().toISOString(),
-          model: result.model,
-          tokens_in: result.tokens_in,
-          tokens_out: result.tokens_out,
+          model: loopResult.model,
+          tokens_in: loopResult.total_tokens_in,
+          tokens_out: loopResult.total_tokens_out,
+          critic_iterations: loopResult.iterations,
+          critic_converged: loopResult.converged,
+          critic_strictness: criticEnabled ? criticStrictness : undefined,
         };
         await db.drafts.put(ready);
+
+        // Stash for the post-loop cross-section review pass.
+        draftedSectionInputs.push({
+          template_id: template.id,
+          template_name: template.name,
+          section,
+          paragraphs: loopResult.paragraphs,
+        });
+
         callbacks?.onSectionComplete?.(template, section, ready);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -265,6 +325,28 @@ export async function draftProject(
         // Continue with the next section — partial success is better
         // than aborting the whole project.
       }
+    }
+  }
+
+  // Phase 4: cross-section review pass. One LLM call against the
+  // assembled draft looking for contradictions, terminology drift,
+  // and missing cross-references that span 2+ sections. The result
+  // is surfaced to the UI via the onCrossSectionComplete callback;
+  // we do NOT auto-fix — humans review.
+  if (draftedSectionInputs.length >= 2) {
+    callbacks?.onCrossSectionStart?.(draftedSectionInputs.length);
+    try {
+      const xResult = await runCrossSectionReview({
+        client,
+        project_description: project.description,
+        templates: templates.map((t) => t.schema_json),
+        sections: draftedSectionInputs,
+      });
+      callbacks?.onCrossSectionComplete?.(xResult);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[draftProject] cross-section review failed:', err);
+      // Non-fatal: the user still has per-section drafts.
     }
   }
 

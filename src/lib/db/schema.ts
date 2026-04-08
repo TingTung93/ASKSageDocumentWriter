@@ -160,6 +160,13 @@ export interface DraftRecord {
   model: string;
   tokens_in: number;
   tokens_out: number;
+  // ─── v7: Phase 3 critic loop history ───
+  /** Full iteration history from runDraftWithCriticLoop (each iteration = one draft + one critique). */
+  critic_iterations?: import('../draft/critique').CriticLoopIteration[];
+  /** True if the last critique passed; false if the loop hit max_iterations with issues remaining. */
+  critic_converged?: boolean;
+  /** Strictness used for this section's critic loop (for diagnostics). */
+  critic_strictness?: import('../draft/critique').CritiqueStrictness;
 }
 
 export interface AuditRecord {
@@ -224,6 +231,7 @@ class DocWriterDb extends Dexie {
   documents!: Table<DocumentRecord, string>;
   audit!: Table<AuditRecord, number>;
   settings!: Table<AppSettings, string>;
+  recipe_runs!: Table<import('../agent/recipe').RecipeRun, string>;
 
   constructor() {
     super('asksage-doc-writer');
@@ -285,6 +293,19 @@ class DocWriterDb extends Dexie {
       documents: 'id, name, ingested_at',
       audit: '++id, ts, endpoint, ok',
       settings: 'id',
+    });
+    // v7 adds the recipe_runs table for the Phase 5b agentic recipe
+    // runner. Rows are composite-keyed by project+recipe+started_at so
+    // multiple runs of the same recipe on the same project coexist
+    // (one record per run, useful for diagnostics history).
+    this.version(7).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+      recipe_runs: 'id, project_id, recipe_id, started_at, status',
     });
   }
 }
