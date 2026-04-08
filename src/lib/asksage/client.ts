@@ -8,6 +8,7 @@ import {
   type QueryResponse,
   type VerifyDatasetResult,
 } from './types';
+import { writeAuditEntry } from './audit';
 
 /**
  * Default fetch wrapper. We DO NOT pass `fetch` directly because the
@@ -49,6 +50,12 @@ export class AskSageClient {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const url = this.url(path);
+    const startedAt = Date.now();
+    const reqBodyStr = JSON.stringify(body ?? {});
+    const reqModel =
+      body && typeof body === 'object' && 'model' in body
+        ? String((body as { model: unknown }).model)
+        : undefined;
     let res: Response;
     try {
       // Match probe.html's working request shape EXACTLY. Do NOT add
@@ -67,7 +74,7 @@ export class AskSageClient {
           'Content-Type': 'application/json',
           'x-access-tokens': this.apiKey,
         },
-        body: JSON.stringify(body ?? {}),
+        body: reqBodyStr,
       });
     } catch (err) {
       // Network-level failure (CORS, DNS, offline, etc.). The browser
@@ -75,17 +82,35 @@ export class AskSageClient {
       // everything we have so the UI can surface it without DevTools.
       const name = err instanceof Error ? err.name : 'UnknownError';
       const message = err instanceof Error ? err.message : String(err);
-      throw new AskSageError(
-        null,
+      const errorMsg =
         `Network error calling POST ${url}: ${name}: ${message}. ` +
-          `This is typically a CORS preflight rejection, DNS failure, ` +
-          `unreachable host, or browser security policy. The browser ` +
-          `does not expose the underlying reason to JavaScript.`,
-      );
+        `This is typically a CORS preflight rejection, DNS failure, ` +
+        `unreachable host, or browser security policy. The browser ` +
+        `does not expose the underlying reason to JavaScript.`;
+      void writeAuditEntry({
+        endpoint: path,
+        model: reqModel,
+        prompt_excerpt: reqBodyStr,
+        response_excerpt: '',
+        ms: Date.now() - startedAt,
+        ok: false,
+        error: errorMsg,
+      });
+      throw new AskSageError(null, errorMsg);
     }
 
     const text = await res.text();
+    const ms = Date.now() - startedAt;
     if (!res.ok) {
+      void writeAuditEntry({
+        endpoint: path,
+        model: reqModel,
+        prompt_excerpt: reqBodyStr,
+        response_excerpt: text,
+        ms,
+        ok: false,
+        error: `${res.status} ${res.statusText}`,
+      });
       throw new AskSageError(
         res.status,
         `Ask Sage POST ${url} failed (${res.status} ${res.statusText}): ${text || '(empty body)'}`,
@@ -93,15 +118,46 @@ export class AskSageClient {
       );
     }
 
+    let parsed: T;
     try {
-      return JSON.parse(text) as T;
+      parsed = JSON.parse(text) as T;
     } catch {
+      void writeAuditEntry({
+        endpoint: path,
+        model: reqModel,
+        prompt_excerpt: reqBodyStr,
+        response_excerpt: text,
+        ms,
+        ok: false,
+        error: 'non-JSON body',
+      });
       throw new AskSageError(
         res.status,
         `Ask Sage POST ${url} returned non-JSON body: ${text.slice(0, 500)}`,
         text,
       );
     }
+
+    // Successful call — log token usage if the response carries a usage field.
+    let tokens_in: number | undefined;
+    let tokens_out: number | undefined;
+    if (parsed && typeof parsed === 'object' && 'usage' in parsed) {
+      const u = (parsed as { usage?: { prompt_tokens?: number; completion_tokens?: number } }).usage;
+      tokens_in = u?.prompt_tokens;
+      tokens_out = u?.completion_tokens;
+    }
+    void writeAuditEntry({
+      endpoint: path,
+      model: reqModel,
+      prompt_excerpt: reqBodyStr,
+      response_excerpt: text,
+      tokens_in,
+      tokens_out,
+      ms,
+      ok: true,
+    });
+
+    return parsed;
   }
 
   /** Enumerate models available to the authenticated tenant. */
