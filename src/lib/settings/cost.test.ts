@@ -25,9 +25,24 @@ describe('cost projection', () => {
   });
 
   it('cleanup estimate is dominated by content for large documents', () => {
-    // 40,000 characters / 4 = 10,000 content tokens — overhead becomes noise.
+    // 100 paragraphs is bigger than EDIT_CHUNK_SIZE (40) so the
+    // chunked-walk math kicks in: ~3 chunks with overlap, system
+    // prompt repeated per chunk, content inflated by overlap factor.
+    // We assert ranges rather than exact integers so cost-knob
+    // tweaks don't constantly invalidate the test.
     const est = estimateDocumentCleanup(100, 40_000, DEFAULT_COST_ASSUMPTIONS);
-    expect(est.tokens_in).toBe(600 + 10_000 + 500);
+    // Lower bound: at least the un-chunked single-pass math.
+    expect(est.tokens_in).toBeGreaterThanOrEqual(600 + 10_000 + 500);
+    // Upper bound: chunking should not double-charge wildly.
+    expect(est.tokens_in).toBeLessThan((600 + 10_000 + 500) * 2);
+  });
+
+  it('reference files inflate the cleanup estimate', () => {
+    const baseline = estimateDocumentCleanup(50, 20_000, DEFAULT_COST_ASSUMPTIONS);
+    const withRefs = estimateDocumentCleanup(50, 20_000, DEFAULT_COST_ASSUMPTIONS, {
+      reference_chars: 8_000,
+    });
+    expect(withRefs.tokens_in).toBeGreaterThan(baseline.tokens_in);
   });
 
   it('a tiny memo (200 chars) is not estimated as 8k tokens', () => {

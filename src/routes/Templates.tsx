@@ -140,6 +140,20 @@ export function Templates() {
       toast.success(
         `Ingested ${file.name} · ${schema.sections.length} section${schema.sections.length === 1 ? '' : 's'}`,
       );
+
+      // Phase 1 (agentic auto-triggers): synthesize semantic schema
+      // immediately after a successful ingest, no manual button click.
+      // Only runs if the user is connected; otherwise the manual
+      // "synthesize" button on the schema viewer remains as the
+      // fallback. Wrapped so a synthesis failure can't break the
+      // ingest flow.
+      if (apiKey) {
+        // Fire-and-forget: the onSynthesize function manages its own
+        // loading state and toasts. We don't await it because the
+        // ingest is already complete and the user shouldn't be
+        // blocked on an LLM round-trip.
+        void onSynthesize(record);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console

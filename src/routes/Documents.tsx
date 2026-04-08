@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEven
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { renderAsync as renderDocxAsync } from 'docx-preview';
-import { db, type DocumentRecord } from '../lib/db/schema';
+import { db, type DocumentRecord, type ProjectContextFile } from '../lib/db/schema';
 import {
   parseDocx,
   type HeaderFooterPartContent,
@@ -19,6 +19,11 @@ import { createLLMClient } from '../lib/provider/factory';
 import { requestDocumentEdits } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
+import {
+  attachDocumentReference,
+  removeDocumentReference,
+  updateDocumentCleanupContext,
+} from '../lib/document/references';
 import { migrateAll, migrateDocumentEdits } from '../lib/document/migrate';
 import { DropZone } from '../components/DropZone';
 import { SearchFilter, matchesSearch } from '../components/SearchFilter';
@@ -197,6 +202,17 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const [headerParts, setHeaderParts] = useState<HeaderFooterPartContent[]>([]);
   const [footerParts, setFooterParts] = useState<HeaderFooterPartContent[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [chunkProgress, setChunkProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const [attachingRef, setAttachingRef] = useState(false);
+
+  const onAskSage = provider === 'asksage';
+  const referenceFiles = doc.reference_files ?? [];
+  const cleanupDataset = doc.cleanup_dataset_name ?? '';
+  const cleanupLive = doc.cleanup_live_search ?? 0;
+  const cleanupLimit = doc.cleanup_limit_references ?? (cleanupDataset ? 5 : 0);
 
   // Prefer the freshly parsed paragraph list (which lets us count
   // significant paragraphs and sum content characters) over the stored
@@ -220,9 +236,20 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     return { significantParagraphCount: doc.paragraph_count, totalChars: doc.paragraph_count * 50 };
   }, [paragraphs, doc.paragraph_count]);
 
+  // Rough estimate of how many chars the attached references contribute
+  // to every chunk. The on-the-wire cost depends on the actual extracted
+  // text length (which we won't know until upload time), so we use a
+  // conservative ~3x ratio over the stored byte size as a stand-in.
+  const referenceChars = useMemo(
+    () => referenceFiles.reduce((acc, f) => acc + Math.min(f.size_bytes * 3, 8000), 0),
+    [referenceFiles],
+  );
   const cleanupEstimate = useMemo(
-    () => estimateDocumentCleanup(significantParagraphCount, totalChars, cost),
-    [significantParagraphCount, totalChars, cost],
+    () =>
+      estimateDocumentCleanup(significantParagraphCount, totalChars, cost, {
+        reference_chars: referenceChars,
+      }),
+    [significantParagraphCount, totalChars, cost, referenceChars],
   );
 
   const proposed = doc.edits.filter((e) => e.status === 'proposed');
@@ -266,6 +293,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     }
     setRequestError(null);
     setRunning(true);
+    setChunkProgress(null);
     // eslint-disable-next-line no-console
     console.info(`[DocumentDetail] requesting cleanup edits for ${doc.id}`);
     try {
@@ -275,6 +303,17 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         paragraphs,
         instruction: instruction.trim(),
         ...(cleanupModelOverride ? { model: cleanupModelOverride } : {}),
+        // Grounding context — only Ask Sage supports the file/dataset
+        // path; on OpenRouter the UI hides these inputs entirely so we
+        // can pass them straight through.
+        ...(cleanupDataset ? { dataset: cleanupDataset } : {}),
+        ...(cleanupLimit > 0 ? { limit_references: cleanupLimit } : {}),
+        ...(cleanupLive ? { live: cleanupLive } : {}),
+        ...(onAskSage && referenceFiles.length > 0
+          ? { references: referenceFiles }
+          : {}),
+        on_chunk_done: (info) =>
+          setChunkProgress({ done: info.chunk_index + 1, total: info.chunk_count }),
       });
 
       // Build a quick lookup from index → original text for diff display
@@ -328,6 +367,43 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       toast.error(`Cleanup request failed: ${message}`);
     } finally {
       setRunning(false);
+      setChunkProgress(null);
+    }
+  }
+
+  async function onAttachReference(file: File) {
+    setAttachingRef(true);
+    try {
+      await attachDocumentReference(doc.id, file);
+      toast.success(`${file.name} attached as reference`);
+    } catch (err) {
+      toast.error(
+        `Attach failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setAttachingRef(false);
+    }
+  }
+
+  async function onRemoveReference(fileId: string) {
+    try {
+      await removeDocumentReference(doc.id, fileId);
+    } catch (err) {
+      toast.error(
+        `Remove failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  async function onCleanupContextChange(
+    patch: Parameters<typeof updateDocumentCleanupContext>[1],
+  ) {
+    try {
+      await updateDocumentCleanupContext(doc.id, patch);
+    } catch (err) {
+      toast.error(
+        `Update failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -403,6 +479,20 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       {parseError && <div className="error">Preview parse failed: {parseError}</div>}
 
       <h3>Cleanup pass</h3>
+
+      <CleanupContextPanel
+        onAskSage={onAskSage}
+        dataset={cleanupDataset}
+        live={cleanupLive}
+        limit={cleanupLimit}
+        referenceFiles={referenceFiles}
+        attaching={attachingRef}
+        disabled={running}
+        onChange={onCleanupContextChange}
+        onAttach={onAttachReference}
+        onRemove={onRemoveReference}
+      />
+
       <div
         style={{
           background: '#f6f6fa',
@@ -455,7 +545,18 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           voice for the procedure section"</em>
         </p>
         <button type="submit" disabled={running || !apiKey}>
-          {running ? <Spinner light label="Asking the LLM…" /> : 'Request cleanup edits'}
+          {running ? (
+            <Spinner
+              light
+              label={
+                chunkProgress
+                  ? `Cleaning chunk ${chunkProgress.done}/${chunkProgress.total}…`
+                  : 'Asking the LLM…'
+              }
+            />
+          ) : (
+            'Request cleanup edits'
+          )}
         </button>
       </form>
       {requestError && <div className="error">Request failed: {requestError}</div>}
@@ -500,6 +601,219 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         controls) is preserved unchanged.
       </p>
     </section>
+  );
+}
+
+// ─── Cleanup context panel (dataset / web / reference files) ──────
+
+interface CleanupContextPanelProps {
+  onAskSage: boolean;
+  dataset: string;
+  live: 0 | 1 | 2;
+  limit: number;
+  referenceFiles: ProjectContextFile[];
+  attaching: boolean;
+  disabled: boolean;
+  onChange: (
+    patch: Partial<{
+      cleanup_dataset_name: string;
+      cleanup_live_search: 0 | 1 | 2;
+      cleanup_limit_references: number;
+    }>,
+  ) => void;
+  onAttach: (file: File) => void;
+  onRemove: (fileId: string) => void;
+}
+
+function CleanupContextPanel(props: CleanupContextPanelProps) {
+  const {
+    onAskSage,
+    dataset,
+    live,
+    limit,
+    referenceFiles,
+    attaching,
+    disabled,
+    onChange,
+    onAttach,
+    onRemove,
+  } = props;
+  const [open, setOpen] = useState(referenceFiles.length > 0 || dataset !== '' || live !== 0);
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+      style={{
+        marginBottom: '0.75rem',
+        border: '1px solid #ddd',
+        borderRadius: 6,
+        padding: '0.5rem 0.75rem',
+        background: '#fafafa',
+      }}
+    >
+      <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
+        Context (optional) — RAG dataset · web search · reference files
+        {(dataset || live || referenceFiles.length > 0) && (
+          <span className="note" style={{ marginLeft: '0.5rem' }}>
+            ·{' '}
+            {[
+              dataset ? `dataset=${dataset}` : null,
+              live ? `live=${live}` : null,
+              referenceFiles.length > 0
+                ? `${referenceFiles.length} reference file${referenceFiles.length === 1 ? '' : 's'}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+        )}
+      </summary>
+
+      <p className="note" style={{ marginTop: '0.5rem' }}>
+        Anything you set here is sent with every chunk of the document during the
+        cleanup pass and used as authoritative grounding context. Reference files
+        are uploaded to Ask Sage's <code>/server/file</code> extractor at edit
+        time and inlined into the prompt.
+      </p>
+
+      {!onAskSage && (
+        <div className="note" style={{ marginBottom: '0.5rem' }}>
+          You're connected via OpenRouter. RAG datasets and reference-file
+          extraction are Ask-Sage-only. Switch providers on the{' '}
+          <Link to="/">Connection</Link> tab to use grounding context.
+        </div>
+      )}
+
+      {onAskSage && (
+        <>
+          <div style={{ display: 'grid', gap: '0.5rem', marginBottom: '0.5rem' }}>
+            <div>
+              <label htmlFor="cleanup-dataset" style={{ fontSize: 12 }}>
+                Ask Sage RAG dataset
+              </label>
+              <input
+                id="cleanup-dataset"
+                type="text"
+                value={dataset}
+                placeholder="dataset name (leave blank for none)"
+                disabled={disabled}
+                onChange={(e) =>
+                  onChange({ cleanup_dataset_name: e.target.value.trim() })
+                }
+                style={{
+                  width: '100%',
+                  padding: '0.4rem',
+                  font: 'inherit',
+                  border: '1px solid #ccc',
+                  borderRadius: 4,
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <div style={{ flex: 1 }}>
+                <label htmlFor="cleanup-live" style={{ fontSize: 12 }}>
+                  Web search
+                </label>
+                <select
+                  id="cleanup-live"
+                  value={live}
+                  disabled={disabled}
+                  onChange={(e) =>
+                    onChange({
+                      cleanup_live_search: Number(e.target.value) as 0 | 1 | 2,
+                    })
+                  }
+                  style={{
+                    width: '100%',
+                    padding: '0.4rem',
+                    font: 'inherit',
+                  }}
+                >
+                  <option value={0}>Off</option>
+                  <option value={1}>Google results</option>
+                  <option value={2}>Google + crawl</option>
+                </select>
+              </div>
+              <div style={{ width: 140 }}>
+                <label htmlFor="cleanup-limit" style={{ fontSize: 12 }}>
+                  RAG refs cap
+                </label>
+                <input
+                  id="cleanup-limit"
+                  type="number"
+                  min={0}
+                  max={20}
+                  value={limit}
+                  disabled={disabled || !dataset}
+                  onChange={(e) =>
+                    onChange({
+                      cleanup_limit_references: Math.max(
+                        0,
+                        Math.min(20, Number(e.target.value) || 0),
+                      ),
+                    })
+                  }
+                  style={{
+                    width: '100%',
+                    padding: '0.4rem',
+                    font: 'inherit',
+                    border: '1px solid #ccc',
+                    borderRadius: 4,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: '0.5rem' }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: '0.25rem' }}>
+              Reference files ({referenceFiles.length})
+            </div>
+            <DropZone
+              accept=".pdf,.docx,.txt,.md,.csv"
+              onFile={onAttach}
+              disabled={disabled || attaching}
+              label={attaching ? 'Uploading…' : 'Drop a reference file here, or click to choose'}
+              hint="PDF / DOCX / TXT / MD / CSV. Re-extracted via /server/file on every cleanup run."
+            />
+            {referenceFiles.length > 0 && (
+              <ul style={{ listStyle: 'none', padding: 0, marginTop: '0.4rem' }}>
+                {referenceFiles.map((f) => (
+                  <li
+                    key={f.id}
+                    style={{
+                      padding: '0.3rem 0.5rem',
+                      border: '1px solid #ddd',
+                      borderRadius: 4,
+                      marginBottom: '0.2rem',
+                      background: '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      fontSize: 12,
+                    }}
+                  >
+                    <span>{f.filename}</span>
+                    <span className="note" style={{ marginLeft: '0.5rem' }}>
+                      {(f.size_bytes / 1024).toFixed(1)} KB
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-danger btn-sm"
+                      style={{ marginLeft: 'auto' }}
+                      disabled={disabled}
+                      onClick={() => onRemove(f.id)}
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </details>
   );
 }
 

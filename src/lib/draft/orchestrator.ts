@@ -21,6 +21,7 @@ import {
   selectChunksForSection,
 } from '../project/chunk';
 import { extractParagraphs, type ParagraphInfo } from '../template/parser';
+import { blobToFile, extractedTextFromRet } from '../asksage/extract';
 
 export interface DraftProjectCallbacks {
   onSectionStart?: (template: TemplateRecord, section: BodyFillRegion) => void;
@@ -275,6 +276,10 @@ export async function draftProject(
 /** Per-section template example cap. ~6k chars ≈ ~1500 tokens. */
 const TEMPLATE_EXAMPLE_CAP_CHARS = 6000;
 
+// blobToFile + extractedTextFromRet were moved to lib/asksage/extract
+// so the document cleanup pipeline can share them without depending
+// on the drafting orchestrator.
+
 /**
  * Slice the parsed template paragraphs for a single section using its
  * fill_region anchors. Returns the trimmed text joined with newlines,
@@ -309,39 +314,3 @@ function sliceTemplateExample(
   return text.slice(0, TEMPLATE_EXAMPLE_CAP_CHARS - 1).trimEnd() + '…';
 }
 
-/**
- * Wrap a stored Blob as a File so client.uploadFile() can hand it to
- * /server/file via FormData. The Blob lives in IndexedDB and may have
- * been written under a different File constructor than the current
- * window's, so this normalization avoids subtle FormData issues.
- */
-function blobToFile(blob: Blob, filename: string, mime: string): File {
-  if (typeof File !== 'undefined') {
-    return new File([blob], filename, { type: mime || blob.type || 'application/octet-stream' });
-  }
-  // Pseudo-File for jsdom: callers only need name + type + bytes.
-  const stub = blob as Blob & { name?: string };
-  Object.defineProperty(stub, 'name', { value: filename, configurable: true });
-  return stub as unknown as File;
-}
-
-/**
- * Best-effort plaintext extraction from /server/file's `ret` field.
- * Health.mil returns a string; swagger v1.56 documents an object.
- * Mirrors the same helper in lib/project/context.
- */
-function extractedTextFromRet(ret: string | Record<string, unknown>): string {
-  if (typeof ret === 'string') return ret;
-  if (ret && typeof ret === 'object') {
-    const maybeText = (ret as { text?: unknown }).text;
-    if (typeof maybeText === 'string') return maybeText;
-    const maybeContent = (ret as { content?: unknown }).content;
-    if (typeof maybeContent === 'string') return maybeContent;
-    try {
-      return JSON.stringify(ret);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
