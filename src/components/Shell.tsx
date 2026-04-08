@@ -22,6 +22,9 @@ export function Shell({ children }: ShellProps) {
         <NavLink to="/" end style={navLinkStyle}>
           Connection
         </NavLink>
+        <NavLink to="/documents" style={navLinkStyle}>
+          Documents
+        </NavLink>
         <NavLink to="/templates" style={navLinkStyle}>
           Templates
         </NavLink>
