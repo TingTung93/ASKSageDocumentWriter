@@ -4,7 +4,7 @@ import { db, type TemplateRecord } from '../lib/db/schema';
 import { parseDocx } from '../lib/template/parser';
 import type { TemplateSchema, BodyFillRegion } from '../lib/template/types';
 import { useAuth } from '../lib/state/auth';
-import { AskSageClient } from '../lib/asksage/client';
+import { createLLMClient } from '../lib/provider/factory';
 import { synthesizeSchema, DEFAULT_SYNTHESIS_MODEL } from '../lib/template/synthesis/synthesize';
 import { requestSchemaEdits } from '../lib/edit/schema-edit';
 import type { ApplyResult } from '../lib/edit/types';
@@ -32,6 +32,7 @@ export function Templates() {
   const [search, setSearch] = useState('');
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const provider = useAuth((s) => s.provider);
   const settings = useLiveQuery(() => loadSettings(), []);
   const synthesisModelOverride = settings?.models.synthesis ?? null;
 
@@ -48,7 +49,7 @@ export function Templates() {
 
   async function onSynthesize(template: TemplateRecord) {
     if (!apiKey) {
-      setSynthError('Connect on the Connection tab first — synthesis needs an Ask Sage API key.');
+      setSynthError('Connect on the Connection tab first — synthesis needs an API key.');
       return;
     }
     setSynthError(null);
@@ -56,7 +57,7 @@ export function Templates() {
     // eslint-disable-next-line no-console
     console.info(`[Templates] synthesizing semantic half for ${template.id} via ${DEFAULT_SYNTHESIS_MODEL}`);
     try {
-      const client = new AskSageClient(baseUrl, apiKey);
+      const client = createLLMClient({ provider, baseUrl, apiKey });
       const result = await synthesizeSchema(
         client,
         template.schema_json,
@@ -76,6 +77,20 @@ export function Templates() {
         toast.sticky(
           'error',
           `Document body was truncated: only ${result.body_paragraphs_sent}/${result.body_paragraphs_total} paragraphs (${result.body_chars_sent.toLocaleString()} chars) fit under the cap. Sections beyond that point may be missing. Raise body_cap_chars or use a smaller template.`,
+        );
+      }
+      if (result.subject_leakage_warnings.length > 0) {
+        const summary = result.subject_leakage_warnings
+          .slice(0, 3)
+          .map((w) => `"${w.section_name}" → ${w.flagged_tokens.slice(0, 3).join(', ')}`)
+          .join('; ');
+        const more =
+          result.subject_leakage_warnings.length > 3
+            ? ` (+ ${result.subject_leakage_warnings.length - 3} more)`
+            : '';
+        toast.sticky(
+          'info',
+          `Subject leakage detected in ${result.subject_leakage_warnings.length} section${result.subject_leakage_warnings.length === 1 ? '' : 's'}: ${summary}${more}. The drafter will override these at draft time, but you can hand-edit the intents to clean them up.`,
         );
       }
     } catch (err) {
@@ -352,6 +367,7 @@ async function updateStyle(
 function RefinePanel({ templateId, schema }: { templateId: string; schema: TemplateSchema }) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const provider = useAuth((s) => s.provider);
   const settings = useLiveQuery(() => loadSettings(), []);
   const schemaEditModelOverride = settings?.models.schema_edit ?? null;
   const [instruction, setInstruction] = useState('');
@@ -373,7 +389,7 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
     // eslint-disable-next-line no-console
     console.info(`[Refine] requesting edits for template ${templateId}: "${instruction.trim()}"`);
     try {
-      const client = new AskSageClient(baseUrl, apiKey);
+      const client = createLLMClient({ provider, baseUrl, apiKey });
       const response = await requestSchemaEdits(client, {
         schema,
         instruction: instruction.trim(),

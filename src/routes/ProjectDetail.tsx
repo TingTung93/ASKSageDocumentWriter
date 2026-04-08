@@ -5,16 +5,16 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '../lib/db/schema';
+import { db, type DraftRecord, type ProjectContextFile, type ProjectRecord, type TemplateRecord } from '../lib/db/schema';
 import { updateProject } from '../lib/project/helpers';
 import { deriveSharedInputFields, type SharedInputField } from '../lib/project/helpers';
 import {
   addProjectNote,
   attachProjectFile,
+  clearOrphanedFiles,
   getContextItems,
+  hasOrphanedV4Files,
   removeContextItem,
-  setProjectDataset,
-  suggestDatasetName,
 } from '../lib/project/context';
 import { DropZone } from '../components/DropZone';
 import { EmptyState } from '../components/EmptyState';
@@ -45,6 +45,8 @@ export function ProjectDetail() {
   );
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const provider = useAuth((s) => s.provider);
+  const onAskSage = provider === 'asksage';
   const settings = useLiveQuery(() => loadSettings(), []);
   const draftingModelOverride = settings?.models.drafting ?? null;
   const cost = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
@@ -77,6 +79,12 @@ export function ProjectDetail() {
     if (!project) return;
     if (!apiKey) {
       setDraftError('Connect on the Connection tab first — drafting needs an Ask Sage API key.');
+      return;
+    }
+    if (!onAskSage) {
+      setDraftError(
+        'Drafting requires Ask Sage (datasets, file ingest, RAG). OpenRouter mode does not support the project drafting flow — switch providers on the Connection tab.',
+      );
       return;
     }
     setDraftError(null);
@@ -162,6 +170,15 @@ export function ProjectDetail() {
         {' '}updated {new Date(project.updated_at).toLocaleString()}
       </p>
       {project.description && <p>{project.description}</p>}
+
+      {!onAskSage && (
+        <div className="error" style={{ marginBottom: 'var(--space-3)' }}>
+          <strong>OpenRouter mode — drafting and dataset features disabled.</strong>{' '}
+          The project drafting flow needs Ask Sage (RAG, file ingest, dataset
+          training). Switch providers on the <Link to="/">Connection</Link> tab
+          to draft this project.
+        </div>
+      )}
 
       <h2>Shared inputs ({sharedFields.length})</h2>
       {sharedFields.length === 0 && (
@@ -389,6 +406,9 @@ function TemplateDraftedSections({
                 </ul>
               </div>
             )}
+            {draft && (draft.prompt_sent || draft.references) && (
+              <DraftDiagnostics draft={draft} />
+            )}
           </div>
         );
       })}
@@ -396,76 +416,195 @@ function TemplateDraftedSections({
   );
 }
 
+/**
+ * Per-section diagnostic panel — collapses by default, expands to
+ * show the EXACT prompt the LLM saw and the references Ask Sage
+ * returned. This is the diagnostic loop we kept needing during the
+ * transfusion / SHARP investigation.
+ */
+/**
+ * Mirror of the same helper in lib/draft/orchestrator. Health.mil
+ * returns `ret` as a string; swagger v1.56 says object. Handle both.
+ */
+function extractedTextFromRet(ret: string | Record<string, unknown>): string {
+  if (typeof ret === 'string') return ret;
+  if (ret && typeof ret === 'object') {
+    const maybeText = (ret as { text?: unknown }).text;
+    if (typeof maybeText === 'string') return maybeText;
+    const maybeContent = (ret as { content?: unknown }).content;
+    if (typeof maybeContent === 'string') return maybeContent;
+    try {
+      return JSON.stringify(ret);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+function DraftDiagnostics({ draft }: { draft: DraftRecord }) {
+  const promptChars = draft.prompt_sent?.length ?? 0;
+  const refsChars = draft.references?.length ?? 0;
+  return (
+    <details style={{ marginTop: '0.5rem' }}>
+      <summary className="note" style={{ cursor: 'pointer' }}>
+        Diagnostics — prompt ({promptChars.toLocaleString()} chars) · references ({refsChars.toLocaleString()} chars) · model {draft.model}
+      </summary>
+      <div style={{ marginTop: '0.4rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-subtle)' }}>
+            PROMPT SENT
+          </div>
+          <pre
+            style={{
+              background: 'var(--color-surface-alt)',
+              padding: 'var(--space-2)',
+              fontSize: 11,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 360,
+              overflow: 'auto',
+              margin: 0,
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            {draft.prompt_sent || '(no prompt captured)'}
+          </pre>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-text-subtle)' }}>
+            REFERENCES RETURNED BY ASK SAGE
+          </div>
+          <pre
+            style={{
+              background: 'var(--color-surface-alt)',
+              padding: 'var(--space-2)',
+              fontSize: 11,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 360,
+              overflow: 'auto',
+              margin: 0,
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            {draft.references || '(no references returned)'}
+          </pre>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function ProjectContextSection({ project }: { project: ProjectRecord }) {
   const items = getContextItems(project);
   const notes = items.filter((i) => i.kind === 'note');
   const files = items.filter((i) => i.kind === 'file');
+  const orphaned = hasOrphanedV4Files(project);
+
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
-  const datasetName = project.dataset_name ?? '';
-  const datasetSet = datasetName.length > 0;
+  const provider = useAuth((s) => s.provider);
+  const onAskSage = provider === 'asksage';
+
+  const totalReferenceBytes = files.reduce(
+    (acc, f) => acc + (f.kind === 'file' ? f.size_bytes : 0),
+    0,
+  );
 
   const [noteDraft, setNoteDraft] = useState('');
   const [posting, setPosting] = useState(false);
   const [attaching, setAttaching] = useState(false);
-  const [datasetDraft, setDatasetDraft] = useState(datasetName);
-  const [datasetOptions, setDatasetOptions] = useState<string[] | null>(null);
-  const [loadingDatasets, setLoadingDatasets] = useState(false);
 
-  async function loadDatasets() {
-    if (!apiKey) {
-      toast.error('Connect on the Connection tab first.');
-      return;
-    }
-    setLoadingDatasets(true);
-    try {
-      const client = new AskSageClient(baseUrl, apiKey);
-      const list = await client.getServerDatasets();
-      setDatasetOptions(list);
-      if (list.length === 0) {
-        toast.info('Ask Sage returned an empty dataset list.');
-      }
-    } catch (err) {
-      toast.error(`Couldn't list datasets: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setLoadingDatasets(false);
-    }
+  // Per-file extraction preview cache. Lives in component state for the
+  // session — not persisted, since the source of truth is the file
+  // bytes and the actual draft-time extraction is what matters. This
+  // is purely a "show me what Ask Sage will see" diagnostic.
+  interface ExtractionPreview {
+    chars: number;
+    tokens: number | null;
+    snippet: string;
+    fetchedAt: number;
   }
-
-  async function onSaveDataset() {
-    const next = datasetDraft.trim() || null;
-    try {
-      await setProjectDataset(project.id, next);
-      toast.success(next ? `Dataset set to "${next}"` : 'Project dataset cleared');
-    } catch (err) {
-      toast.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  function onSuggestName() {
-    setDatasetDraft(suggestDatasetName(project.name));
-  }
+  const [previews, setPreviews] = useState<Record<string, ExtractionPreview>>({});
+  const [previewLoading, setPreviewLoading] = useState<string | null>(null);
 
   async function onAttach(file: File) {
-    if (!apiKey) {
-      toast.error('Connect on the Connection tab first.');
-      return;
-    }
-    if (!datasetSet) {
-      toast.error('Set or pick a dataset name above before attaching files.');
-      return;
-    }
     setAttaching(true);
     try {
-      const client = new AskSageClient(baseUrl, apiKey);
-      const item = await attachProjectFile(client, project.id, file);
+      const item = await attachProjectFile(project.id, file);
       toast.success(
-        `${file.name} uploaded · ${item.extracted_chars.toLocaleString()} chars trained into ${item.trained_into_dataset}`,
+        `${file.name} attached · ${(item.size_bytes / 1024).toFixed(1)} KB`,
       );
     } catch (err) {
       toast.error(`Attach failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setAttaching(false);
+    }
+  }
+
+  async function onTestExtraction(fileItem: ProjectContextFile) {
+    if (!apiKey || !onAskSage) {
+      toast.error('Connect to Ask Sage on the Connection tab first.');
+      return;
+    }
+    setPreviewLoading(fileItem.id);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const fileObj = new File([fileItem.bytes], fileItem.filename, {
+        type: fileItem.mime_type || 'application/octet-stream',
+      });
+      const upload = await client.uploadFile(fileObj);
+      const text = extractedTextFromRet(upload.ret);
+      let tokens: number | null = null;
+      try {
+        const n = await client.tokenize({ content: text });
+        tokens = Number.isFinite(n) ? n : null;
+      } catch {
+        // Tokenizer is best-effort; the char count is still useful.
+      }
+      setPreviews((prev) => ({
+        ...prev,
+        [fileItem.id]: {
+          chars: text.length,
+          tokens,
+          snippet: text.slice(0, 800),
+          fetchedAt: Date.now(),
+        },
+      }));
+      toast.success(
+        `${fileItem.filename}: ${text.length.toLocaleString()} chars` +
+          (tokens !== null ? ` · ${tokens.toLocaleString()} tokens` : ''),
+      );
+    } catch (err) {
+      toast.error(
+        `Extraction failed for ${fileItem.filename}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setPreviewLoading(null);
+    }
+  }
+
+  // Total token count across all previewed files. Files that haven't
+  // been previewed yet contribute null and are excluded from the sum;
+  // we tell the user "X of Y files measured" so the partial number
+  // isn't misleading.
+  const previewedFileIds = Object.keys(previews);
+  const totalPreviewedTokens = previewedFileIds.reduce(
+    (acc, id) => acc + (previews[id]?.tokens ?? 0),
+    0,
+  );
+  const totalPreviewedChars = previewedFileIds.reduce(
+    (acc, id) => acc + (previews[id]?.chars ?? 0),
+    0,
+  );
+
+  async function onClearOrphans() {
+    try {
+      await clearOrphanedFiles(project.id);
+      toast.success('Cleared orphaned v4 file entries');
+    } catch (err) {
+      toast.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -501,98 +640,81 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
         </span>
       </h2>
       <p className="note">
-        Two grounding mechanisms feed the drafter:
-        <br />· <strong>Notes</strong> are inlined into every section's prompt verbatim.
-        Use them for short scope hints and tone guidance.
-        <br />· <strong>Files</strong> are uploaded to Ask Sage via{' '}
-        <code>/server/file</code> and trained into this project's owned dataset via{' '}
-        <code>/server/train</code>. Drafting then uses{' '}
-        <code>/server/query</code>'s RAG against that dataset — no character caps,
-        no local extraction.
+        Two grounding mechanisms feed the drafter, both inlined directly into
+        every section's prompt:
+        <br />· <strong>Notes</strong> — short user-authored guidance (quotes,
+        salient characteristics, scope hints). Inlined verbatim.
+        <br />· <strong>Files</strong> — reference documents stored locally as
+        bytes. Each drafting run uploads them once to <code>/server/file</code>{' '}
+        for extraction and inlines the full text into every per-section call.
+        No character caps; the model literally sees the source material.
       </p>
 
-      <h3 style={{ marginTop: 'var(--space-3)' }}>Ask Sage dataset for this project</h3>
-      <p className="note">
-        Pick or name a dataset to act as this project's RAG corpus. Files
-        attached below are trained into it via <code>/server/train</code>. The
-        drafter passes this name as <code>dataset</code> on every{' '}
-        <code>/server/query</code> call.
-      </p>
-      <div className="row" style={{ alignItems: 'flex-end' }}>
-        <div style={{ flex: 1, minWidth: 240 }}>
-          <label htmlFor="project-dataset">Dataset name</label>
-          <input
-            id="project-dataset"
-            type="text"
-            className="mono"
-            value={datasetDraft}
-            onChange={(e) => setDatasetDraft(e.target.value)}
-            placeholder="e.g. asd_diasorin_pws"
-            list="project-dataset-options"
-          />
-          {datasetOptions && (
-            <datalist id="project-dataset-options">
-              {datasetOptions.map((d) => (
-                <option key={d} value={d} />
-              ))}
-            </datalist>
-          )}
+      {orphaned && (
+        <div className="error" style={{ marginBottom: 'var(--space-3)' }}>
+          <strong>Orphaned files from a previous version detected.</strong>
+          {'\n\n'}
+          This project has file attachments from the v4 train-into-dataset
+          flow that no longer have local bytes. Drafting will skip them.
+          Re-attach the originals from your local copy, then click below to
+          clear the stale entries.
+          {'\n\n'}
+          <button
+            type="button"
+            className="btn-secondary btn-sm"
+            onClick={() => void onClearOrphans()}
+          >
+            Clear orphaned entries
+          </button>
         </div>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={onSuggestName}
-          title="Generate a slug from the project name"
-        >
-          suggest
-        </button>
-        <button
-          type="button"
-          className="btn-secondary"
-          onClick={() => void loadDatasets()}
-          disabled={loadingDatasets || !apiKey}
-          title="GET /server/get-datasets"
-        >
-          {loadingDatasets ? 'Loading…' : `list (${datasetOptions?.length ?? '?'})`}
-        </button>
-        <button
-          type="button"
-          onClick={() => void onSaveDataset()}
-          disabled={(datasetDraft.trim() || null) === (datasetName || null)}
-        >
-          save
-        </button>
-      </div>
-      {datasetSet ? (
-        <p className="note">
-          Active dataset: <code>{datasetName}</code>
-        </p>
-      ) : (
-        <p className="note" style={{ color: 'var(--color-warning)' }}>
-          No dataset set — file attachments are disabled. Save a dataset name first.
-        </p>
       )}
 
-      <h3 style={{ marginTop: 'var(--space-4)' }}>Attached files ({files.length})</h3>
+      <h3 style={{ marginTop: 'var(--space-3)' }}>
+        Attached files ({files.length})
+        {totalReferenceBytes > 0 && (
+          <span className="badge" style={{ marginLeft: '0.4rem' }}>
+            {(totalReferenceBytes / 1024 / 1024).toFixed(2)} MB on disk
+          </span>
+        )}
+        {previewedFileIds.length > 0 && (
+          <span className="badge badge-primary" style={{ marginLeft: '0.4rem' }}>
+            {previewedFileIds.length} of {files.length} previewed ·{' '}
+            {totalPreviewedTokens > 0
+              ? `~${totalPreviewedTokens.toLocaleString()} tokens`
+              : `${totalPreviewedChars.toLocaleString()} chars`}
+          </span>
+        )}
+      </h3>
+      {files.length > 0 && previewedFileIds.length < files.length && (
+        <p className="note">
+          Click <strong>test extract</strong> on each file to verify Ask Sage
+          can read it and to see the exact token count it'll consume in the
+          drafting prompt.
+        </p>
+      )}
       <DropZone
-        accept=".docx,.pdf,.txt,.md,.markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/plain,text/markdown"
+        accept=".docx,.pdf,.txt,.md,.markdown,.csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/plain,text/markdown,text/csv"
         onFile={onAttach}
-        disabled={attaching || !datasetSet || !apiKey}
+        disabled={attaching}
         label={
           attaching
-            ? 'Uploading and training…'
-            : !datasetSet
-              ? 'Set a dataset name above first'
-              : 'Drop a reference file (DOCX, PDF, TXT, MD)'
+            ? 'Storing file…'
+            : 'Drop a reference file (DOCX, PDF, TXT, MD, CSV)'
         }
-        hint="Files go to /server/file (Ask Sage extracts the text), then /server/train into this project's dataset. Up to 250 MB per document, 500 MB for audio/video."
+        hint="Files are stored locally as bytes. At draft time, each is uploaded once to /server/file (Ask Sage extracts the text) and the full extracted content is inlined into every per-section prompt. Up to 250 MB per document, 500 MB for audio/video."
       />
       {files.length === 0 ? (
-        <EmptyState title="No files attached" body="Pick a dataset above, then drop a file here." />
+        <EmptyState
+          title="No files attached"
+          body="Drop reference DOCX/PDF/MD/TXT files above. The drafter will see their full content on every section call."
+        />
       ) : (
         <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
-          {files.map((f) =>
-            f.kind === 'file' ? (
+          {files.map((f) => {
+            if (f.kind !== 'file') return null;
+            const preview = previews[f.id];
+            const isLoading = previewLoading === f.id;
+            return (
               <li
                 key={f.id}
                 className="card"
@@ -601,27 +723,60 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
                 <div className="row" style={{ alignItems: 'center' }}>
                   <strong>{f.filename}</strong>
                   <span className="badge">{(f.size_bytes / 1024).toFixed(1)} KB</span>
-                  <span className="badge badge-success">
-                    {f.extracted_chars.toLocaleString()} chars
-                  </span>
-                  <span className="badge badge-primary">{f.trained_into_dataset}</span>
+                  <span className="badge">{f.mime_type.split('/').pop()}</span>
+                  {preview && (
+                    <span className="badge badge-success">
+                      {preview.chars.toLocaleString()} chars
+                      {preview.tokens !== null && ` · ${preview.tokens.toLocaleString()} tok`}
+                    </span>
+                  )}
                   <span style={{ marginLeft: 'auto' }} />
                   <button
                     type="button"
+                    className="btn-secondary btn-sm"
+                    disabled={isLoading || !apiKey || !onAskSage}
+                    title="Upload to /server/file and tokenize. Useful for verifying Ask Sage can read this file before drafting."
+                    onClick={() => void onTestExtraction(f)}
+                  >
+                    {isLoading ? 'extracting…' : preview ? 're-test' : 'test extract'}
+                  </button>
+                  <button
+                    type="button"
                     className="btn-danger btn-sm"
-                    title="Removes the local registry entry only — the trained content remains in the Ask Sage dataset (no /server/* delete endpoint exists)."
                     onClick={() => void onRemove(f.id)}
                   >
-                    forget
+                    remove
                   </button>
                 </div>
                 <div className="note" style={{ marginTop: '0.3rem' }}>
                   Attached {new Date(f.created_at).toLocaleString()}
-                  {f.embedding_id && ` · embedding ${f.embedding_id}`}
                 </div>
+                {preview && (
+                  <details style={{ marginTop: '0.4rem' }}>
+                    <summary className="note" style={{ cursor: 'pointer' }}>
+                      Preview first {Math.min(preview.snippet.length, 800).toLocaleString()} chars of extracted text
+                    </summary>
+                    <pre
+                      style={{
+                        background: 'var(--color-surface-alt)',
+                        padding: 'var(--space-2)',
+                        fontSize: 11,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        margin: '0.4rem 0 0',
+                        borderRadius: 'var(--radius-sm)',
+                      }}
+                    >
+                      {preview.snippet}
+                      {preview.chars > 800 && '\n…'}
+                    </pre>
+                  </details>
+                )}
               </li>
-            ) : null,
-          )}
+            );
+          })}
         </ul>
       )}
 

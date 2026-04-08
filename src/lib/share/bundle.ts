@@ -70,15 +70,13 @@ export interface ExportedProject {
   shared_inputs: Record<string, string>;
   model_overrides: ProjectRecord['model_overrides'];
   live_search: ProjectRecord['live_search'];
-  /** Notes + file metadata. File CONTENT lives in the recipient-side dataset and is not in the bundle. */
-  context_items?: ProjectContextItem[];
   /**
-   * Project's owned Ask Sage dataset name. The actual dataset
-   * (vectors, embeddings) lives in the exporter's tenant — the
-   * recipient sees the name but must train their own files into it
-   * (or rename the project's dataset_name) to get RAG.
+   * Notes + file metadata. As of v5, file `bytes` are NOT serialized
+   * here yet — sharing reference files between users is a follow-up.
+   * For now, the recipient sees the file metadata (filename, size,
+   * created_at) but no bytes, and re-attaches the originals.
    */
-  dataset_name?: string | null;
+  context_items?: ProjectContextItem[];
   created_at: string;
   updated_at: string;
 }
@@ -167,6 +165,10 @@ export async function buildProjectBundle(
   options?: { includeDrafts?: boolean },
 ): Promise<ProjectBundle> {
   const includeDrafts = options?.includeDrafts ?? false;
+  // Note: cast to ProjectContextItem[] for the wire type — recipients
+  // see ExportedContextFile entries (with bytes_base64) which the
+  // importer rehydrates into v5 ProjectContextFile records (with bytes).
+  const serializedContext = await serializeContextItems(project.context_items ?? []);
   return {
     bundle_version: BUNDLE_VERSION,
     kind: 'project',
@@ -181,8 +183,7 @@ export async function buildProjectBundle(
       shared_inputs: project.shared_inputs,
       model_overrides: project.model_overrides,
       live_search: project.live_search,
-      context_items: project.context_items ?? [],
-      dataset_name: project.dataset_name ?? null,
+      context_items: serializedContext as ProjectContextItem[],
       created_at: project.created_at,
       updated_at: project.updated_at,
     },
@@ -203,6 +204,51 @@ export async function buildProjectBundle(
         }))
       : undefined,
   };
+}
+
+/**
+ * File context item shape used in the bundle JSON. Same as
+ * ProjectContextFile but with `bytes_base64` instead of `bytes: Blob`,
+ * because Blobs don't JSON-serialize.
+ */
+interface ExportedContextFile {
+  kind: 'file';
+  id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  /** Base64-encoded file bytes. Empty string if the exporter chose to strip them. */
+  bytes_base64: string;
+  created_at: string;
+}
+
+/**
+ * Convert each file context item's `bytes` Blob to a base64 string so
+ * the bundle is JSON-serializable. Notes pass through unchanged.
+ * Recipients can rehydrate the Blob via base64ToBlob() at import time
+ * and end up with a fully working project, no re-attach required.
+ */
+async function serializeContextItems(
+  items: ProjectContextItem[],
+): Promise<Array<ProjectContextItem | ExportedContextFile>> {
+  const out: Array<ProjectContextItem | ExportedContextFile> = [];
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const bytes_base64 = item.bytes ? await blobToBase64(item.bytes) : '';
+      out.push({
+        kind: 'file',
+        id: item.id,
+        filename: item.filename,
+        mime_type: item.mime_type,
+        size_bytes: item.size_bytes,
+        bytes_base64,
+        created_at: item.created_at,
+      });
+    } else {
+      out.push(item);
+    }
+  }
+  return out;
 }
 
 async function exportedFromRecord(template: TemplateRecord): Promise<ExportedTemplate> {

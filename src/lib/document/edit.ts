@@ -4,7 +4,7 @@
 // list we send. The dispatcher applies them to a working state, and
 // the writer eventually splices them into the original DOCX bytes.
 
-import type { AskSageClient } from '../asksage/client';
+import type { LLMClient } from '../provider/types';
 import type { ParagraphInfo } from '../template/parser';
 import type { DocumentEditOp, DocumentEditOutput } from './types';
 
@@ -94,7 +94,7 @@ export interface DocumentEditResponse {
 }
 
 export async function requestDocumentEdits(
-  client: AskSageClient,
+  client: LLMClient,
   args: DocumentEditRequest,
 ): Promise<DocumentEditResponse> {
   const model = args.model ?? DEFAULT_DOCUMENT_EDIT_MODEL;

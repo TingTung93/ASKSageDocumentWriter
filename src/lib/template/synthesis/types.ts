@@ -76,4 +76,20 @@ export interface SynthesisResult {
   body_paragraphs_sent: number;
   body_paragraphs_total: number;
   body_chars_sent: number;
+  /**
+   * Sections whose intent appears to contain baked-in subject matter
+   * (proper nouns, domain-specific acronyms). The new synthesis
+   * prompt forbids this, but old synthesizers and edge cases can
+   * still slip through. Empty array on a clean synthesis.
+   */
+  subject_leakage_warnings: SubjectLeakageWarning[];
+}
+
+export interface SubjectLeakageWarning {
+  section_id: string;
+  section_name: string;
+  /** The intent text that triggered the warning */
+  intent: string;
+  /** Specific tokens that look like subject-matter (e.g., "SHARP", "Diasorin") */
+  flagged_tokens: string[];
 }

@@ -15,7 +15,7 @@ import {
   type ParagraphInfo,
 } from '../lib/template/parser';
 import { useAuth } from '../lib/state/auth';
-import { AskSageClient } from '../lib/asksage/client';
+import { createLLMClient } from '../lib/provider/factory';
 import { requestDocumentEdits } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
@@ -185,6 +185,7 @@ export function Documents() {
 function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const provider = useAuth((s) => s.provider);
   const settings = useLiveQuery(() => loadSettings(), []);
   const cleanupModelOverride = settings?.models.cleanup ?? null;
   const cost: CostAssumptions = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
@@ -268,7 +269,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     // eslint-disable-next-line no-console
     console.info(`[DocumentDetail] requesting cleanup edits for ${doc.id}`);
     try {
-      const client = new AskSageClient(baseUrl, apiKey);
+      const client = createLLMClient({ provider, baseUrl, apiKey });
       const result = await requestDocumentEdits(client, {
         document_name: doc.name,
         paragraphs,

@@ -14,7 +14,10 @@ import type {
 } from './types';
 
 export const DEFAULT_DRAFTING_MODEL = 'google-claude-46-sonnet';
-export const DEFAULT_DRAFTING_TEMPERATURE = 0.2;
+// Drafting must stick to retrieved + inlined content. The earlier 0.2
+// default let the model drift toward training-data priors when the
+// prompt didn't have strong subject anchoring.
+export const DEFAULT_DRAFTING_TEMPERATURE = 0;
 
 export interface DraftSectionArgs {
   template: TemplateSchema;
@@ -23,11 +26,24 @@ export interface DraftSectionArgs {
   shared_inputs: Record<string, string>;
   prior_summaries: PriorSectionSummary[];
   /**
-   * Pre-rendered project context block (notes + extracted file text).
-   * Built once per project run by the orchestrator and passed to every
-   * section call so the drafter doesn't re-render it 30 times.
+   * Pre-rendered NOTES block (chat notes only). Built once per draft
+   * run by the orchestrator. See lib/project/context.renderNotesBlock.
    */
-  context_block?: string | null;
+  notes_block?: string | null;
+  /**
+   * Pre-rendered ATTACHED REFERENCES block (full text of every file
+   * the user attached, extracted via /server/file at the start of the
+   * draft run and cached in memory). Same string for every section
+   * call in the run.
+   */
+  references_block?: string | null;
+  /**
+   * The actual paragraphs of THIS section as they appear in the
+   * source template, joined into one string. Sliced from the parsed
+   * DOCX by the orchestrator. Tells the model how the section
+   * "looks" structurally without baking subject matter.
+   */
+  template_example?: string | null;
   options?: DraftingOptions;
 }
 
@@ -45,7 +61,9 @@ export async function draftSection(
     project_description: args.project_description,
     shared_inputs: args.shared_inputs,
     prior_summaries: args.prior_summaries,
-    context_block: args.context_block,
+    notes_block: args.notes_block,
+    references_block: args.references_block,
+    template_example: args.template_example,
   });
 
   const { data, raw } = await client.queryJson<LLMDraftOutput>({

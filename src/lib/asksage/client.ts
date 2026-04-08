@@ -1,15 +1,21 @@
 import {
   AskSageError,
+  type CountMonthlyTokensResponse,
+  type DeleteDatasetRequest,
+  type DeleteFilenameFromDatasetRequest,
+  type GetAllFilesIngestedResponse,
   type GetDatasetsResponse,
   type GetModelsResponse,
   type ModelInfo,
   type QueryInput,
   type QueryResponse,
   type QueryWithFileInput,
+  type SimpleResponse,
   type TokenizerRequest,
   type TokenizerResponse,
   type TrainRequest,
   type TrainResponse,
+  type UploadFileFormFields,
   type UploadFileResponse,
   type VerifyDatasetResult,
 } from './types';
@@ -35,8 +41,12 @@ const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init
  * header on every call. No token-exchange step (the `/user/*` exchange
  * endpoint is CORS-blocked on the health.mil tenant — see PRD §5).
  *
- * Only `/server/*` endpoints are reachable from the browser on the health
- * tenant; do not add `/user/*` calls here.
+ * Only `/server/*` endpoints are reachable from the browser on the
+ * health tenant; do not add `/user/*` calls here. Per swagger v1.56,
+ * the full set of dataset/file management endpoints (get-datasets,
+ * dataset DELETE, delete-filename-from-dataset, get-all-files-ingested,
+ * train, train-with-file, file) all live on /server/*, so anything we
+ * need is reachable.
  */
 export class AskSageClient {
   constructor(
@@ -54,9 +64,28 @@ export class AskSageClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    return this.requestJson<T>('POST', path, body);
+  }
+
+  /** DELETE with a JSON body. Used for /server/dataset etc. */
+  private async del<T>(path: string, body: unknown): Promise<T> {
+    return this.requestJson<T>('DELETE', path, body);
+  }
+
+  /** GET with no body. Used for /server/count-monthly-tokens etc. */
+  private async get<T>(path: string): Promise<T> {
+    return this.requestJson<T>('GET', path, undefined);
+  }
+
+  private async requestJson<T>(
+    method: 'GET' | 'POST' | 'DELETE',
+    path: string,
+    body: unknown,
+  ): Promise<T> {
     const url = this.url(path);
     const startedAt = Date.now();
-    const reqBodyStr = JSON.stringify(body ?? {});
+    const hasBody = method !== 'GET' && body !== undefined;
+    const reqBodyStr = hasBody ? JSON.stringify(body ?? {}) : '';
     const reqModel =
       body && typeof body === 'object' && 'model' in body
         ? String((body as { model: unknown }).model)
@@ -72,14 +101,15 @@ export class AskSageClient {
       // Access-Control-Allow-Headers doesn't include them (Ask Sage's
       // doesn't), the preflight is rejected with no body and a generic
       // "Failed to fetch" — exactly the bug I previously introduced.
+      const headers: Record<string, string> = {
+        'x-access-tokens': this.apiKey,
+      };
+      if (hasBody) headers['Content-Type'] = 'application/json';
       res = await this.fetchImpl(url, {
-        method: 'POST',
+        method,
         mode: 'cors',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-access-tokens': this.apiKey,
-        },
-        body: reqBodyStr,
+        headers,
+        body: hasBody ? reqBodyStr : undefined,
       });
     } catch (err) {
       // Network-level failure (CORS, DNS, offline, etc.). The browser
@@ -88,7 +118,7 @@ export class AskSageClient {
       const name = err instanceof Error ? err.name : 'UnknownError';
       const message = err instanceof Error ? err.message : String(err);
       const errorMsg =
-        `Network error calling POST ${url}: ${name}: ${message}. ` +
+        `Network error calling ${method} ${url}: ${name}: ${message}. ` +
         `This is typically a CORS preflight rejection, DNS failure, ` +
         `unreachable host, or browser security policy. The browser ` +
         `does not expose the underlying reason to JavaScript.`;
@@ -118,7 +148,7 @@ export class AskSageClient {
       });
       throw new AskSageError(
         res.status,
-        `Ask Sage POST ${url} failed (${res.status} ${res.statusText}): ${text || '(empty body)'}`,
+        `Ask Sage ${method} ${url} failed (${res.status} ${res.statusText}): ${text || '(empty body)'}`,
         text,
       );
     }
@@ -138,7 +168,7 @@ export class AskSageClient {
       });
       throw new AskSageError(
         res.status,
-        `Ask Sage POST ${url} returned non-JSON body: ${text.slice(0, 500)}`,
+        `Ask Sage ${method} ${url} returned non-JSON body: ${text.slice(0, 500)}`,
         text,
       );
     }
@@ -290,23 +320,26 @@ export class AskSageClient {
 
   /**
    * Upload a file via /server/file. Ask Sage runs its own extractor
-   * (DOCX, PDF, audio/video) and returns the extracted plaintext
-   * inline as `ret`. The filename is preserved on the server side and
-   * can be referenced later by /server/query_with_file.
+   * (DOCX, PDF, audio/video) and returns the extracted content inline
+   * as `ret`. The filename is preserved on the server side and can be
+   * referenced later by /server/query_with_file.
    *
-   * Limits: 250 MB for documents, 500 MB for audio/video.
+   * Per swagger v1.56, accepts optional `strategy` (auto/fast/hi_res)
+   * and `special_csv` form fields. Limits: 250 MB documents, 500 MB A/V.
    */
-  async uploadFile(file: File): Promise<UploadFileResponse> {
+  async uploadFile(file: File, opts: UploadFileFormFields = {}): Promise<UploadFileResponse> {
     const form = new FormData();
     form.append('file', file, file.name);
+    if (opts.strategy) form.append('strategy', opts.strategy);
+    if (opts.special_csv !== undefined) form.append('special_csv', String(opts.special_csv));
     return this.postMultipart<UploadFileResponse>('/server/file', form);
   }
 
   /**
    * Add content to the user's knowledge base. Pass `force_dataset` to
    * route the chunk into a specific dataset (creates one with that
-   * name if it doesn't exist yet). Pass `summarize: true` to have Ask
-   * Sage compress the content with `summarize_model` before embedding.
+   * name if it doesn't exist yet). Per swagger v1.56 fields are
+   * `content` (required), `context`, `skip_vectordb`, `force_dataset`.
    */
   async train(input: TrainRequest): Promise<TrainResponse> {
     return this.post<TrainResponse>('/server/train', input);
@@ -322,9 +355,55 @@ export class AskSageClient {
     return this.post<QueryResponse>('/server/query_with_file', input);
   }
 
-  /** Exact token count for a given content + model via /server/tokenizer. */
-  async tokenize(input: TokenizerRequest): Promise<TokenizerResponse> {
-    return this.post<TokenizerResponse>('/server/tokenizer', input);
+  /**
+   * Exact token count for a given content + model via /server/tokenizer.
+   * Per swagger v1.56 the server returns the count as a stringified
+   * integer in `response`; we coerce to number here. Returns NaN on
+   * coercion failure (caller should fall back to a heuristic).
+   */
+  async tokenize(input: TokenizerRequest): Promise<number> {
+    const r = await this.post<TokenizerResponse>('/server/tokenizer', input);
+    const n = Number(r.response);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  /**
+   * Authoritative monthly token usage for the authenticated tenant.
+   * GET form per swagger v1.56. Use this in place of audit-log-derived
+   * totals when displaying spend so far.
+   */
+  async countMonthlyTokens(): Promise<number> {
+    const r = await this.get<CountMonthlyTokensResponse>('/server/count-monthly-tokens');
+    return typeof r.response === 'number' ? r.response : Number(r.response) || 0;
+  }
+
+  /**
+   * List every file Ask Sage has ingested for the authenticated tenant.
+   * Per swagger v1.56 this is a POST that returns an array; the entry
+   * shape is tenant-dependent so we pass it through unchanged.
+   */
+  async getAllFilesIngested(): Promise<unknown[]> {
+    const r = await this.post<GetAllFilesIngestedResponse>('/server/get-all-files-ingested', {});
+    return Array.isArray(r.response) ? r.response : [];
+  }
+
+  /**
+   * Remove a single file (by filename) from a named dataset. Per
+   * swagger v1.56 this lives on /server/* — earlier memory had it on
+   * /user/* and treated it as unreachable. It is reachable.
+   */
+  async deleteFilenameFromDataset(req: DeleteFilenameFromDatasetRequest): Promise<SimpleResponse> {
+    return this.post<SimpleResponse>('/server/delete-filename-from-dataset', req);
+  }
+
+  /**
+   * Delete an entire dataset by name. Per swagger v1.56 this is
+   * `DELETE /server/dataset` with a JSON body of `{ dataset }`.
+   * Destructive — caller should confirm with the user first.
+   */
+  async deleteDataset(name: string): Promise<SimpleResponse> {
+    const body: DeleteDatasetRequest = { dataset: name };
+    return this.del<SimpleResponse>('/server/dataset', body);
   }
 
   /** Primary completion endpoint. Used by every drafting/synthesis stage. */

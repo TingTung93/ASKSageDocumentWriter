@@ -1,7 +1,10 @@
 // Datasets — verify-by-name probe for Ask Sage datasets. Uses
 // /server/query (always reachable) to confirm a dataset name is valid
-// and returns reference material. Programmatic listing is not possible
-// because /user/get-datasets is CORS-blocked on the health.mil tenant.
+// and returns reference material. Per swagger v1.56, dataset listing
+// and management endpoints (get-datasets, dataset DELETE,
+// delete-filename-from-dataset, get-all-files-ingested) all live on
+// /server/* and are reachable; the Project Detail page uses
+// getServerDatasets() for the picker.
 
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/state/auth';
@@ -11,6 +14,8 @@ import type { VerifyDatasetResult } from '../lib/asksage/types';
 export function Datasets() {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const provider = useAuth((s) => s.provider);
+  const onAskSage = provider === 'asksage';
 
   const [verifyName, setVerifyName] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
@@ -18,7 +23,7 @@ export function Datasets() {
 
   async function onVerify(e: FormEvent) {
     e.preventDefault();
-    if (!apiKey || !verifyName.trim()) return;
+    if (!apiKey || !verifyName.trim() || !onAskSage) return;
     setVerifyLoading(true);
     // eslint-disable-next-line no-console
     console.info(`[Datasets] verifying dataset "${verifyName.trim()}"`);
@@ -41,21 +46,31 @@ export function Datasets() {
         <code>/server/query</code> call so RAG injects relevant context.
       </p>
 
+      {!onAskSage && (
+        <div className="error" style={{ marginBottom: 'var(--space-4)' }}>
+          <strong>Datasets are an Ask Sage feature.</strong> You're currently
+          connected via <strong>OpenRouter</strong>, which has no concept of
+          datasets, RAG, or knowledge-base ingest. Switch back to Ask Sage on
+          the <a href="#/">Connection</a> tab to use this page.
+        </div>
+      )}
+
       <div className="panel" style={{ marginBottom: 'var(--space-4)' }}>
-        <strong>Why can't I create or upload to a dataset from here?</strong>
+        <strong>Where do I create or populate a dataset?</strong>
         <p className="note" style={{ marginTop: '0.4rem' }}>
-          Dataset creation, file uploads, and file listing all live under
-          Ask Sage's <code>/user/*</code> API surface, which is CORS-blocked
-          from the browser on the DHA health.mil tenant. A zero-backend
-          single-page app architecturally can't reach those endpoints — it
-          would need a server proxy, which the workstation network forbids.
+          Dataset listing, file upload, training, and file deletion all
+          live on Ask Sage's <code>/server/*</code> API surface, which is
+          reachable from the browser on the DHA health.mil tenant. The{' '}
+          <a href="#/projects">Project</a> page exposes the picker
+          (<code>/server/get-datasets</code>) and file attachment flow
+          (<code>/server/file</code> + <code>/server/train</code>) — pick
+          or create a dataset on a project, then attach files there.
         </p>
         <p className="note">
-          <strong>How to curate datasets:</strong> create and populate them in
-          the Ask Sage web UI directly, then enter the name on the{' '}
-          <a href="#/projects">Projects</a> tab so drafting can reference them
-          via RAG. Use "Verify dataset by name" below to confirm a name is
-          reachable from this app before relying on it.
+          Use "Verify dataset by name" below as a quick reachability
+          check for a dataset you already know about — it issues a tiny{' '}
+          <code>/server/query</code> against the name and reports whether
+          RAG returned any reference material.
         </p>
       </div>
 
@@ -63,8 +78,7 @@ export function Datasets() {
       <p className="note">
         Issues a tiny <code>/server/query</code> call against the dataset
         name and reports whether it's reachable and whether it returned
-        reference material. This is the practical way to check dataset
-        names on tenants where <code>/user/*</code> is blocked.
+        reference material.
       </p>
       <form onSubmit={onVerify}>
         <label htmlFor="verify-name">Dataset name</label>
@@ -74,9 +88,9 @@ export function Datasets() {
           value={verifyName}
           onChange={(e) => setVerifyName(e.target.value)}
           placeholder="e.g. far-clauses, dha-issuances"
-          disabled={verifyLoading || !apiKey}
+          disabled={verifyLoading || !apiKey || !onAskSage}
         />
-        <button type="submit" disabled={verifyLoading || !apiKey || !verifyName.trim()}>
+        <button type="submit" disabled={verifyLoading || !apiKey || !verifyName.trim() || !onAskSage}>
           {verifyLoading ? 'Verifying…' : 'Verify'}
         </button>
       </form>

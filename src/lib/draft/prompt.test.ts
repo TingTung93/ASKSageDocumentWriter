@@ -110,7 +110,7 @@ describe('buildDraftingPrompt', () => {
         { section_id: 'scope', name: '1.1 Scope', summary: 'Defines what the contract covers.' },
       ],
     });
-    expect(built.message).toContain('Prior sections');
+    expect(built.message).toContain('PRIOR SECTIONS');
     expect(built.message).toContain('1.1 Scope');
     expect(built.message).toContain('Defines what the contract covers.');
   });
@@ -123,32 +123,102 @@ describe('buildDraftingPrompt', () => {
       shared_inputs: {},
       prior_summaries: [],
     });
-    expect(built.message).not.toContain('Prior sections');
+    expect(built.message).not.toContain('PRIOR SECTIONS');
   });
 
-  it('inlines the project context block when one is provided', () => {
+  it('puts the SUBJECT block at the top of the prompt', () => {
     const built = buildDraftingPrompt({
       template: makeTemplate(),
       section: makeSection(),
-      project_description: '',
+      project_description: 'Performance Work Statement for Diasorin Liaison maintenance.',
       shared_inputs: {},
       prior_summaries: [],
-      context_block:
-        '=== PROJECT CONTEXT ===\nuser-attached guidance text here\n=== END PROJECT CONTEXT ===',
     });
-    expect(built.message).toContain('PROJECT CONTEXT');
-    expect(built.message).toContain('user-attached guidance text here');
+    // SUBJECT must appear before any other block.
+    const subjectIdx = built.message.indexOf('=== SUBJECT ===');
+    const styleIdx = built.message.indexOf('=== STYLE BLOCK ===');
+    const sectionIdx = built.message.indexOf('=== SECTION TO DRAFT ===');
+    expect(subjectIdx).toBeGreaterThanOrEqual(0);
+    expect(subjectIdx).toBeLessThan(styleIdx);
+    expect(styleIdx).toBeLessThan(sectionIdx);
+    expect(built.message).toContain('Diasorin Liaison maintenance');
   });
 
-  it('omits the project context block when null', () => {
+  it('inlines the references block immediately after SUBJECT', () => {
     const built = buildDraftingPrompt({
       template: makeTemplate(),
       section: makeSection(),
-      project_description: '',
+      project_description: 'X policy.',
       shared_inputs: {},
       prior_summaries: [],
-      context_block: null,
+      references_block:
+        '=== ATTACHED REFERENCES (1 file, 100 chars) ===\nfull text of the user reference\n=== END ATTACHED REFERENCES ===',
     });
-    expect(built.message).not.toContain('PROJECT CONTEXT');
+    expect(built.message).toContain('ATTACHED REFERENCES');
+    expect(built.message).toContain('full text of the user reference');
+    const subjectIdx = built.message.indexOf('=== SUBJECT ===');
+    const refsIdx = built.message.indexOf('=== ATTACHED REFERENCES');
+    expect(subjectIdx).toBeLessThan(refsIdx);
+  });
+
+  it('inlines the notes block when provided', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: 'X policy.',
+      shared_inputs: {},
+      prior_summaries: [],
+      notes_block: '=== PROJECT NOTES ===\nkey hint here\n=== END PROJECT NOTES ===',
+    });
+    expect(built.message).toContain('PROJECT NOTES');
+    expect(built.message).toContain('key hint here');
+  });
+
+  it('inlines the template example for THIS section when provided', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: 'X policy.',
+      shared_inputs: {},
+      prior_summaries: [],
+      template_example: 'This is the actual paragraph text from the template.',
+    });
+    expect(built.message).toContain('TEMPLATE EXAMPLE FOR THIS SECTION');
+    expect(built.message).toContain('actual paragraph text from the template');
+  });
+
+  it('omits all optional blocks when null/undefined', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: 'X policy.',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.message).not.toContain('ATTACHED REFERENCES');
+    expect(built.message).not.toContain('PROJECT NOTES');
+    expect(built.message).not.toContain('TEMPLATE EXAMPLE FOR THIS SECTION');
+  });
+
+  it('drops must_mention/must_not_mention from validation rendering', () => {
+    const sectionWithBakedRules = {
+      ...makeSection(),
+      validation: {
+        must_mention: ['SHARP', 'harassment prevention'],
+        must_not_mention: ['leverage'],
+        must_not_exceed_words: 200,
+      },
+    };
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: sectionWithBakedRules,
+      project_description: 'Transfusion services policy.',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.message).not.toContain('must_mention');
+    expect(built.message).not.toContain('SHARP');
+    expect(built.message).not.toContain('harassment prevention');
+    expect(built.message).toContain('must_not_exceed_words');
   });
 });
