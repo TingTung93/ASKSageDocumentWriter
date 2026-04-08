@@ -65,6 +65,32 @@ function parseStyle(el: Element): NamedStyle | null {
   const numIdEl = numPr ? wFirst(numPr, 'numId') : null;
   const numbering_id = wAttrInt(numIdEl, 'val');
 
+  // Alignment (w:pPr/w:jc) — many DHA templates encode "centered title",
+  // "right-aligned date", etc. on the style instead of on each paragraph,
+  // so we MUST capture this here for inherited resolution.
+  let alignment: NamedStyle['alignment'] = null;
+  if (pPr) {
+    const jc = wFirst(pPr, 'jc');
+    const v = wAttr(jc, 'val');
+    if (v === 'left' || v === 'center' || v === 'right' || v === 'justify' || v === 'both') {
+      alignment = v;
+    }
+  }
+
+  // Indents (w:pPr/w:ind) — same story: heading and body styles set
+  // these on the style, not on the individual paragraph.
+  let indent_left_twips: number | null = null;
+  let indent_first_line_twips: number | null = null;
+  let indent_hanging_twips: number | null = null;
+  if (pPr) {
+    const ind = wFirst(pPr, 'ind');
+    if (ind) {
+      indent_left_twips = wAttrInt(ind, 'left') ?? wAttrInt(ind, 'start');
+      indent_first_line_twips = wAttrInt(ind, 'firstLine');
+      indent_hanging_twips = wAttrInt(ind, 'hanging');
+    }
+  }
+
   return {
     id,
     name,
@@ -72,6 +98,10 @@ function parseStyle(el: Element): NamedStyle | null {
     based_on,
     outline_level,
     numbering_id,
+    alignment,
+    indent_left_twips,
+    indent_first_line_twips,
+    indent_hanging_twips,
   };
 }
 

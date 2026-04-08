@@ -9,6 +9,7 @@ import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '.
 import type { BodyFillRegion } from '../template/types';
 import { draftSection, summarizeDraft } from './drafter';
 import type { DraftingOptions, PriorSectionSummary } from './types';
+import { getContextItems, renderContextBlock } from '../project/context';
 
 export interface DraftProjectCallbacks {
   onSectionStart?: (template: TemplateRecord, section: BodyFillRegion) => void;
@@ -68,6 +69,11 @@ export async function draftProject(
 ): Promise<void> {
   const { project, templates, options, callbacks } = args;
 
+  // Render the project's chat notes + attached file extracts ONCE for
+  // the whole run. The same block gets injected into every per-section
+  // drafting prompt — no point re-rendering it 30 times.
+  const contextBlock = renderContextBlock(getContextItems(project));
+
   for (const template of templates) {
     const ordered = orderSectionsByDependencies(template.schema_json.sections);
     const priorSummaries: PriorSectionSummary[] = [];
@@ -103,6 +109,17 @@ export async function draftProject(
               .filter((s): s is PriorSectionSummary => !!s)
           : priorSummaries.slice(-6);
 
+      // Dataset resolution priority:
+      //   1. explicit per-call override in options
+      //   2. project's owned dataset (where attached files were trained)
+      //   3. first manually-typed reference dataset
+      //   4. 'none'
+      const resolvedDataset =
+        options?.dataset ??
+        project.dataset_name ??
+        project.reference_dataset_names[0] ??
+        'none';
+
       try {
         const result = await draftSection(client, {
           template: template.schema_json,
@@ -110,9 +127,10 @@ export async function draftProject(
           project_description: project.description,
           shared_inputs: project.shared_inputs,
           prior_summaries: relevant,
+          context_block: contextBlock,
           options: {
             ...options,
-            dataset: options?.dataset ?? project.reference_dataset_names[0] ?? 'none',
+            dataset: resolvedDataset,
             // Project-level live search applies to every section unless
             // an explicit per-call override was passed in options.
             live: options?.live ?? project.live_search ?? 0,

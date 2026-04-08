@@ -49,6 +49,11 @@ export interface SynthesisOptions {
   temperature?: number;
   /** Optional explicit project intent the user supplies */
   user_hint?: string;
+  /**
+   * Override the full-body character cap. Default is sized for a 200k
+   * context model. Lower it if you're targeting a smaller model.
+   */
+  body_cap_chars?: number;
 }
 
 export interface SynthesisResult {
@@ -62,4 +67,13 @@ export interface SynthesisResult {
   prompt_sent: string;
   /** Model used */
   model: string;
+  /**
+   * Diagnostics about how much of the source body fit under the cap.
+   * Callers should warn the user if `body_truncated` is true — that
+   * means the back of the document was silently dropped.
+   */
+  body_truncated: boolean;
+  body_paragraphs_sent: number;
+  body_paragraphs_total: number;
+  body_chars_sent: number;
 }

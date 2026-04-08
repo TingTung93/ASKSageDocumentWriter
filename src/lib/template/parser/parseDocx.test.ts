@@ -63,6 +63,52 @@ describe('parseDocx — real DHA templates', () => {
       expect(headings.length).toBeGreaterThan(0);
     });
 
+    it('captures alignment and indent on style definitions when present', async () => {
+      const { schema } = await parseDocx(loadFixture(DHA_PUBLICATION), {
+        filename: DHA_PUBLICATION,
+        docx_blob_id: 'fixture://publication',
+      });
+      // At least one style in the template defines either an alignment
+      // or an indent — without this, paragraphs that inherit those
+      // values would lose them on the way through the parser.
+      const hasAlignmentOrIndent = schema.formatting.named_styles.some(
+        (s) =>
+          s.alignment !== null ||
+          s.indent_left_twips !== null ||
+          s.indent_first_line_twips !== null ||
+          s.indent_hanging_twips !== null,
+      );
+      expect(hasAlignmentOrIndent).toBe(true);
+    });
+
+    it('resolves style-inherited alignment and indent onto each paragraph', async () => {
+      const { paragraphs, schema } = await parseDocx(loadFixture(DHA_PUBLICATION), {
+        filename: DHA_PUBLICATION,
+        docx_blob_id: 'fixture://publication',
+      });
+      // Find a style that defines an alignment or indent and pick a
+      // paragraph that uses it. After the inherited-formatting pass,
+      // that paragraph must show the inherited value even if its own
+      // pPr didn't specify it.
+      const formattedStyle = schema.formatting.named_styles.find(
+        (s) =>
+          s.alignment !== null ||
+          (s.indent_left_twips !== null && s.indent_left_twips > 0),
+      );
+      if (!formattedStyle) {
+        // No formatted styles in this fixture — nothing to assert.
+        return;
+      }
+      const sample = paragraphs.find((p) => p.style_id === formattedStyle.id);
+      if (!sample) return;
+      if (formattedStyle.alignment !== null) {
+        expect(sample.alignment).toBe(formattedStyle.alignment);
+      }
+      if (formattedStyle.indent_left_twips !== null) {
+        expect(sample.indent_left_twips).toBe(formattedStyle.indent_left_twips);
+      }
+    });
+
     it('lists header and footer parts', async () => {
       const { schema } = await parseDocx(loadFixture(DHA_PUBLICATION), {
         filename: DHA_PUBLICATION,

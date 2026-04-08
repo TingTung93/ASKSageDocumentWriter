@@ -15,16 +15,32 @@ describe('cost projection', () => {
     expect(est.tokens_total).toBe(est.tokens_in + est.tokens_out);
   });
 
-  it('multiplies paragraphs by per-paragraph assumptions for cleanup', () => {
-    const est = estimateDocumentCleanup(50, DEFAULT_COST_ASSUMPTIONS);
-    expect(est.tokens_in).toBe(50 * DEFAULT_COST_ASSUMPTIONS.cleanup_tokens_in_per_paragraph);
-    expect(est.tokens_out).toBe(50 * DEFAULT_COST_ASSUMPTIONS.cleanup_tokens_out_per_paragraph);
+  it('cleanup estimate scales with character count, not just paragraph count', () => {
+    // 200 characters across 5 paragraphs at 4 chars/token = 50 content tokens.
+    // Plus 600 system prompt + 5*5 framing = 675 input tokens.
+    const est = estimateDocumentCleanup(5, 200, DEFAULT_COST_ASSUMPTIONS);
+    expect(est.tokens_in).toBe(675);
+    // Output ratio = 0.15 → ceil(675 * 0.15) = 102
+    expect(est.tokens_out).toBe(102);
   });
 
-  it('zero counts produce zero estimates', () => {
+  it('cleanup estimate is dominated by content for large documents', () => {
+    // 40,000 characters / 4 = 10,000 content tokens — overhead becomes noise.
+    const est = estimateDocumentCleanup(100, 40_000, DEFAULT_COST_ASSUMPTIONS);
+    expect(est.tokens_in).toBe(600 + 10_000 + 500);
+  });
+
+  it('a tiny memo (200 chars) is not estimated as 8k tokens', () => {
+    const est = estimateDocumentCleanup(8, 200, DEFAULT_COST_ASSUMPTIONS);
+    expect(est.tokens_in).toBeLessThan(1000);
+  });
+
+  it('zero counts produce a baseline (system-prompt-only) estimate', () => {
     const est = estimateProjectDrafting(0, DEFAULT_COST_ASSUMPTIONS);
     expect(est.tokens_total).toBe(0);
     expect(est.usd_total).toBe(0);
+    const cleanupEst = estimateDocumentCleanup(0, 0, DEFAULT_COST_ASSUMPTIONS);
+    expect(cleanupEst.tokens_in).toBe(DEFAULT_COST_ASSUMPTIONS.cleanup_system_prompt_tokens);
   });
 
   it('honors usd-per-1k pricing', () => {

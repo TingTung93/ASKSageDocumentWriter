@@ -49,8 +49,8 @@ function makeSchema(): TemplateSchema {
       default_font: { family: 'Times New Roman', size_pt: 12 },
       theme: null,
       named_styles: [
-        { id: 'Heading1', name: 'Heading 1', type: 'paragraph', based_on: null, outline_level: 0, numbering_id: null },
-        { id: 'BodyText', name: 'Body Text', type: 'paragraph', based_on: null, outline_level: null, numbering_id: null },
+        { id: 'Heading1', name: 'Heading 1', type: 'paragraph', based_on: null, outline_level: 0, numbering_id: null, alignment: null, indent_left_twips: null, indent_first_line_twips: null, indent_hanging_twips: null },
+        { id: 'BodyText', name: 'Body Text', type: 'paragraph', based_on: null, outline_level: null, numbering_id: null, alignment: null, indent_left_twips: null, indent_first_line_twips: null, indent_hanging_twips: null },
       ],
       numbering_definitions: [],
       headers: [],

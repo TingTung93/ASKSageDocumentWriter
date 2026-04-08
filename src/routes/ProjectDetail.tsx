@@ -2,12 +2,22 @@
 // section workspace, validation issues, and export. The end-to-end
 // drafting + critique + export pipeline lives here.
 
-import { useState, type ChangeEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type DraftRecord, type TemplateRecord } from '../lib/db/schema';
+import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '../lib/db/schema';
 import { updateProject } from '../lib/project/helpers';
 import { deriveSharedInputFields, type SharedInputField } from '../lib/project/helpers';
+import {
+  addProjectNote,
+  attachProjectFile,
+  getContextItems,
+  removeContextItem,
+  setProjectDataset,
+  suggestDatasetName,
+} from '../lib/project/context';
+import { DropZone } from '../components/DropZone';
+import { EmptyState } from '../components/EmptyState';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { draftProject } from '../lib/draft/orchestrator';
@@ -17,6 +27,10 @@ import type { DraftParagraph } from '../lib/draft/types';
 import { loadSettings } from '../lib/settings/store';
 import { estimateProjectDrafting, formatTokens, formatUsd } from '../lib/settings/cost';
 import { DEFAULT_COST_ASSUMPTIONS } from '../lib/settings/types';
+import { toast } from '../lib/state/toast';
+import { Spinner } from '../components/Spinner';
+import { buildProjectBundle } from '../lib/share/bundle';
+import { downloadBundle, bundleFilename } from '../lib/share/download';
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -93,14 +107,17 @@ export function ProjectDetail() {
             setProgress({ done, total: totalSections });
             // eslint-disable-next-line no-console
             console.error(`[ProjectDetail] error on ${tpl.name} :: ${sec.name}: ${err.message}`);
+            toast.error(`${tpl.name} :: ${sec.name} — ${err.message}`);
           },
         },
       });
+      toast.success(`Drafting complete (${totalSections} section${totalSections === 1 ? '' : 's'})`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error('[ProjectDetail] drafting failed:', err);
       setDraftError(message);
+      toast.error(`Drafting failed: ${message}`);
     } finally {
       setDrafting(false);
     }
@@ -110,7 +127,29 @@ export function ProjectDetail() {
     if (!project) return;
     const payload = exportProjectAsJson(project, projectTemplates, drafts ?? []);
     const safeName = project.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
-    downloadJsonExport(`${safeName}-${Date.now()}.json`, payload);
+    const filename = `${safeName}-${Date.now()}.json`;
+    downloadJsonExport(filename, payload);
+    toast.success(`Exported ${filename}`);
+  }
+
+  async function onShare(includeDrafts: boolean) {
+    if (!project) return;
+    try {
+      const bundle = await buildProjectBundle(
+        project,
+        projectTemplates,
+        drafts ?? [],
+        { includeDrafts },
+      );
+      const filename = bundleFilename(project.name, 'project');
+      downloadBundle(filename, bundle);
+      toast.success(
+        `Exported ${filename}${includeDrafts ? ' (with drafts)' : ''}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Share failed: ${message}`);
+    }
   }
 
   return (
@@ -141,6 +180,8 @@ export function ProjectDetail() {
           />
         ))}
       </div>
+
+      <ProjectContextSection project={project} />
 
       <h2>Drafting</h2>
       <label htmlFor="project-live-detail">Web search mode</label>
@@ -199,16 +240,37 @@ export function ProjectDetail() {
         );
       })()}
 
-      <button type="button" onClick={onStartDrafting} disabled={drafting || !apiKey}>
-        {drafting ? 'Drafting…' : 'Draft all sections'}
-      </button>
-      <button
-        type="button"
-        onClick={onExport}
-        style={{ marginLeft: '0.5rem', background: '#666', borderColor: '#666' }}
-      >
-        Export project as JSON
-      </button>
+      <div className="btn-row">
+        <button type="button" onClick={onStartDrafting} disabled={drafting || !apiKey}>
+          {drafting ? <Spinner light label="Drafting…" /> : 'Draft all sections'}
+        </button>
+        <button type="button" className="btn-secondary" onClick={() => void onShare(false)}>
+          Share project (templates only)
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => void onShare(true)}
+          disabled={(drafts ?? []).length === 0}
+          title={
+            (drafts ?? []).length === 0
+              ? 'Draft at least one section first'
+              : 'Include all drafted sections in the bundle'
+          }
+        >
+          Share project + drafts
+        </button>
+        <button type="button" className="btn-ghost" onClick={onExport}>
+          Export drafts as JSON
+        </button>
+      </div>
+      <p className="note">
+        Share buttons emit an <code>.asdbundle.json</code> file that bundles
+        the project, every referenced template, and (optionally) the drafted
+        sections. A teammate can drop it on the Projects tab to recreate the
+        whole setup. The "Export drafts as JSON" button writes the older
+        flat-JSON dump for downstream tooling.
+      </p>
       {progress && (
         <p className="note">
           Progress: {progress.done} / {progress.total} sections
@@ -331,6 +393,288 @@ function TemplateDraftedSections({
         );
       })}
     </section>
+  );
+}
+
+function ProjectContextSection({ project }: { project: ProjectRecord }) {
+  const items = getContextItems(project);
+  const notes = items.filter((i) => i.kind === 'note');
+  const files = items.filter((i) => i.kind === 'file');
+  const apiKey = useAuth((s) => s.apiKey);
+  const baseUrl = useAuth((s) => s.baseUrl);
+  const datasetName = project.dataset_name ?? '';
+  const datasetSet = datasetName.length > 0;
+
+  const [noteDraft, setNoteDraft] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const [datasetDraft, setDatasetDraft] = useState(datasetName);
+  const [datasetOptions, setDatasetOptions] = useState<string[] | null>(null);
+  const [loadingDatasets, setLoadingDatasets] = useState(false);
+
+  async function loadDatasets() {
+    if (!apiKey) {
+      toast.error('Connect on the Connection tab first.');
+      return;
+    }
+    setLoadingDatasets(true);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const list = await client.getServerDatasets();
+      setDatasetOptions(list);
+      if (list.length === 0) {
+        toast.info('Ask Sage returned an empty dataset list.');
+      }
+    } catch (err) {
+      toast.error(`Couldn't list datasets: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setLoadingDatasets(false);
+    }
+  }
+
+  async function onSaveDataset() {
+    const next = datasetDraft.trim() || null;
+    try {
+      await setProjectDataset(project.id, next);
+      toast.success(next ? `Dataset set to "${next}"` : 'Project dataset cleared');
+    } catch (err) {
+      toast.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  function onSuggestName() {
+    setDatasetDraft(suggestDatasetName(project.name));
+  }
+
+  async function onAttach(file: File) {
+    if (!apiKey) {
+      toast.error('Connect on the Connection tab first.');
+      return;
+    }
+    if (!datasetSet) {
+      toast.error('Set or pick a dataset name above before attaching files.');
+      return;
+    }
+    setAttaching(true);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const item = await attachProjectFile(client, project.id, file);
+      toast.success(
+        `${file.name} uploaded · ${item.extracted_chars.toLocaleString()} chars trained into ${item.trained_into_dataset}`,
+      );
+    } catch (err) {
+      toast.error(`Attach failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAttaching(false);
+    }
+  }
+
+  async function onPostNote(e: FormEvent) {
+    e.preventDefault();
+    if (!noteDraft.trim()) return;
+    setPosting(true);
+    try {
+      await addProjectNote(project.id, noteDraft);
+      setNoteDraft('');
+    } catch (err) {
+      toast.error(`Failed to post note: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  async function onRemove(itemId: string) {
+    try {
+      await removeContextItem(project.id, itemId);
+    } catch (err) {
+      toast.error(`Failed to remove: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return (
+    <>
+      <h2>
+        Project context{' '}
+        <span className="badge" style={{ marginLeft: '0.4rem' }}>
+          {files.length} file{files.length === 1 ? '' : 's'} · {notes.length} note
+          {notes.length === 1 ? '' : 's'}
+        </span>
+      </h2>
+      <p className="note">
+        Two grounding mechanisms feed the drafter:
+        <br />· <strong>Notes</strong> are inlined into every section's prompt verbatim.
+        Use them for short scope hints and tone guidance.
+        <br />· <strong>Files</strong> are uploaded to Ask Sage via{' '}
+        <code>/server/file</code> and trained into this project's owned dataset via{' '}
+        <code>/server/train</code>. Drafting then uses{' '}
+        <code>/server/query</code>'s RAG against that dataset — no character caps,
+        no local extraction.
+      </p>
+
+      <h3 style={{ marginTop: 'var(--space-3)' }}>Ask Sage dataset for this project</h3>
+      <p className="note">
+        Pick or name a dataset to act as this project's RAG corpus. Files
+        attached below are trained into it via <code>/server/train</code>. The
+        drafter passes this name as <code>dataset</code> on every{' '}
+        <code>/server/query</code> call.
+      </p>
+      <div className="row" style={{ alignItems: 'flex-end' }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <label htmlFor="project-dataset">Dataset name</label>
+          <input
+            id="project-dataset"
+            type="text"
+            className="mono"
+            value={datasetDraft}
+            onChange={(e) => setDatasetDraft(e.target.value)}
+            placeholder="e.g. asd_diasorin_pws"
+            list="project-dataset-options"
+          />
+          {datasetOptions && (
+            <datalist id="project-dataset-options">
+              {datasetOptions.map((d) => (
+                <option key={d} value={d} />
+              ))}
+            </datalist>
+          )}
+        </div>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onSuggestName}
+          title="Generate a slug from the project name"
+        >
+          suggest
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => void loadDatasets()}
+          disabled={loadingDatasets || !apiKey}
+          title="GET /server/get-datasets"
+        >
+          {loadingDatasets ? 'Loading…' : `list (${datasetOptions?.length ?? '?'})`}
+        </button>
+        <button
+          type="button"
+          onClick={() => void onSaveDataset()}
+          disabled={(datasetDraft.trim() || null) === (datasetName || null)}
+        >
+          save
+        </button>
+      </div>
+      {datasetSet ? (
+        <p className="note">
+          Active dataset: <code>{datasetName}</code>
+        </p>
+      ) : (
+        <p className="note" style={{ color: 'var(--color-warning)' }}>
+          No dataset set — file attachments are disabled. Save a dataset name first.
+        </p>
+      )}
+
+      <h3 style={{ marginTop: 'var(--space-4)' }}>Attached files ({files.length})</h3>
+      <DropZone
+        accept=".docx,.pdf,.txt,.md,.markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,text/plain,text/markdown"
+        onFile={onAttach}
+        disabled={attaching || !datasetSet || !apiKey}
+        label={
+          attaching
+            ? 'Uploading and training…'
+            : !datasetSet
+              ? 'Set a dataset name above first'
+              : 'Drop a reference file (DOCX, PDF, TXT, MD)'
+        }
+        hint="Files go to /server/file (Ask Sage extracts the text), then /server/train into this project's dataset. Up to 250 MB per document, 500 MB for audio/video."
+      />
+      {files.length === 0 ? (
+        <EmptyState title="No files attached" body="Pick a dataset above, then drop a file here." />
+      ) : (
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+          {files.map((f) =>
+            f.kind === 'file' ? (
+              <li
+                key={f.id}
+                className="card"
+                style={{ marginBottom: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)' }}
+              >
+                <div className="row" style={{ alignItems: 'center' }}>
+                  <strong>{f.filename}</strong>
+                  <span className="badge">{(f.size_bytes / 1024).toFixed(1)} KB</span>
+                  <span className="badge badge-success">
+                    {f.extracted_chars.toLocaleString()} chars
+                  </span>
+                  <span className="badge badge-primary">{f.trained_into_dataset}</span>
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn-danger btn-sm"
+                    title="Removes the local registry entry only — the trained content remains in the Ask Sage dataset (no /server/* delete endpoint exists)."
+                    onClick={() => void onRemove(f.id)}
+                  >
+                    forget
+                  </button>
+                </div>
+                <div className="note" style={{ marginTop: '0.3rem' }}>
+                  Attached {new Date(f.created_at).toLocaleString()}
+                  {f.embedding_id && ` · embedding ${f.embedding_id}`}
+                </div>
+              </li>
+            ) : null,
+          )}
+        </ul>
+      )}
+
+      <h3 style={{ marginTop: 'var(--space-4)' }}>Chat notes ({notes.length})</h3>
+      {notes.length === 0 ? (
+        <EmptyState
+          title="No notes yet"
+          body="Post scope hints, priorities, or any guidance you want the drafter to honor."
+        />
+      ) : (
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+          {notes.map((n) =>
+            n.kind === 'note' ? (
+              <li
+                key={n.id}
+                className="card"
+                style={{ marginBottom: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)' }}
+              >
+                <div className="row" style={{ alignItems: 'center' }}>
+                  <span className="badge badge-primary">{n.role}</span>
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    {new Date(n.created_at).toLocaleString()}
+                  </span>
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn-danger btn-sm"
+                    onClick={() => void onRemove(n.id)}
+                  >
+                    remove
+                  </button>
+                </div>
+                <div style={{ marginTop: '0.3rem', whiteSpace: 'pre-wrap' }}>{n.text}</div>
+              </li>
+            ) : null,
+          )}
+        </ul>
+      )}
+      <form onSubmit={onPostNote} style={{ marginTop: 'var(--space-2)' }}>
+        <label htmlFor="context-note">Add a note</label>
+        <textarea
+          id="context-note"
+          value={noteDraft}
+          onChange={(e) => setNoteDraft(e.target.value)}
+          rows={3}
+          placeholder="e.g. Emphasize compliance with DHA Issuance 6025.13 throughout the Inspection section."
+          disabled={posting}
+        />
+        <button type="submit" disabled={posting || !noteDraft.trim()}>
+          {posting ? 'Posting…' : 'Post note'}
+        </button>
+      </form>
+    </>
   );
 }
 

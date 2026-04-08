@@ -20,6 +20,59 @@ export interface TemplateRecord {
   schema_json: TemplateSchema;
 }
 
+/**
+ * A user-attached piece of grounding context for a project. Two flavors:
+ *   - "note": a chat-style message (typically guidance from the user
+ *     about scope, requirements, or expected emphasis). Inlined verbatim
+ *     into the drafting prompt.
+ *   - "file": a file the user uploaded to Ask Sage via /server/file and
+ *     trained into the project's dedicated dataset via /server/train.
+ *     Drafting reaches it via the existing `dataset` parameter on
+ *     /server/query — it never touches the prompt body. We store only
+ *     the metadata (filename, embedding id, training timestamp) so the
+ *     UI can list and de-register attachments.
+ *
+ * NOTE: prior to v4 the `file` variant inlined extracted plaintext
+ * directly into the prompt with arbitrary char caps. That approach was
+ * replaced by the train-into-a-dataset flow once we discovered
+ * /server/file + /server/train + /server/get-datasets are all on the
+ * permissive /server/* surface.
+ */
+export type ProjectContextItem = ProjectContextNote | ProjectContextFile;
+
+export interface ProjectContextNote {
+  kind: 'note';
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  created_at: string;
+}
+
+export interface ProjectContextFile {
+  kind: 'file';
+  id: string;
+  filename: string;
+  /** MIME type or 'unknown' */
+  mime_type: string;
+  /** Original byte size */
+  size_bytes: number;
+  /**
+   * Number of characters Ask Sage extracted from the file (the `ret`
+   * length from /server/file). Useful for sanity-checking that the
+   * upload worked and showing the user "Ask Sage saw N chars".
+   */
+  extracted_chars: number;
+  /**
+   * Embedding id Ask Sage returned from /server/train, if any. We
+   * persist it so a future "remove from dataset" feature has a handle.
+   */
+  embedding_id?: string;
+  /** Dataset name the content was trained into (mirrors project.dataset_name at the time of attach). */
+  trained_into_dataset: string;
+  /** ISO timestamp when the file was attached */
+  created_at: string;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;
@@ -48,6 +101,23 @@ export interface ProjectRecord {
    *   2 — Google results + crawl (autonomous market research mode)
    */
   live_search: 0 | 1 | 2;
+  /**
+   * Notes and file-attachment metadata for this project. Notes get
+   * inlined into every drafting prompt; files live in the project's
+   * Ask Sage dataset (see `dataset_name`) and are pulled in via RAG.
+   * Optional for migration compatibility — projects created before v4
+   * omit it.
+   */
+  context_items?: ProjectContextItem[];
+  /**
+   * Ask Sage dataset name this project owns. When set, /server/train
+   * routes attached file content into this dataset and drafting
+   * /server/query calls pass it as the `dataset` parameter.
+   *
+   * Conventionally a `user_custom_<USERID>_<NAME>_content` name picked
+   * by the user, but we accept whatever Ask Sage accepts.
+   */
+  dataset_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -142,6 +212,18 @@ class DocWriterDb extends Dexie {
     // v3 adds the singleton settings table (per-stage model overrides
     // and cost projection assumptions).
     this.version(3).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+    });
+    // v4 adds project context_items (chat notes + attached file extracts).
+    // No new index — context_items lives inside the project row, so the
+    // index spec doesn't change. The version bump still matters because
+    // Dexie uses it to gate any future migration we might want to run.
+    this.version(4).stores({
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',

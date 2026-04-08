@@ -125,4 +125,30 @@ describe('buildDraftingPrompt', () => {
     });
     expect(built.message).not.toContain('Prior sections');
   });
+
+  it('inlines the project context block when one is provided', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: '',
+      shared_inputs: {},
+      prior_summaries: [],
+      context_block:
+        '=== PROJECT CONTEXT ===\nuser-attached guidance text here\n=== END PROJECT CONTEXT ===',
+    });
+    expect(built.message).toContain('PROJECT CONTEXT');
+    expect(built.message).toContain('user-attached guidance text here');
+  });
+
+  it('omits the project context block when null', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: '',
+      shared_inputs: {},
+      prior_summaries: [],
+      context_block: null,
+    });
+    expect(built.message).not.toContain('PROJECT CONTEXT');
+  });
 });

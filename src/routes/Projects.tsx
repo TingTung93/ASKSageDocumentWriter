@@ -3,12 +3,15 @@
 // open the project detail view to fill shared inputs and run drafting.
 
 import { useMemo, useState, type FormEvent } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../lib/db/schema';
 import { createProject } from '../lib/project/helpers';
 import { SearchFilter, matchesSearch } from '../components/SearchFilter';
 import { EmptyState } from '../components/EmptyState';
+import { DropZone } from '../components/DropZone';
+import { importBundleFromText } from '../lib/share/import';
+import { toast } from '../lib/state/toast';
 
 export function Projects() {
   const projects = useLiveQuery(
@@ -26,6 +29,8 @@ export function Projects() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [templatePickerSearch, setTemplatePickerSearch] = useState('');
   const [projectSearch, setProjectSearch] = useState('');
+  const [importing, setImporting] = useState(false);
+  const navigate = useNavigate();
 
   const filteredTemplates = useMemo(
     () => (templates ?? []).filter((t) => matchesSearch(t.name, templatePickerSearch)),
@@ -43,6 +48,33 @@ export function Projects() {
     setSelectedTemplateIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
+  }
+
+  async function onImportBundle(file: File) {
+    if (!file.name.toLowerCase().endsWith('.json')) {
+      toast.error('Project bundles must be a .json file.');
+      return;
+    }
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const summary = await importBundleFromText(text);
+      if (summary.kind === 'project' && summary.project_id) {
+        toast.success(
+          `Imported "${summary.display_name}" — ${summary.template_count} template${summary.template_count === 1 ? '' : 's'}${summary.draft_count ? `, ${summary.draft_count} draft${summary.draft_count === 1 ? '' : 's'}` : ''}`,
+        );
+        navigate(`/projects/${summary.project_id}`);
+      } else if (summary.kind === 'template') {
+        toast.info(
+          `Imported template "${summary.display_name}". Switch to the Templates tab to view it.`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Bundle import failed: ${message}`);
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function onCreate(e: FormEvent) {
@@ -91,6 +123,20 @@ export function Projects() {
         per-section prompts and storing the structured output for review
         and export.
       </p>
+
+      <h2>Import a shared bundle</h2>
+      <p className="note">
+        Drop a <code>.asdbundle.json</code> file a teammate exported from this
+        tool. Project bundles arrive complete with every referenced template
+        (and optionally the drafts), so one import gives you a working setup.
+      </p>
+      <DropZone
+        accept=".json,application/json"
+        onFile={onImportBundle}
+        disabled={importing}
+        label="Drop a project or template bundle here"
+        hint="Templates inside the bundle are added as new copies — your existing data is never overwritten."
+      />
 
       <h2>New project</h2>
       <form onSubmit={onCreate}>

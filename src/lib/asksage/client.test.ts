@@ -129,43 +129,6 @@ describe('AskSageClient', () => {
     }
   });
 
-  it('getDatasets() normalizes string-array response shape', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ response: ['far-clauses', 'dha-issuances', 'prior-pws'] }), { status: 200 }),
-    );
-    const client = makeClient();
-    const ds = await client.getDatasets();
-    expect(ds).toHaveLength(3);
-    expect(ds[0]).toEqual({ name: 'far-clauses' });
-    const [url] = fetchMock.mock.calls[0] as [string];
-    expect(url).toBe('https://api.asksage.health.mil/user/get-datasets');
-  });
-
-  it('getDatasets() normalizes object-array response shape', async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          data: [
-            { name: 'far-clauses', description: 'FAR Part 13', file_count: 42 },
-            { name: 'dha-issuances' },
-          ],
-        }),
-        { status: 200 },
-      ),
-    );
-    const client = makeClient();
-    const ds = await client.getDatasets();
-    expect(ds).toHaveLength(2);
-    expect(ds[0]!.description).toBe('FAR Part 13');
-    expect(ds[0]!.file_count).toBe(42);
-  });
-
-  it('getDatasets() throws AskSageError on CORS/network failure', async () => {
-    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
-    const client = makeClient();
-    await expect(client.getDatasets()).rejects.toMatchObject({ name: 'AskSageError', status: null });
-  });
-
   it('verifyDataset() returns reachable=true with reference excerpt on success', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

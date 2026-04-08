@@ -1,50 +1,20 @@
-// Datasets — lists Ask Sage datasets available to the user, or
-// gracefully falls back to a verify-by-name probe when /user/* is
-// CORS-blocked. The verify probe uses /server/query (always reachable)
-// to confirm a dataset name is valid and returns reference material.
+// Datasets — verify-by-name probe for Ask Sage datasets. Uses
+// /server/query (always reachable) to confirm a dataset name is valid
+// and returns reference material. Programmatic listing is not possible
+// because /user/get-datasets is CORS-blocked on the health.mil tenant.
 
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
-import type { DatasetInfo, VerifyDatasetResult } from '../lib/asksage/types';
+import type { VerifyDatasetResult } from '../lib/asksage/types';
 
 export function Datasets() {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
 
-  const [datasets, setDatasets] = useState<DatasetInfo[] | null>(null);
-  const [listLoading, setListLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-
   const [verifyName, setVerifyName] = useState('');
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [verifyResults, setVerifyResults] = useState<VerifyDatasetResult[]>([]);
-
-  async function onListDatasets() {
-    if (!apiKey) {
-      setListError('Connect on the Connection tab first.');
-      return;
-    }
-    setListError(null);
-    setListLoading(true);
-    setDatasets(null);
-    // eslint-disable-next-line no-console
-    console.info('[Datasets] calling /user/get-datasets');
-    try {
-      const client = new AskSageClient(baseUrl, apiKey);
-      const list = await client.getDatasets();
-      setDatasets(list);
-      // eslint-disable-next-line no-console
-      console.info(`[Datasets] received ${list.length} datasets`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.error('[Datasets] list failed:', err);
-      setListError(message);
-    } finally {
-      setListLoading(false);
-    }
-  }
 
   async function onVerify(e: FormEvent) {
     e.preventDefault();
@@ -66,50 +36,28 @@ export function Datasets() {
     <main>
       <h1>Datasets</h1>
       <p>
-        Ask Sage datasets are reference corpora you've curated through Ask
-        Sage's own UI (FAR clauses, DHA Issuances, prior packets, etc.).
-        Drafting passes a dataset name on every <code>/server/query</code>{' '}
-        call so RAG injects relevant context.
+        Ask Sage datasets are reference corpora (FAR clauses, DHA Issuances,
+        prior packets, etc.). Drafting passes a dataset name on every{' '}
+        <code>/server/query</code> call so RAG injects relevant context.
       </p>
 
-      <h2>List datasets via API</h2>
-      <p className="note">
-        Calls <code>/user/get-datasets</code>. On the DHA health.mil tenant
-        this endpoint is CORS-blocked from the browser, so the call will
-        most likely fail with a network error — that's expected. If you're
-        on a different tenant or Ask Sage updated their CORS config it may
-        succeed.
-      </p>
-      <button type="button" onClick={onListDatasets} disabled={listLoading || !apiKey}>
-        {listLoading ? 'Loading…' : 'List datasets'}
-      </button>
-      {listError && (
-        <div className="error">
-          List failed: {listError}
-          {'\n\n'}
-          Use "Verify dataset by name" below to check that a dataset you
-          already know about is reachable.
-        </div>
-      )}
-      {datasets && datasets.length > 0 && (
-        <ul style={{ listStyle: 'none', padding: 0, marginTop: '0.5rem' }}>
-          {datasets.map((d) => (
-            <li
-              key={d.name}
-              style={{ padding: '0.5rem 0.75rem', border: '1px solid #ddd', borderRadius: 4, marginBottom: '0.25rem' }}
-            >
-              <strong>{d.name}</strong>
-              {d.description && <div className="note">{d.description}</div>}
-              {typeof d.file_count === 'number' && (
-                <div className="note">{d.file_count} file{d.file_count === 1 ? '' : 's'}</div>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {datasets && datasets.length === 0 && (
-        <p className="note">API returned an empty list.</p>
-      )}
+      <div className="panel" style={{ marginBottom: 'var(--space-4)' }}>
+        <strong>Why can't I create or upload to a dataset from here?</strong>
+        <p className="note" style={{ marginTop: '0.4rem' }}>
+          Dataset creation, file uploads, and file listing all live under
+          Ask Sage's <code>/user/*</code> API surface, which is CORS-blocked
+          from the browser on the DHA health.mil tenant. A zero-backend
+          single-page app architecturally can't reach those endpoints — it
+          would need a server proxy, which the workstation network forbids.
+        </p>
+        <p className="note">
+          <strong>How to curate datasets:</strong> create and populate them in
+          the Ask Sage web UI directly, then enter the name on the{' '}
+          <a href="#/projects">Projects</a> tab so drafting can reference them
+          via RAG. Use "Verify dataset by name" below to confirm a name is
+          reachable from this app before relying on it.
+        </p>
+      </div>
 
       <h2>Verify dataset by name</h2>
       <p className="note">

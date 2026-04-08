@@ -26,6 +26,8 @@ import { EmptyState } from '../components/EmptyState';
 import { loadSettings } from '../lib/settings/store';
 import { estimateDocumentCleanup, formatTokens, formatUsd } from '../lib/settings/cost';
 import { DEFAULT_COST_ASSUMPTIONS, type CostAssumptions } from '../lib/settings/types';
+import { toast } from '../lib/state/toast';
+import { Spinner } from '../components/Spinner';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -64,26 +66,31 @@ export function Documents() {
         filename: file.name,
         docx_blob_id: 'doc',
       });
+      // Count only paragraphs with visible text — empty/whitespace
+      // paragraphs are layout artifacts (blank lines for spacing) and
+      // are filtered out before being sent to the LLM. Counting them
+      // would inflate the cost projection.
+      const significantCount = paragraphs.filter((p) => p.text.trim().length > 0).length;
       const record: DocumentRecord = {
         id: newId(),
         name: file.name.replace(/\.docx$/i, ''),
         filename: file.name,
         ingested_at: new Date().toISOString(),
         docx_bytes: docx_blob,
-        paragraph_count: paragraphs.length,
+        paragraph_count: significantCount,
         edits: [] as StoredEdit[],
         total_tokens_in: 0,
         total_tokens_out: 0,
       };
       await db.documents.put(record);
       setSelectedId(record.id);
-      // eslint-disable-next-line no-console
-      console.info(`[Documents] stored ${record.id} with ${paragraphs.length} paragraphs`);
+      toast.success(`Loaded ${file.name} (${significantCount} paragraphs)`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error('[Documents] upload failed:', err);
       setUploadError(message);
+      toast.error(`Upload failed: ${message}`);
     } finally {
       setUploading(false);
     }
@@ -157,17 +164,12 @@ export function Documents() {
             </span>
             <button
               type="button"
+              className="btn-danger btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(d.id);
               }}
-              style={{
-                marginLeft: '0.25rem',
-                background: '#a33',
-                borderColor: '#a33',
-                padding: '0.25rem 0.5rem',
-                fontSize: 11,
-              }}
+              style={{ marginLeft: '0.25rem' }}
             >
               delete
             </button>
@@ -195,9 +197,31 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const [footerParts, setFooterParts] = useState<HeaderFooterPartContent[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
 
+  // Prefer the freshly parsed paragraph list (which lets us count
+  // significant paragraphs and sum content characters) over the stored
+  // paragraph_count, so docs ingested before the empty-paragraph fix
+  // still get an accurate estimate without needing a re-upload.
+  const { significantParagraphCount, totalChars } = useMemo(() => {
+    if (paragraphs) {
+      let chars = 0;
+      let count = 0;
+      for (const p of paragraphs) {
+        const trimmed = p.text.trim();
+        if (trimmed.length > 0) {
+          count += 1;
+          chars += trimmed.length;
+        }
+      }
+      return { significantParagraphCount: count, totalChars: chars };
+    }
+    // No live re-parse yet — fall back to stored count and a rough
+    // chars-from-paragraphs guess (50 chars/paragraph).
+    return { significantParagraphCount: doc.paragraph_count, totalChars: doc.paragraph_count * 50 };
+  }, [paragraphs, doc.paragraph_count]);
+
   const cleanupEstimate = useMemo(
-    () => estimateDocumentCleanup(doc.paragraph_count, cost),
-    [doc.paragraph_count, cost],
+    () => estimateDocumentCleanup(significantParagraphCount, totalChars, cost),
+    [significantParagraphCount, totalChars, cost],
   );
 
   const proposed = doc.edits.filter((e) => e.status === 'proposed');
@@ -288,15 +312,19 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         total_tokens_out: doc.total_tokens_out + result.tokens_out,
       };
       await db.documents.put(updated);
-      // eslint-disable-next-line no-console
-      console.info(
-        `[DocumentDetail] received ${newEdits.length} edits (${result.all_valid_ops.length} ops); tokens=${result.tokens_in}+${result.tokens_out}`,
-      );
+      if (newEdits.length === 0) {
+        toast.info('No edits proposed — document looks clean.');
+      } else {
+        toast.success(
+          `${newEdits.length} edit${newEdits.length === 1 ? '' : 's'} proposed (${result.tokens_in.toLocaleString()}+${result.tokens_out.toLocaleString()} tokens)`,
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.error('[DocumentDetail] edit request failed:', err);
       setRequestError(message);
+      toast.error(`Cleanup request failed: ${message}`);
     } finally {
       setRunning(false);
     }
@@ -311,19 +339,23 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   }
 
   async function onAcceptAll() {
+    const proposedCount = doc.edits.filter((e) => e.status === 'proposed').length;
     const updated: DocumentRecord = {
       ...doc,
       edits: doc.edits.map((e) => (e.status === 'proposed' ? { ...e, status: 'accepted' } : e)),
     };
     await db.documents.put(updated);
+    if (proposedCount > 0) toast.success(`Accepted ${proposedCount} edit${proposedCount === 1 ? '' : 's'}`);
   }
 
   async function onRejectAll() {
+    const proposedCount = doc.edits.filter((e) => e.status === 'proposed').length;
     const updated: DocumentRecord = {
       ...doc,
       edits: doc.edits.filter((e) => e.status !== 'proposed'),
     };
     await db.documents.put(updated);
+    if (proposedCount > 0) toast.info(`Rejected ${proposedCount} proposed edit${proposedCount === 1 ? '' : 's'}`);
   }
 
   async function onExport() {
@@ -338,13 +370,16 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       triggerDownload(result.blob, filename);
       const succeeded = result.applied.filter((a) => a.success).length;
       const failed = result.applied.filter((a) => !a.success);
-      setExportInfo(
+      const summary =
         `Exported ${succeeded} edit${succeeded === 1 ? '' : 's'}` +
-          (failed.length > 0 ? `; ${failed.length} failed: ${failed.map((f) => f.error).join('; ')}` : ''),
-      );
+        (failed.length > 0 ? `; ${failed.length} failed: ${failed.map((f) => f.error).join('; ')}` : '');
+      setExportInfo(summary);
+      if (failed.length === 0) toast.success(`Exported ${filename}`);
+      else toast.error(`Exported with ${failed.length} failed edit${failed.length === 1 ? '' : 's'}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setExportInfo(`Export failed: ${message}`);
+      toast.error(`Export failed: ${message}`);
     }
   }
 
@@ -352,7 +387,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     <section style={{ marginTop: '1.5rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
       <h2>{doc.name}</h2>
       <p className="note">
-        {doc.filename} · {doc.paragraph_count} paragraphs · ingested{' '}
+        {doc.filename} · {significantParagraphCount} paragraphs · ingested{' '}
         {new Date(doc.ingested_at).toLocaleString()}
       </p>
 
@@ -380,7 +415,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       >
         <strong>Estimated cost</strong>{' '}
         <span className="note">
-          ({doc.paragraph_count} paragraphs ·{' '}
+          ({significantParagraphCount} paragraphs ·{' '}
           {cleanupModelOverride ?? 'default model'})
         </span>
         <div style={{ marginTop: '0.25rem' }}>
@@ -419,7 +454,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           voice for the procedure section"</em>
         </p>
         <button type="submit" disabled={running || !apiKey}>
-          {running ? 'Asking the LLM…' : 'Request cleanup edits'}
+          {running ? <Spinner light label="Asking the LLM…" /> : 'Request cleanup edits'}
         </button>
       </form>
       {requestError && <div className="error">Request failed: {requestError}</div>}
@@ -431,15 +466,11 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         <p className="note">No edits yet. Click "Request cleanup edits" above.</p>
       )}
       {proposed.length > 0 && (
-        <div style={{ marginBottom: '0.75rem' }}>
-          <button type="button" onClick={onAcceptAll} style={{ background: '#060', borderColor: '#060' }}>
+        <div className="btn-row" style={{ marginBottom: '0.75rem' }}>
+          <button type="button" className="btn-success" onClick={onAcceptAll}>
             Accept all proposed
           </button>
-          <button
-            type="button"
-            onClick={onRejectAll}
-            style={{ marginLeft: '0.5rem', background: '#666', borderColor: '#666' }}
-          >
+          <button type="button" className="btn-secondary" onClick={onRejectAll}>
             Reject all proposed
           </button>
         </div>
@@ -457,12 +488,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         ))}
 
       <h3>Export</h3>
-      <button
-        type="button"
-        onClick={onExport}
-        disabled={accepted.length === 0}
-        style={{ background: accepted.length > 0 ? '#2050a0' : '#888' }}
-      >
+      <button type="button" onClick={onExport} disabled={accepted.length === 0}>
         Export cleaned DOCX ({accepted.length} edit{accepted.length === 1 ? '' : 's'} applied)
       </button>
       {exportInfo && <p className="note">{exportInfo}</p>}
@@ -646,15 +672,15 @@ function EditCard({
             <>
               <button
                 type="button"
+                className="btn-success btn-sm"
                 onClick={() => onSetStatus(edit.id, 'accepted')}
-                style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#060', borderColor: '#060' }}
               >
                 accept
               </button>
               <button
                 type="button"
+                className="btn-secondary btn-sm"
                 onClick={() => onSetStatus(edit.id, 'rejected')}
-                style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#666', borderColor: '#666' }}
               >
                 reject
               </button>
@@ -663,8 +689,8 @@ function EditCard({
           {edit.status === 'accepted' && (
             <button
               type="button"
+              className="btn-secondary btn-sm"
               onClick={() => onSetStatus(edit.id, 'proposed')}
-              style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#666', borderColor: '#666' }}
             >
               unaccept
             </button>
@@ -1089,10 +1115,24 @@ function PreviewParagraph({
   const isTitle = styleLower === 'title';
   const isSubtitle = styleLower === 'subtitle';
 
-  // Indent: 1440 twips = 1 inch ≈ 96 px
-  const indentPx = paragraph.indent_left_twips
-    ? Math.min(96 * 4, Math.round((paragraph.indent_left_twips / 1440) * 96))
-    : 0;
+  // Indent: 1440 twips = 1 inch ≈ 96 px. Word's indent model has three
+  // pieces: `left` (whole-block left indent), `firstLine` (additional
+  // indent on the first wrapped line), and `hanging` (negative first-line
+  // indent — used for bullets and numbered lists). We map the whole-block
+  // value to paddingLeft and the first-line delta to text-indent.
+  const TWIPS_PER_INCH = 1440;
+  const PX_PER_INCH = 96;
+  const twipsToPx = (t: number) => Math.round((t / TWIPS_PER_INCH) * PX_PER_INCH);
+  const leftTwips = paragraph.indent_left_twips ?? 0;
+  const firstLineTwips = paragraph.indent_first_line_twips ?? 0;
+  const hangingTwips = paragraph.indent_hanging_twips ?? 0;
+  const indentPx = Math.min(96 * 4, twipsToPx(leftTwips));
+  // text-indent: positive for firstLine, negative for hanging
+  const textIndentPx = firstLineTwips
+    ? twipsToPx(firstLineTwips)
+    : hangingTwips
+      ? -twipsToPx(hangingTwips)
+      : 0;
 
   const alignment: CSSProperties['textAlign'] =
     paragraph.alignment === 'center'
@@ -1109,6 +1149,7 @@ function PreviewParagraph({
   const textStyle: CSSProperties = {
     margin: 0,
     paddingLeft: indentPx,
+    textIndent: textIndentPx,
     textAlign: alignment,
     fontWeight: paragraph.bold || headingLevel !== null || isTitle ? 700 : 400,
     fontStyle: paragraph.italic ? 'italic' : 'normal',

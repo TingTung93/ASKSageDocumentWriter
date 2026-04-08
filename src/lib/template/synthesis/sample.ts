@@ -24,8 +24,27 @@ import type { BodyFillRegion, TemplateSchema } from '../types';
 /** Per-section sample cap in characters. ~4000 chars ≈ ~700 words. */
 const SECTION_SAMPLE_CAP = 4000;
 
-/** Total full-body cap in characters. ~40000 chars ≈ ~7000 words ≈ ~10k tokens. */
-const FULL_BODY_CAP = 40000;
+/**
+ * Default total full-body cap in characters. Sized for the current
+ * default synthesis model (Claude Sonnet 4.6, 200k context). The cap
+ * leaves comfortable headroom for the system prompt (~3k tokens), the
+ * structured-section JSON output (5–15k tokens), and a safety margin.
+ *
+ * 240,000 chars ≈ ~60k tokens, which fits even the largest DHA PWS
+ * templates (~84k chars / ~21k tokens) without truncation.
+ *
+ * History: this used to be 40,000 — sized for Gemini Flash before we
+ * switched defaults to Sonnet 4.6 — and silently dropped the back half
+ * of any long template. Caller can override via extractFullBody opts.
+ */
+export const DEFAULT_FULL_BODY_CAP = 240_000;
+
+/**
+ * Average overhead added per line by formatBodyLine() in prompt.ts.
+ * Real annotated lines look like `[123] (Heading 2 num=5·1) "..."`,
+ * which averages 30–50 chars. Use 50 to stay slightly conservative.
+ */
+const PER_LINE_OVERHEAD = 50;
 
 export interface SectionSample {
   section_id: string;
@@ -106,10 +125,18 @@ function extractOne(section: BodyFillRegion, paragraphs: ParagraphInfo[]): Secti
   };
 }
 
+export interface ExtractFullBodyOptions {
+  /** Override the per-call body cap in characters. Defaults to DEFAULT_FULL_BODY_CAP. */
+  body_cap_chars?: number;
+}
+
 export function extractFullBody(
   paragraphs: ParagraphInfo[],
   schema?: TemplateSchema,
+  opts?: ExtractFullBodyOptions,
 ): FullBody {
+  const cap = opts?.body_cap_chars ?? DEFAULT_FULL_BODY_CAP;
+
   // Build style_id → style_name lookup once. We use the readable name
   // (e.g. "Heading 1") in the prompt instead of the machine id ("Heading1")
   // because the LLM has stronger priors about human-readable style names.
@@ -133,9 +160,8 @@ export function extractFullBody(
 
   for (const p of significant) {
     const text = p.text.trim();
-    // Conservative overhead estimate for the rendered line annotations.
-    const projected = total + text.length + 80;
-    if (projected > FULL_BODY_CAP) {
+    const projected = total + text.length + PER_LINE_OVERHEAD;
+    if (projected > cap) {
       truncated = true;
       break;
     }

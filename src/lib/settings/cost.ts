@@ -24,10 +24,14 @@ export function estimateProjectDrafting(
 
 export function estimateDocumentCleanup(
   paragraphCount: number,
+  totalChars: number,
   cost: CostAssumptions,
 ): CostEstimate {
-  const tokens_in = paragraphCount * cost.cleanup_tokens_in_per_paragraph;
-  const tokens_out = paragraphCount * cost.cleanup_tokens_out_per_paragraph;
+  const chars_per_token = cost.chars_per_token > 0 ? cost.chars_per_token : 4;
+  const content_tokens = Math.ceil(totalChars / chars_per_token);
+  const framing_tokens = paragraphCount * cost.cleanup_paragraph_overhead_tokens;
+  const tokens_in = cost.cleanup_system_prompt_tokens + content_tokens + framing_tokens;
+  const tokens_out = Math.ceil(tokens_in * cost.cleanup_output_ratio);
   return finalize(tokens_in, tokens_out, cost);
 }
 

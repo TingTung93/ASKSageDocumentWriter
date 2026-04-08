@@ -6,54 +6,50 @@ interface ShellProps {
   children: ReactNode;
 }
 
+const NAV_ITEMS: { to: string; label: string; end?: boolean }[] = [
+  { to: '/', label: 'Connection', end: true },
+  { to: '/documents', label: 'Documents' },
+  { to: '/templates', label: 'Templates' },
+  { to: '/datasets', label: 'Datasets' },
+  { to: '/projects', label: 'Projects' },
+  { to: '/audit', label: 'Audit' },
+  { to: '/settings', label: 'Settings' },
+];
+
 export function Shell({ children }: ShellProps) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
   const models = useAuth((s) => s.models);
 
-  const status = apiKey
-    ? `connected · ${new URL(baseUrl).host} · ${models?.length ?? 0} models`
-    : 'not connected';
+  const connected = !!apiKey;
+  const host = (() => {
+    try {
+      return new URL(baseUrl).host;
+    } catch {
+      return baseUrl;
+    }
+  })();
 
   return (
     <>
       <nav className="shell">
         <span className="brand">Ask Sage Document Writer</span>
-        <NavLink to="/" end style={navLinkStyle}>
-          Connection
-        </NavLink>
-        <NavLink to="/documents" style={navLinkStyle}>
-          Documents
-        </NavLink>
-        <NavLink to="/templates" style={navLinkStyle}>
-          Templates
-        </NavLink>
-        <NavLink to="/datasets" style={navLinkStyle}>
-          Datasets
-        </NavLink>
-        <NavLink to="/projects" style={navLinkStyle}>
-          Projects
-        </NavLink>
-        <NavLink to="/audit" style={navLinkStyle}>
-          Audit
-        </NavLink>
-        <NavLink to="/settings" style={navLinkStyle}>
-          Settings
-        </NavLink>
-        <span className="status">{status}</span>
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            className={({ isActive }) => (isActive ? 'active' : '')}
+          >
+            {item.label}
+          </NavLink>
+        ))}
+        <span className="status" title={connected ? `Connected to ${host}` : 'Not connected'}>
+          <span className={`status-dot ${connected ? 'is-on' : 'is-off'}`} />
+          {connected ? `${host} · ${models?.length ?? 0} models` : 'not connected'}
+        </span>
       </nav>
       {children}
     </>
   );
-}
-
-function navLinkStyle({ isActive }: { isActive: boolean }): React.CSSProperties {
-  return {
-    color: isActive ? '#fff' : '#aaa',
-    textDecoration: 'none',
-    fontWeight: 600,
-    fontSize: 13,
-    padding: '0 0.5rem',
-    borderBottom: isActive ? '2px solid #fff' : '2px solid transparent',
-  };
 }

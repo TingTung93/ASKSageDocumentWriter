@@ -170,15 +170,40 @@ function buildEditMessage(args: DocumentEditRequest): string {
   lines.push(``);
   lines.push(`=== DOCUMENT BODY ===`);
   lines.push(
-    `Each line is one paragraph. The format is: [<index>] <text>. Only edit paragraphs that need improvement; leave the rest alone.`,
+    `Each line is one paragraph. The format is: [<index>]<flags> <text>. Flags appear in {curly braces} only when present and describe the paragraph's formatting context (style id, alignment, indent, list level). Use them to understand the role of the paragraph — e.g. don't rewrite a centered title as left-aligned body text. Only edit paragraphs that need improvement; leave the rest alone.`,
   );
   lines.push(``);
   for (const p of significant) {
-    lines.push(`[${p.index}] ${p.text}`);
+    lines.push(`[${p.index}]${formatParagraphFlags(p)} ${p.text}`);
   }
   lines.push(`=== END DOCUMENT BODY ===`);
   lines.push(``);
   lines.push(`Return STRICT JSON only with the edits array. Empty edits array is fine if the document is already clean.`);
 
   return lines.join('\n');
+}
+
+function formatParagraphFlags(p: ParagraphInfo): string {
+  const flags: string[] = [];
+  if (p.style_id) flags.push(`style=${p.style_id}`);
+  if (p.alignment && p.alignment !== 'left') flags.push(`align=${p.alignment}`);
+  if (p.indent_left_twips && p.indent_left_twips > 0) {
+    flags.push(`indent=${twipsToInches(p.indent_left_twips)}in`);
+  }
+  if (p.indent_first_line_twips && p.indent_first_line_twips > 0) {
+    flags.push(`first_line=${twipsToInches(p.indent_first_line_twips)}in`);
+  }
+  if (p.indent_hanging_twips && p.indent_hanging_twips > 0) {
+    flags.push(`hanging=${twipsToInches(p.indent_hanging_twips)}in`);
+  }
+  if (p.numbering_id !== null) {
+    flags.push(`list=${p.numbering_id}.${p.numbering_level ?? 0}`);
+  }
+  if (p.in_table) flags.push(`in_table`);
+  if (p.content_control_tag) flags.push(`sdt=${p.content_control_tag}`);
+  return flags.length > 0 ? ` {${flags.join(', ')}}` : '';
+}
+
+function twipsToInches(twips: number): string {
+  return (twips / 1440).toFixed(2);
 }
