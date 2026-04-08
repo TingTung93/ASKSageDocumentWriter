@@ -1,9 +1,12 @@
 import {
   AskSageError,
+  type DatasetInfo,
+  type DatasetsResponse,
   type GetModelsResponse,
   type ModelInfo,
   type QueryInput,
   type QueryResponse,
+  type VerifyDatasetResult,
 } from './types';
 
 /**
@@ -110,6 +113,72 @@ export class AskSageClient {
   /** Primary completion endpoint. Used by every drafting/synthesis stage. */
   async query(input: QueryInput): Promise<QueryResponse> {
     return this.post<QueryResponse>('/server/query', input);
+  }
+
+  /**
+   * List datasets available to the authenticated user.
+   *
+   * NOTE: this calls `/user/get-datasets` which on the DHA health.mil
+   * tenant is CORS-blocked from the browser (see PRD §5 / memory).
+   * The call may throw an AskSageError with status === null. The
+   * caller should catch and fall back to manual dataset entry. On
+   * tenants with permissive CORS this returns the dataset list.
+   *
+   * The Ask Sage API has been observed to return either a flat array
+   * of strings or an array of {name, description?} objects depending
+   * on tenant version. We normalize both to DatasetInfo[].
+   */
+  async getDatasets(): Promise<DatasetInfo[]> {
+    const r = await this.post<DatasetsResponse>('/user/get-datasets', {});
+    const raw = r.response ?? r.data ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) =>
+      typeof entry === 'string' ? { name: entry } : (entry as DatasetInfo),
+    );
+  }
+
+  /**
+   * Verify that a dataset name is valid by issuing a tiny RAG query
+   * against it. Works through `/server/query` which IS browser-
+   * accessible, so this is the practical way to check dataset names
+   * on tenants where `/user/get-datasets` is blocked.
+   *
+   * Returns reachable=true if the query succeeds, has_references=true
+   * if the dataset returned any source material. Empty references with
+   * a successful query usually means the dataset exists but doesn't
+   * contain content matching the probe query.
+   */
+  async verifyDataset(name: string): Promise<VerifyDatasetResult> {
+    try {
+      const response = await this.query({
+        message: 'verify',
+        model: 'google-claude-45-haiku',
+        dataset: name,
+        limit_references: 1,
+        temperature: 0,
+      });
+      const refs = response.references ?? '';
+      return {
+        name,
+        reachable: true,
+        has_references: refs.length > 0,
+        references_excerpt: refs ? refs.slice(0, 400) : null,
+        embedding_down: response.embedding_down ?? false,
+        vectors_down: response.vectors_down ?? false,
+        error: null,
+      };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        name,
+        reachable: false,
+        has_references: false,
+        references_excerpt: null,
+        embedding_down: false,
+        vectors_down: false,
+        error: message,
+      };
+    }
   }
 
   /**

@@ -4,6 +4,7 @@ import { Welcome } from './routes/Welcome';
 import { Templates } from './routes/Templates';
 import { Projects } from './routes/Projects';
 import { ProjectDetail } from './routes/ProjectDetail';
+import { Datasets } from './routes/Datasets';
 import { DebugPanel } from './components/DebugPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -22,6 +23,7 @@ export function App() {
               <Routes>
                 <Route path="/" element={<Welcome />} />
                 <Route path="/templates" element={<Templates />} />
+                <Route path="/datasets" element={<Datasets />} />
                 <Route path="/projects" element={<Projects />} />
                 <Route path="/projects/:id" element={<ProjectDetail />} />
                 <Route path="*" element={<Navigate to="/" replace />} />

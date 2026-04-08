@@ -38,6 +38,14 @@ export interface ProjectRecord {
     drafting?: string;
     critic?: string;
   };
+  /**
+   * Web search mode for drafting calls. Maps to Ask Sage `/server/query`
+   * `live` parameter:
+   *   0 — disabled (default)
+   *   1 — Google results
+   *   2 — Google results + crawl (autonomous market research mode)
+   */
+  live_search: 0 | 1 | 2;
   created_at: string;
   updated_at: string;
 }

@@ -48,6 +48,7 @@ export async function draftSection(
     dataset: opts.dataset ?? 'none',
     limit_references: opts.limit_references ?? 6,
     temperature,
+    live: opts.live ?? 0,
     usage: true,
   });
 

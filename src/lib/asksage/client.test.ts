@@ -129,6 +129,110 @@ describe('AskSageClient', () => {
     }
   });
 
+  it('getDatasets() normalizes string-array response shape', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ response: ['far-clauses', 'dha-issuances', 'prior-pws'] }), { status: 200 }),
+    );
+    const client = makeClient();
+    const ds = await client.getDatasets();
+    expect(ds).toHaveLength(3);
+    expect(ds[0]).toEqual({ name: 'far-clauses' });
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('https://api.asksage.health.mil/user/get-datasets');
+  });
+
+  it('getDatasets() normalizes object-array response shape', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [
+            { name: 'far-clauses', description: 'FAR Part 13', file_count: 42 },
+            { name: 'dha-issuances' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const ds = await client.getDatasets();
+    expect(ds).toHaveLength(2);
+    expect(ds[0]!.description).toBe('FAR Part 13');
+    expect(ds[0]!.file_count).toBe(42);
+  });
+
+  it('getDatasets() throws AskSageError on CORS/network failure', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const client = makeClient();
+    await expect(client.getDatasets()).rejects.toMatchObject({ name: 'AskSageError', status: null });
+  });
+
+  it('verifyDataset() returns reachable=true with reference excerpt on success', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          response: 'OK',
+          message: 'verify',
+          status: 200,
+          uuid: 'u',
+          references: 'FAR 13.106-2 — Soliciting from a single source...',
+          embedding_down: false,
+          vectors_down: false,
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const r = await client.verifyDataset('far-clauses');
+    expect(r.reachable).toBe(true);
+    expect(r.has_references).toBe(true);
+    expect(r.references_excerpt).toContain('FAR 13.106-2');
+    expect(r.error).toBeNull();
+  });
+
+  it('verifyDataset() returns reachable=true / has_references=false when no refs returned', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          response: 'OK',
+          message: 'verify',
+          status: 200,
+          uuid: 'u',
+          references: '',
+          embedding_down: false,
+          vectors_down: false,
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const r = await client.verifyDataset('empty-dataset');
+    expect(r.reachable).toBe(true);
+    expect(r.has_references).toBe(false);
+    expect(r.references_excerpt).toBeNull();
+  });
+
+  it('verifyDataset() returns reachable=false on network failure (does not throw)', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const client = makeClient();
+    const r = await client.verifyDataset('blocked-dataset');
+    expect(r.reachable).toBe(false);
+    expect(r.error).toContain('Network error');
+  });
+
+  it('query() forwards live parameter for web search', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ response: 'OK', message: 'pong', status: 200, uuid: 'u' }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    await client.query({ message: 'market research', live: 2 });
+    const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(opts.body as string);
+    expect(body.live).toBe(2);
+  });
+
   it('query() POSTs to /server/query with the input as JSON body', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

@@ -73,6 +73,7 @@ export async function createProject(input: {
   description: string;
   template_ids: string[];
   reference_dataset_names: string[];
+  live_search?: 0 | 1 | 2;
 }): Promise<ProjectRecord> {
   const now = new Date().toISOString();
   const record: ProjectRecord = {
@@ -83,6 +84,7 @@ export async function createProject(input: {
     reference_dataset_names: input.reference_dataset_names,
     shared_inputs: {},
     model_overrides: {},
+    live_search: input.live_search ?? 0,
     created_at: now,
     updated_at: now,
   };

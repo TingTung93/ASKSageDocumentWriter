@@ -39,6 +39,14 @@ export interface DraftingOptions {
   dataset?: string;
   /** RAG: how many references to inject. Defaults to 6. */
   limit_references?: number;
+  /**
+   * Web search mode passed through to Ask Sage as the `live` parameter:
+   *   0 — disabled
+   *   1 — Google results injected as reference material
+   *   2 — Google + crawl: full web search + page fetching, used for
+   *       autonomous market research and live reference lookups
+   */
+  live?: 0 | 1 | 2;
 }
 
 export interface PriorSectionSummary {
