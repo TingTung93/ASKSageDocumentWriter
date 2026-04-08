@@ -113,6 +113,9 @@ export async function draftProject(
           options: {
             ...options,
             dataset: options?.dataset ?? project.reference_dataset_names[0] ?? 'none',
+            // Project-level live search applies to every section unless
+            // an explicit per-call override was passed in options.
+            live: options?.live ?? project.live_search ?? 0,
           },
         });
 

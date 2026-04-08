@@ -19,6 +19,7 @@ export function Projects() {
   const [description, setDescription] = useState('');
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [datasetNames, setDatasetNames] = useState('');
+  const [liveSearch, setLiveSearch] = useState<0 | 1 | 2>(0);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -50,11 +51,13 @@ export function Projects() {
         description: description.trim(),
         template_ids: selectedTemplateIds,
         reference_dataset_names: datasets,
+        live_search: liveSearch,
       });
       setName('');
       setDescription('');
       setSelectedTemplateIds([]);
       setDatasetNames('');
+      setLiveSearch(0);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -130,6 +133,27 @@ export function Projects() {
           These are Ask Sage dataset names you've already curated in the Ask Sage
           UI. Drafting passes them as the <code>dataset</code> param so RAG
           injects relevant context. Leave empty if you don't have curated datasets.
+          Use the <a href="#/datasets">Datasets</a> tab to verify a name before
+          using it.
+        </p>
+
+        <label htmlFor="project-live">Web search mode</label>
+        <select
+          id="project-live"
+          value={liveSearch}
+          onChange={(e) => setLiveSearch(Number(e.target.value) as 0 | 1 | 2)}
+          style={{ width: '100%', padding: '0.5rem', font: 'inherit' }}
+        >
+          <option value={0}>Disabled (default)</option>
+          <option value={1}>Google results — inject web search hits as references</option>
+          <option value={2}>Google + crawl — autonomous market research mode</option>
+        </select>
+        <p className="note">
+          Passes Ask Sage's <code>live</code> parameter on every drafting call.
+          Mode 2 fetches and crawls Google results in real time and is the
+          right choice for market research, contractor capability surveys, and
+          any section that needs current outside-document context. Costs more
+          tokens per call.
         </p>
 
         <button type="submit" disabled={creating}>

@@ -25,6 +25,9 @@ export function Shell({ children }: ShellProps) {
         <NavLink to="/templates" style={navLinkStyle}>
           Templates
         </NavLink>
+        <NavLink to="/datasets" style={navLinkStyle}>
+          Datasets
+        </NavLink>
         <NavLink to="/projects" style={navLinkStyle}>
           Projects
         </NavLink>

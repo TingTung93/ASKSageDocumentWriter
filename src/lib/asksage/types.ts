@@ -73,3 +73,42 @@ export class AskSageError extends Error {
     this.name = 'AskSageError';
   }
 }
+
+// ─── Dataset / file management types (User API surface) ────────────
+
+export interface DatasetInfo {
+  /** Dataset name as it appears in Ask Sage's UI */
+  name: string;
+  /** Optional description if the API returns one */
+  description?: string;
+  /** Optional file count if the API returns it */
+  file_count?: number;
+}
+
+export interface IngestedFileInfo {
+  filename: string;
+  dataset: string;
+  /** Free-form metadata the API returns; passed through unchanged */
+  [key: string]: unknown;
+}
+
+export interface DatasetsResponse {
+  /** Some Ask Sage tenants return { response: string[] } or { data: ... } */
+  response?: string[] | DatasetInfo[];
+  data?: string[] | DatasetInfo[];
+  status?: number | string;
+}
+
+export interface VerifyDatasetResult {
+  name: string;
+  /** True if the call to /server/query against the dataset succeeded */
+  reachable: boolean;
+  /** True if the response contained any reference material from the dataset */
+  has_references: boolean;
+  /** Excerpt of references returned, if any */
+  references_excerpt: string | null;
+  embedding_down: boolean;
+  vectors_down: boolean;
+  /** Error message if the verification call failed */
+  error: string | null;
+}

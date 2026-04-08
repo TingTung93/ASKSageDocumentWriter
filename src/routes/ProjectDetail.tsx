@@ -136,6 +136,28 @@ export function ProjectDetail() {
       </div>
 
       <h2>Drafting</h2>
+      <label htmlFor="project-live-detail">Web search mode</label>
+      <select
+        id="project-live-detail"
+        value={project.live_search}
+        onChange={async (e) => {
+          await updateProject(project.id, {
+            live_search: Number(e.target.value) as 0 | 1 | 2,
+          });
+        }}
+        style={{ width: '100%', padding: '0.5rem', font: 'inherit', maxWidth: 500 }}
+        disabled={drafting}
+      >
+        <option value={0}>Disabled — no web search, RAG only</option>
+        <option value={1}>Google results — inject web hits as references</option>
+        <option value={2}>Google + crawl — autonomous market research mode</option>
+      </select>
+      <p className="note">
+        Applies to every drafting call for this project. Mode 2 is the right
+        choice for market research / capability survey sections that need
+        current outside-document context.
+      </p>
+
       <button type="button" onClick={onStartDrafting} disabled={drafting || !apiKey}>
         {drafting ? 'Drafting…' : 'Draft all sections'}
       </button>
