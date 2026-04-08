@@ -1,13 +1,16 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type TemplateRecord } from '../lib/db/schema';
 import { parseDocx } from '../lib/template/parser';
-import type { TemplateSchema } from '../lib/template/types';
+import type { TemplateSchema, BodyFillRegion } from '../lib/template/types';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { synthesizeSchema, DEFAULT_SYNTHESIS_MODEL } from '../lib/template/synthesis/synthesize';
 import { requestSchemaEdits } from '../lib/edit/schema-edit';
 import type { ApplyResult } from '../lib/edit/types';
+import { DropZone } from '../components/DropZone';
+import { SearchFilter, matchesSearch } from '../components/SearchFilter';
+import { EmptyState } from '../components/EmptyState';
 
 // Phase 1a UI: drop a DOCX file → parser produces structural schema →
 // row in the local template library → click to view the schema.
@@ -20,10 +23,20 @@ export function Templates() {
   const [parsing, setParsing] = useState(false);
   const [synthError, setSynthError] = useState<string | null>(null);
   const [synthesizingId, setSynthesizingId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
 
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
+  const filtered = useMemo(
+    () =>
+      (templates ?? []).filter(
+        (t) =>
+          matchesSearch(t.name, search) ||
+          matchesSearch(t.filename, search),
+      ),
+    [templates, search],
+  );
 
   async function onSynthesize(template: TemplateRecord) {
     if (!apiKey) {
@@ -57,10 +70,8 @@ export function Templates() {
     }
   }
 
-  async function onFile(e: ChangeEvent<HTMLInputElement>) {
+  async function onFile(file: File) {
     setParseError(null);
-    const file = e.target.files?.[0];
-    if (!file) return;
     if (!file.name.toLowerCase().endsWith('.docx')) {
       setParseError(`Not a DOCX: ${file.name}`);
       return;
@@ -94,7 +105,6 @@ export function Templates() {
       setParseError(message);
     } finally {
       setParsing(false);
-      e.target.value = '';
     }
   }
 
@@ -113,23 +123,31 @@ export function Templates() {
         export skeleton.
       </p>
 
-      <label htmlFor="docx-input">Add a DOCX template</label>
-      <input
-        id="docx-input"
-        type="file"
+      <DropZone
         accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        onChange={onFile}
+        onFile={onFile}
         disabled={parsing}
+        label="Drop a DOCX template here, or click to choose"
+        hint="Parsed locally — never uploaded anywhere."
       />
       {parsing && <p className="note">Parsing…</p>}
       {parseError && <div className="error">Parse failed: {parseError}</div>}
 
       <h2>Stored templates ({templates?.length ?? 0})</h2>
+      {templates && templates.length > 0 && (
+        <SearchFilter value={search} onChange={setSearch} placeholder="Filter templates by name or filename…" />
+      )}
       {(!templates || templates.length === 0) && (
-        <p className="note">No templates yet. Add one above.</p>
+        <EmptyState
+          title="No templates yet"
+          body={<>Drop a DOCX above to ingest your first template.</>}
+        />
+      )}
+      {templates && templates.length > 0 && filtered.length === 0 && (
+        <EmptyState title="No matches" body={<>No templates match "{search}".</>} />
       )}
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {templates?.map((t) => (
+        {filtered.map((t) => (
           <li
             key={t.id}
             style={{
@@ -222,11 +240,42 @@ function SchemaViewer({ schema, templateId, onSynthesize, synthesizing, synthErr
         </button>
       </div>
       {synthError && <div className="error">Synthesis failed: {synthError}</div>}
-      {tab === 'summary' && <SummaryView schema={schema} />}
+      {tab === 'summary' && <SummaryView schema={schema} templateId={templateId} />}
       {tab === 'json' && <JsonView value={schema} />}
       {tab === 'refine' && <RefinePanel templateId={templateId} schema={schema} />}
     </section>
   );
+}
+
+/**
+ * Inline schema mutators — direct edits to a stored TemplateSchema
+ * without going through the LLM. Used by SummaryView's edit affordances.
+ */
+async function patchSchema(
+  templateId: string,
+  patch: (s: TemplateSchema) => TemplateSchema,
+): Promise<void> {
+  const existing = await db.templates.get(templateId);
+  if (!existing) return;
+  await db.templates.put({ ...existing, schema_json: patch(existing.schema_json) });
+}
+
+async function updateSection(
+  templateId: string,
+  sectionId: string,
+  fields: Partial<BodyFillRegion>,
+): Promise<void> {
+  await patchSchema(templateId, (s) => ({
+    ...s,
+    sections: s.sections.map((sec) => (sec.id === sectionId ? { ...sec, ...fields } : sec)),
+  }));
+}
+
+async function updateStyle(
+  templateId: string,
+  fields: Partial<TemplateSchema['style']>,
+): Promise<void> {
+  await patchSchema(templateId, (s) => ({ ...s, style: { ...s.style, ...fields } }));
 }
 
 function RefinePanel({ templateId, schema }: { templateId: string; schema: TemplateSchema }) {
@@ -400,7 +449,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-function SummaryView({ schema }: { schema: TemplateSchema }) {
+function SummaryView({ schema, templateId }: { schema: TemplateSchema; templateId: string }) {
   const ps = schema.formatting.page_setup;
   return (
     <div style={{ fontSize: 13 }}>
@@ -467,51 +516,167 @@ function SummaryView({ schema }: { schema: TemplateSchema }) {
         ))
       )}
 
-      <h3>Style (semantic — Phase 1b)</h3>
-      {schema.style.voice === null ? (
-        <em>(not yet synthesized — click "Synthesize semantic" above)</em>
-      ) : (
-        <div style={{ background: '#f8f4e8', padding: '0.5rem', border: '1px solid #d4c483', fontSize: 12 }}>
-          <Field label="Voice">{schema.style.voice ?? '(none)'}</Field>
-          <Field label="Tense">{schema.style.tense ?? '(none)'}</Field>
-          <Field label="Register">{schema.style.register ?? '(none)'}</Field>
-          <Field label="Jargon policy">{schema.style.jargon_policy ?? '(none)'}</Field>
-          <Field label="Banned phrases">
-            {schema.style.banned_phrases.length > 0 ? schema.style.banned_phrases.join(', ') : '(none)'}
-          </Field>
-        </div>
-      )}
+      <h3>Style (semantic — editable)</h3>
+      <div style={{ background: '#f8f4e8', padding: '0.5rem', border: '1px solid #d4c483', fontSize: 12 }}>
+        <InlineTextField
+          label="Voice"
+          value={schema.style.voice ?? ''}
+          placeholder="third_person | second_person | first_person_plural"
+          onChange={(v) => updateStyle(templateId, { voice: v || null })}
+        />
+        <InlineTextField
+          label="Tense"
+          value={schema.style.tense ?? ''}
+          placeholder="present | past"
+          onChange={(v) => updateStyle(templateId, { tense: v || null })}
+        />
+        <InlineTextField
+          label="Register"
+          value={schema.style.register ?? ''}
+          placeholder="formal_government | technical | instructional"
+          onChange={(v) => updateStyle(templateId, { register: v || null })}
+        />
+        <InlineTextField
+          label="Jargon policy"
+          value={schema.style.jargon_policy ?? ''}
+          placeholder="one short sentence about terminology"
+          onChange={(v) => updateStyle(templateId, { jargon_policy: v || null })}
+        />
+        <InlineTextField
+          label="Banned phrases"
+          value={schema.style.banned_phrases.join(', ')}
+          placeholder="comma-separated"
+          onChange={(v) =>
+            updateStyle(templateId, {
+              banned_phrases: v
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0),
+            })
+          }
+        />
+      </div>
 
-      <h3>Body fill regions / sections ({schema.sections.length})</h3>
+      <h3>Body fill regions / sections ({schema.sections.length}) — editable</h3>
       {schema.sections.length === 0 ? (
         <em>(none detected)</em>
       ) : (
         schema.sections.map((s) => (
-          <div key={s.id} style={{ marginBottom: '0.5rem', padding: '0.5rem 0.75rem', background: '#e8f0ff', border: '1px solid #9ac' }}>
-            <strong>#{s.order} {s.name}</strong>
-            <div style={{ fontSize: 11, color: '#444' }}>
-              id={s.id} · kind={s.fill_region.kind}
-              {s.fill_region.kind === 'heading_bounded' && (
-                <> · paragraphs {s.fill_region.anchor_paragraph_index}–{s.fill_region.end_anchor_paragraph_index}</>
-              )}
-              {' · roles: '}{s.fill_region.permitted_roles.join(', ')}
-            </div>
-            {s.intent && (
-              <div style={{ marginTop: '0.35rem', padding: '0.25rem 0.5rem', background: '#fff8e0', border: '1px solid #ec9', fontSize: 12 }}>
-                <div><strong>Intent:</strong> {s.intent}</div>
-                {s.target_words && (
-                  <div><strong>Target words:</strong> {s.target_words[0]}–{s.target_words[1]}</div>
-                )}
-                {s.depends_on && s.depends_on.length > 0 && (
-                  <div><strong>Depends on:</strong> {s.depends_on.join(', ')}</div>
-                )}
-                {s.validation && Object.keys(s.validation).length > 0 && (
-                  <div><strong>Validation:</strong> <code>{JSON.stringify(s.validation)}</code></div>
-                )}
-              </div>
-            )}
-          </div>
+          <SectionEditor key={s.id} section={s} templateId={templateId} />
         ))
+      )}
+    </div>
+  );
+}
+
+function InlineTextField({
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  // If parent value changes externally, sync
+  if (value !== draft && document.activeElement?.tagName !== 'INPUT') {
+    setDraft(value);
+  }
+  return (
+    <div style={{ display: 'flex', gap: '0.5rem', padding: '0.15rem 0', alignItems: 'center' }}>
+      <span style={{ minWidth: 140, color: '#666', fontSize: 12 }}>{label}</span>
+      <input
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== value) onChange(draft);
+        }}
+        style={{ flex: 1, padding: '0.25rem 0.4rem', font: 'inherit', fontSize: 12 }}
+      />
+    </div>
+  );
+}
+
+function SectionEditor({ section, templateId }: { section: BodyFillRegion; templateId: string }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div
+      style={{
+        marginBottom: '0.5rem',
+        padding: '0.5rem 0.75rem',
+        background: '#e8f0ff',
+        border: '1px solid #9ac',
+        borderRadius: 4,
+      }}
+    >
+      <div
+        style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', cursor: 'pointer' }}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <strong>#{section.order} {section.name}</strong>
+        <span style={{ fontSize: 11, color: '#666' }}>
+          id={section.id} · {section.fill_region.kind}
+        </span>
+        <span style={{ marginLeft: 'auto', color: '#888' }}>{expanded ? '▾' : '▸'}</span>
+      </div>
+      {section.intent && !expanded && (
+        <div style={{ marginTop: '0.25rem', fontSize: 12, color: '#444' }}>
+          <em>{section.intent}</em>
+        </div>
+      )}
+      {expanded && (
+        <div style={{ marginTop: '0.4rem' }}>
+          <InlineTextField
+            label="Name"
+            value={section.name}
+            onChange={(v) => updateSection(templateId, section.id, { name: v })}
+          />
+          <InlineTextField
+            label="Intent"
+            value={section.intent ?? ''}
+            placeholder="One sentence stating the section's communicative goal"
+            onChange={(v) => updateSection(templateId, section.id, { intent: v || undefined })}
+          />
+          <InlineTextField
+            label="Target words"
+            value={section.target_words ? `${section.target_words[0]}-${section.target_words[1]}` : ''}
+            placeholder="80-150"
+            onChange={(v) => {
+              const m = v.match(/^\s*(\d+)\s*[-–]\s*(\d+)\s*$/);
+              if (m) {
+                updateSection(templateId, section.id, {
+                  target_words: [parseInt(m[1]!, 10), parseInt(m[2]!, 10)],
+                });
+              } else if (v.trim() === '') {
+                updateSection(templateId, section.id, { target_words: undefined });
+              }
+            }}
+          />
+          <InlineTextField
+            label="Depends on"
+            value={(section.depends_on ?? []).join(', ')}
+            placeholder="comma-separated section ids"
+            onChange={(v) =>
+              updateSection(templateId, section.id, {
+                depends_on: v
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter((s) => s.length > 0),
+              })
+            }
+          />
+          {section.validation && Object.keys(section.validation).length > 0 && (
+            <div style={{ fontSize: 11, color: '#666', marginTop: '0.25rem' }}>
+              Validation: <code>{JSON.stringify(section.validation)}</code>{' '}
+              <em>(edit via Refine tab)</em>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
