@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import type { TemplateSchema } from '../template/types';
 import type { DraftParagraph } from '../draft/types';
-import type { ParagraphEdit } from '../document/types';
+import type { StoredEdit } from '../document/types';
 
 // Phase 1a stores template DOCX bytes alongside the parsed schema.
 // Phase 1b adds the semantic half. Phase 2 introduces projects and
@@ -102,11 +102,11 @@ export interface DocumentRecord {
   /** Total paragraph count from the parser, for display */
   paragraph_count: number;
   /**
-   * All edits proposed and accepted for this document. The export
-   * writer applies accepted edits as paragraph_index → new_text
-   * overrides on a clone of the original bytes.
+   * All edits proposed and accepted for this document. Each entry
+   * wraps a typed DocumentEditOp with lifecycle metadata. The export
+   * writer feeds the accepted op subset through applyDocumentEdits.
    */
-  edits: ParagraphEdit[];
+  edits: StoredEdit[];
   /** Last LLM model used for an edit pass */
   last_edit_model?: string;
   /** Cumulative tokens spent on edit passes */

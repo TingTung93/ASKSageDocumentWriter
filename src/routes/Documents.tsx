@@ -17,8 +17,9 @@ import {
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { requestDocumentEdits } from '../lib/document/edit';
-import { exportEditedDocx } from '../lib/document/writer';
-import type { ParagraphEdit } from '../lib/document/types';
+import { applyDocumentEdits } from '../lib/document/writer';
+import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
+import { migrateAll, migrateDocumentEdits } from '../lib/document/migrate';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -27,7 +28,7 @@ function newId(): string {
 
 export function Documents() {
   const documents = useLiveQuery(
-    () => db.documents.orderBy('ingested_at').reverse().toArray(),
+    async () => migrateAll(await db.documents.orderBy('ingested_at').reverse().toArray()),
     [],
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -60,7 +61,7 @@ export function Documents() {
         ingested_at: new Date().toISOString(),
         docx_bytes: docx_blob,
         paragraph_count: paragraphs.length,
-        edits: [],
+        edits: [] as StoredEdit[],
         total_tokens_in: 0,
         total_tokens_out: 0,
       };
@@ -229,24 +230,32 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       const originalByIndex = new Map<number, string>();
       for (const p of paragraphs) originalByIndex.set(p.index, p.text);
 
-      const newEdits: ParagraphEdit[] = result.valid_edits.map((e) => ({
-        index: e.index,
-        original_text: originalByIndex.get(e.index) ?? '',
-        new_text: e.new_text,
-        rationale: e.rationale,
-        status: 'proposed',
-      }));
+      // Convert each LLM-proposed op into a StoredEdit, capturing
+      // before-state metadata so the diff cards have what they need.
+      const newEdits: StoredEdit[] = result.all_valid_ops.map((op, i) => {
+        const id = `prop_${Date.now()}_${i}`;
+        const created_at = new Date().toISOString();
+        const before_text = beforeTextForOp(op, paragraphs, originalByIndex);
+        const before_value = beforeValueForOp(op, paragraphs);
+        return {
+          id,
+          op,
+          status: 'proposed',
+          before_text,
+          before_value,
+          rationale: op.rationale,
+          created_at,
+        };
+      });
 
-      // Merge with existing edits — replace any prior 'proposed' entries
-      // for the same index, keep accepted ones.
-      const keptIndices = new Set(newEdits.map((e) => e.index));
-      const merged: ParagraphEdit[] = [
-        ...doc.edits.filter((e) => e.status === 'accepted' || !keptIndices.has(e.index)),
+      // Replace any prior proposed edits, keep accepted ones.
+      const merged: StoredEdit[] = [
+        ...doc.edits.filter((e) => e.status === 'accepted'),
         ...newEdits,
       ];
 
       const updated: DocumentRecord = {
-        ...doc,
+        ...migrateDocumentEdits(doc),
         edits: merged,
         last_edit_model: result.model,
         total_tokens_in: doc.total_tokens_in + result.tokens_in,
@@ -255,7 +264,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       await db.documents.put(updated);
       // eslint-disable-next-line no-console
       console.info(
-        `[DocumentDetail] received ${newEdits.length} edits; tokens=${result.tokens_in}+${result.tokens_out}`,
+        `[DocumentDetail] received ${newEdits.length} edits (${result.all_valid_ops.length} ops); tokens=${result.tokens_in}+${result.tokens_out}`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -267,10 +276,10 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     }
   }
 
-  async function onSetStatus(index: number, status: ParagraphEdit['status']) {
+  async function onSetStatus(id: string, status: StoredEdit['status']) {
     const updated: DocumentRecord = {
       ...doc,
-      edits: doc.edits.map((e) => (e.index === index ? { ...e, status } : e)),
+      edits: doc.edits.map((e) => (e.id === id ? { ...e, status } : e)),
     };
     await db.documents.put(updated);
   }
@@ -296,15 +305,16 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     // eslint-disable-next-line no-console
     console.info(`[DocumentDetail] exporting ${doc.id} with ${accepted.length} accepted edits`);
     try {
-      const overrides: Record<number, string> = {};
-      for (const e of accepted) overrides[e.index] = e.new_text;
-      const result = await exportEditedDocx(doc.docx_bytes, overrides);
+      const ops: DocumentEditOp[] = accepted.map((e) => e.op);
+      const result = await applyDocumentEdits(doc.docx_bytes, ops);
 
       const filename = `${doc.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_cleaned.docx`;
       triggerDownload(result.blob, filename);
+      const succeeded = result.applied.filter((a) => a.success).length;
+      const failed = result.applied.filter((a) => !a.success);
       setExportInfo(
-        `Exported ${result.applied} edit${result.applied === 1 ? '' : 's'}` +
-          (result.skipped.length > 0 ? `; ${result.skipped.length} skipped` : ''),
+        `Exported ${succeeded} edit${succeeded === 1 ? '' : 's'}` +
+          (failed.length > 0 ? `; ${failed.length} failed: ${failed.map((f) => f.error).join('; ')}` : ''),
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -382,13 +392,13 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       )}
 
       {[...proposed, ...accepted]
-        .sort((a, b) => a.index - b.index)
+        .sort((a, b) => editAnchorIndex(a) - editAnchorIndex(b))
         .map((e) => (
           <EditCard
-            key={`${e.index}-${e.status}`}
+            key={e.id}
             edit={e}
             onSetStatus={onSetStatus}
-            anchorId={`edit-${e.index}`}
+            anchorId={`edit-${editAnchorIndex(e)}`}
           />
         ))}
 
@@ -412,13 +422,140 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   );
 }
 
+// ─── Edit op helpers ──────────────────────────────────────────────
+
+/**
+ * Returns the body paragraph index this edit applies to, or null if
+ * the edit operates on a non-paragraph element (table cell, content
+ * control). Used for highlighting paragraphs in the document preview.
+ */
+function paragraphAnchorOf(edit: StoredEdit): number | null {
+  const op = edit.op;
+  switch (op.op) {
+    case 'replace_paragraph_text':
+    case 'set_paragraph_style':
+    case 'set_paragraph_alignment':
+    case 'delete_paragraph':
+      return op.index;
+    case 'replace_run_text':
+    case 'set_run_property':
+      return op.paragraph_index;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Anchor paragraph index for an edit, used for sort order in the UI
+ * and to scroll the document preview to the right paragraph. Ops that
+ * don't have a natural paragraph anchor (table cell, content control)
+ * use a high sentinel index so they sort to the end.
+ */
+function editAnchorIndex(edit: StoredEdit): number {
+  const op = edit.op;
+  switch (op.op) {
+    case 'replace_paragraph_text':
+    case 'set_paragraph_style':
+    case 'set_paragraph_alignment':
+    case 'delete_paragraph':
+      return op.index;
+    case 'replace_run_text':
+    case 'set_run_property':
+      return op.paragraph_index;
+    case 'set_cell_text':
+      return 1_000_000 + op.table_index * 1000 + op.row_index * 10 + op.cell_index;
+    case 'insert_table_row':
+    case 'delete_table_row':
+      return 1_000_000 + op.table_index * 1000;
+    case 'set_content_control_value':
+      return 2_000_000;
+    default:
+      return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/**
+ * Capture the original text BEFORE an op is applied, for use in the
+ * diff card. Only meaningful for text-replacement ops.
+ */
+function beforeTextForOp(
+  op: DocumentEditOp,
+  paragraphs: ParagraphInfo[],
+  originalByIndex: Map<number, string>,
+): string | undefined {
+  switch (op.op) {
+    case 'replace_paragraph_text':
+      return originalByIndex.get(op.index) ?? '';
+    case 'replace_run_text': {
+      const p = paragraphs.find((x) => x.index === op.paragraph_index);
+      const r = p?.runs[op.run_index];
+      return r?.text ?? '';
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Capture the original toggle value for set_run_property ops so the
+ * diff card can show "was on, becoming off" etc.
+ */
+function beforeValueForOp(
+  op: DocumentEditOp,
+  paragraphs: ParagraphInfo[],
+): boolean | undefined {
+  if (op.op !== 'set_run_property') return undefined;
+  const p = paragraphs.find((x) => x.index === op.paragraph_index);
+  const r = p?.runs[op.run_index];
+  if (!r) return undefined;
+  switch (op.property) {
+    case 'bold':
+      return r.bold;
+    case 'italic':
+      return r.italic;
+    case 'underline':
+      return r.underline;
+    case 'strike':
+      return r.strike;
+  }
+}
+
+/**
+ * Short, human-friendly title for an op shown in the EditCard header.
+ */
+function editTitle(edit: StoredEdit): string {
+  const op = edit.op;
+  switch (op.op) {
+    case 'replace_paragraph_text':
+      return `Paragraph #${op.index} — replace text`;
+    case 'replace_run_text':
+      return `Paragraph #${op.paragraph_index} run #${op.run_index} — replace text`;
+    case 'set_run_property':
+      return `Paragraph #${op.paragraph_index} run #${op.run_index} — set ${op.property} ${op.value ? 'on' : 'off'}`;
+    case 'set_cell_text':
+      return `Table ${op.table_index} row ${op.row_index} cell ${op.cell_index} — replace text`;
+    case 'insert_table_row':
+      return `Table ${op.table_index} — insert row after row ${op.after_row_index}`;
+    case 'delete_table_row':
+      return `Table ${op.table_index} — delete row ${op.row_index}`;
+    case 'set_content_control_value':
+      return `Content control [${op.tag}] — set value`;
+    case 'set_paragraph_style':
+      return `Paragraph #${op.index} — set style to "${op.style_id}"`;
+    case 'set_paragraph_alignment':
+      return `Paragraph #${op.index} — set alignment to ${op.alignment}`;
+    case 'delete_paragraph':
+      return `Paragraph #${op.index} — delete`;
+  }
+}
+
 function EditCard({
   edit,
   onSetStatus,
   anchorId,
 }: {
-  edit: ParagraphEdit;
-  onSetStatus: (index: number, status: ParagraphEdit['status']) => void;
+  edit: StoredEdit;
+  onSetStatus: (id: string, status: StoredEdit['status']) => void;
   anchorId?: string;
 }) {
   const isAccepted = edit.status === 'accepted';
@@ -438,7 +575,7 @@ function EditCard({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-        <strong style={{ fontSize: 12 }}>Paragraph #{edit.index}</strong>
+        <strong style={{ fontSize: 12 }}>{editTitle(edit)}</strong>
         <span
           style={{
             fontSize: 11,
@@ -455,14 +592,14 @@ function EditCard({
             <>
               <button
                 type="button"
-                onClick={() => onSetStatus(edit.index, 'accepted')}
+                onClick={() => onSetStatus(edit.id, 'accepted')}
                 style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#060', borderColor: '#060' }}
               >
                 accept
               </button>
               <button
                 type="button"
-                onClick={() => onSetStatus(edit.index, 'rejected')}
+                onClick={() => onSetStatus(edit.id, 'rejected')}
                 style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#666', borderColor: '#666' }}
               >
                 reject
@@ -472,7 +609,7 @@ function EditCard({
           {edit.status === 'accepted' && (
             <button
               type="button"
-              onClick={() => onSetStatus(edit.index, 'proposed')}
+              onClick={() => onSetStatus(edit.id, 'proposed')}
               style={{ margin: 0, padding: '0.2rem 0.5rem', fontSize: 11, background: '#666', borderColor: '#666' }}
             >
               unaccept
@@ -480,7 +617,7 @@ function EditCard({
           )}
         </span>
       </div>
-      <DiffView before={edit.original_text} after={edit.new_text} />
+      <EditBody edit={edit} />
       {edit.rationale && (
         <p className="note" style={{ marginTop: '0.4rem' }}>
           <em>{edit.rationale}</em>
@@ -488,6 +625,69 @@ function EditCard({
       )}
     </div>
   );
+}
+
+/**
+ * Body of an edit card — switches on op kind to render the most
+ * useful representation. Text-replacement ops show a side-by-side
+ * diff. Property toggles show old → new value. Structural ops show a
+ * one-line description.
+ */
+function EditBody({ edit }: { edit: StoredEdit }) {
+  const op = edit.op;
+  switch (op.op) {
+    case 'replace_paragraph_text':
+    case 'replace_run_text':
+      return <DiffView before={edit.before_text ?? ''} after={op.new_text} />;
+    case 'set_cell_text':
+      return <DiffView before={edit.before_text ?? '(unknown)'} after={op.new_text} />;
+    case 'set_content_control_value':
+      return <DiffView before={edit.before_text ?? '(unknown)'} after={op.value} />;
+    case 'set_run_property': {
+      const before = edit.before_value === undefined ? '?' : edit.before_value ? 'on' : 'off';
+      const after = op.value ? 'on' : 'off';
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          <strong>{op.property}</strong>: <code>{before}</code> →{' '}
+          <code style={{ color: op.value ? '#060' : '#666' }}>{after}</code>
+        </div>
+      );
+    }
+    case 'set_paragraph_style':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          New style id: <code>{op.style_id}</code>
+        </div>
+      );
+    case 'set_paragraph_alignment':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          New alignment: <code>{op.alignment}</code>
+        </div>
+      );
+    case 'delete_paragraph':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12, color: '#900' }}>
+          Will be removed from the document body.
+        </div>
+      );
+    case 'insert_table_row':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          New cells: <code>{op.cells.map((c) => `"${c}"`).join(', ')}</code>
+        </div>
+      );
+    case 'delete_table_row':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12, color: '#900' }}>
+          Will remove row {op.row_index} from table {op.table_index}.
+        </div>
+      );
+    default: {
+      const _exhaustive: never = op;
+      return <div>{JSON.stringify(_exhaustive)}</div>;
+    }
+  }
 }
 
 function DiffView({ before, after }: { before: string; after: string }) {
@@ -685,10 +885,17 @@ function DocumentPreview({
   paragraphs: ParagraphInfo[];
   headerParts: HeaderFooterPartContent[];
   footerParts: HeaderFooterPartContent[];
-  edits: ParagraphEdit[];
+  edits: StoredEdit[];
 }) {
-  const editsByIndex = new Map<number, ParagraphEdit>();
-  for (const e of edits) editsByIndex.set(e.index, e);
+  // Group edits by their anchor paragraph index for the inline preview
+  // highlights. Only edits anchored to a specific body paragraph
+  // (text replacements, run edits, paragraph structural ops) get
+  // highlighted; table/sdt ops are addressed elsewhere.
+  const editsByIndex = new Map<number, StoredEdit>();
+  for (const e of edits) {
+    const idx = paragraphAnchorOf(e);
+    if (idx !== null) editsByIndex.set(idx, e);
+  }
 
   function scrollToEdit(index: number) {
     const el = document.getElementById(`edit-${index}`);
@@ -798,15 +1005,24 @@ function PreviewParagraph({
   inHeaderFooter = false,
 }: {
   paragraph: ParagraphInfo;
-  edit: ParagraphEdit | undefined;
+  edit: StoredEdit | undefined;
   onClick: () => void;
   inHeaderFooter?: boolean;
 }) {
-  // Determine which text to display: accepted edits show the new text;
-  // proposed and rejected edits keep the original (so the user can see
-  // the as-uploaded state until they accept).
+  // Determine which text to display: accepted text-replacement edits
+  // show the new text; everything else keeps the original. Non-text
+  // ops still highlight the paragraph but don't change its display.
   const displayText =
-    edit?.status === 'accepted' ? edit.new_text : paragraph.text;
+    edit?.status === 'accepted' && edit.op.op === 'replace_paragraph_text'
+      ? edit.op.new_text
+      : edit?.status === 'accepted' && edit.op.op === 'replace_run_text'
+        ? // Reconstruct paragraph text by swapping the targeted run
+          paragraph.runs
+            .map((r, i) =>
+              edit.op.op === 'replace_run_text' && i === edit.op.run_index ? edit.op.new_text : r.text,
+            )
+            .join('')
+        : paragraph.text;
 
   // Style mapping. We use the parser's style_id to detect headings and
   // approximate sizes. Word uses "heading 1" / "Heading1" / "Heading 1 Char"

@@ -6,16 +6,43 @@
 
 import type { ParagraphInfo } from '../template/parser';
 
-export interface ParagraphEdit {
-  /** Original paragraph index in the source DOCX */
-  index: number;
-  /** The original text from the parser, for diff display */
-  original_text: string;
-  /** The proposed or accepted replacement text */
-  new_text: string;
-  /** Optional one-line explanation from the LLM */
+/**
+ * Lifecycle wrapper around a DocumentEditOp. The op carries the
+ * surgical instruction; the wrapper carries the user-facing metadata
+ * needed to display, accept, or reject the edit.
+ */
+export interface StoredEdit {
+  /** Stable identifier within the document */
+  id: string;
+  op: DocumentEditOp;
+  status: 'proposed' | 'accepted' | 'rejected';
+  /**
+   * For text-replacement ops (paragraph_text, run_text, cell_text,
+   * sdt_value), the original text BEFORE the edit, captured at
+   * proposal time. Used for diff display.
+   */
+  before_text?: string;
+  /**
+   * For run_property ops, the original property value before the
+   * edit (so the user can see what the toggle is changing).
+   */
+  before_value?: boolean;
+  /** Explanation surfaced from the LLM (mirrors op.rationale for convenience) */
   rationale?: string;
-  /** Lifecycle */
+  /** When this edit was proposed */
+  created_at: string;
+}
+
+/**
+ * Legacy paragraph-text edit shape. Kept for the Dexie v2 → v3
+ * migration: existing DocumentRecord.edits arrays may contain these
+ * objects, and we convert them to StoredEdit on read.
+ */
+export interface ParagraphEdit {
+  index: number;
+  original_text: string;
+  new_text: string;
+  rationale?: string;
   status: 'proposed' | 'accepted' | 'rejected';
 }
 
