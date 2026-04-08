@@ -15,11 +15,11 @@ import {
 import type { BodyFillRegion } from '../template/types';
 import { draftSection, summarizeDraft } from './drafter';
 import type { DraftingOptions, PriorSectionSummary } from './types';
+import { getContextItems, renderNotesBlock } from '../project/context';
 import {
-  getContextItems,
-  renderInlinedReferences,
-  renderNotesBlock,
-} from '../project/context';
+  renderSelectedChunks,
+  selectChunksForSection,
+} from '../project/chunk';
 import { extractParagraphs, type ParagraphInfo } from '../template/parser';
 
 export interface DraftProjectCallbacks {
@@ -109,9 +109,18 @@ export async function draftProject(
     }
   }
 
-  // Render notes and references ONCE for the run.
+  // Notes are global to the run (cheap, high-signal).
   const notesBlock = renderNotesBlock(items);
-  const referencesBlock = renderInlinedReferences(items, extractedById);
+
+  // Compute total chunk pool size once for the references-block header.
+  // Used by every section's render call so the header reads "X of Y
+  // chunks selected" consistently.
+  const totalChunkCount = files.reduce((acc, f) => {
+    if (f.chunks && f.chunks.length > 0) return acc + f.chunks.length;
+    // Estimate naive chunk count from extracted text length.
+    const text = extractedById.get(f.id) ?? '';
+    return acc + Math.max(1, Math.ceil(text.length / 5_000));
+  }, 0);
 
   for (const template of templates) {
     // ─── Pre-flight 2: parse the template DOCX once per template ───
@@ -176,6 +185,21 @@ export async function draftProject(
       // block — gives the model structural anchoring without baking in
       // the template's example subject matter.
       const templateExample = sliceTemplateExample(templateParagraphs, section);
+
+      // Build the per-section ATTACHED REFERENCES block. We score every
+      // chunk in every reference file against this section's intent +
+      // name + project subject, then greedy-select the top-N up to a
+      // per-section character budget. Files that haven't been
+      // semantically chunked are naive-chunked on the fly. This is
+      // what makes a 60-page reference doc usable: each section sees
+      // only the most relevant slices, not the whole thing.
+      const selectedChunks = selectChunksForSection({
+        files,
+        extractedById,
+        section,
+        project_description: project.description,
+      });
+      const referencesBlock = renderSelectedChunks(selectedChunks, totalChunkCount);
 
       try {
         const result = await draftSection(client, {

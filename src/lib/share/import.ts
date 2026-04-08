@@ -13,6 +13,7 @@ import {
   type DraftRecord,
   type ProjectContextItem,
   type ProjectRecord,
+  type ReferenceChunk,
   type TemplateRecord,
 } from '../db/schema';
 import {
@@ -195,8 +196,27 @@ function rehydrateContextItems(items: unknown[]): ProjectContextItem[] {
       mime_type: mime,
       size_bytes: Number(item.size_bytes ?? 0),
       bytes: base64ToBlob(b64, mime),
+      chunks: rehydrateChunks(item.chunks),
       created_at: String(item.created_at ?? new Date().toISOString()),
     });
   }
   return out;
+}
+
+function rehydrateChunks(raw: unknown): ReferenceChunk[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ReferenceChunk[] = [];
+  for (const c of raw) {
+    if (!c || typeof c !== 'object') continue;
+    const obj = c as Record<string, unknown>;
+    const text = typeof obj.text === 'string' ? obj.text : '';
+    if (!text) continue;
+    out.push({
+      id: typeof obj.id === 'string' ? obj.id : `chunk_${out.length}_${Date.now().toString(36)}`,
+      title: typeof obj.title === 'string' ? obj.title : `Chunk ${out.length + 1}`,
+      summary: typeof obj.summary === 'string' ? obj.summary : '',
+      text,
+    });
+  }
+  return out.length > 0 ? out : undefined;
 }
