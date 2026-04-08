@@ -5,6 +5,7 @@ import { Templates } from './routes/Templates';
 import { Projects } from './routes/Projects';
 import { ProjectDetail } from './routes/ProjectDetail';
 import { Datasets } from './routes/Datasets';
+import { Documents } from './routes/Documents';
 import { DebugPanel } from './components/DebugPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -22,6 +23,7 @@ export function App() {
             <div style={{ paddingBottom: 'calc(40vh + 2rem)' }}>
               <Routes>
                 <Route path="/" element={<Welcome />} />
+                <Route path="/documents" element={<Documents />} />
                 <Route path="/templates" element={<Templates />} />
                 <Route path="/datasets" element={<Datasets />} />
                 <Route path="/projects" element={<Projects />} />

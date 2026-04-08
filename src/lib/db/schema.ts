@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import type { TemplateSchema } from '../template/types';
 import type { DraftParagraph } from '../draft/types';
+import type { ParagraphEdit } from '../document/types';
 
 // Phase 1a stores template DOCX bytes alongside the parsed schema.
 // Phase 1b adds the semantic half. Phase 2 introduces projects and
@@ -86,10 +87,38 @@ export interface AuditRecord {
   error?: string;
 }
 
+/**
+ * A finished DOCX uploaded for inline cleanup. Distinct from
+ * TemplateRecord (which gets parsed into a schema for drafting). The
+ * cleanup workflow is: upload → propose edits → preview → export.
+ */
+export interface DocumentRecord {
+  id: string;
+  name: string;
+  filename: string;
+  ingested_at: string;
+  /** Original DOCX bytes — never overwritten */
+  docx_bytes: Blob;
+  /** Total paragraph count from the parser, for display */
+  paragraph_count: number;
+  /**
+   * All edits proposed and accepted for this document. The export
+   * writer applies accepted edits as paragraph_index → new_text
+   * overrides on a clone of the original bytes.
+   */
+  edits: ParagraphEdit[];
+  /** Last LLM model used for an edit pass */
+  last_edit_model?: string;
+  /** Cumulative tokens spent on edit passes */
+  total_tokens_in: number;
+  total_tokens_out: number;
+}
+
 class DocWriterDb extends Dexie {
   templates!: Table<TemplateRecord, string>;
   projects!: Table<ProjectRecord, string>;
   drafts!: Table<DraftRecord, string>;
+  documents!: Table<DocumentRecord, string>;
   audit!: Table<AuditRecord, number>;
 
   constructor() {
@@ -98,6 +127,14 @@ class DocWriterDb extends Dexie {
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      audit: '++id, ts, endpoint, ok',
+    });
+    // v2 adds the documents table for the inline cleanup workflow.
+    this.version(2).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
       audit: '++id, ts, endpoint, ok',
     });
   }
