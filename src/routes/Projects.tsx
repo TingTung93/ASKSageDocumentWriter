@@ -2,11 +2,13 @@
 // pick which templates to include, name reference datasets, and then
 // open the project detail view to fill shared inputs and run drafting.
 
-import { useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../lib/db/schema';
 import { createProject } from '../lib/project/helpers';
+import { SearchFilter, matchesSearch } from '../components/SearchFilter';
+import { EmptyState } from '../components/EmptyState';
 
 export function Projects() {
   const projects = useLiveQuery(
@@ -22,6 +24,20 @@ export function Projects() {
   const [liveSearch, setLiveSearch] = useState<0 | 1 | 2>(0);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [templatePickerSearch, setTemplatePickerSearch] = useState('');
+  const [projectSearch, setProjectSearch] = useState('');
+
+  const filteredTemplates = useMemo(
+    () => (templates ?? []).filter((t) => matchesSearch(t.name, templatePickerSearch)),
+    [templates, templatePickerSearch],
+  );
+  const filteredProjects = useMemo(
+    () =>
+      (projects ?? []).filter((p) =>
+        matchesSearch(`${p.name} ${p.description ?? ''}`, projectSearch),
+      ),
+    [projects, projectSearch],
+  );
 
   function toggleTemplate(id: string) {
     setSelectedTemplateIds((prev) =>
@@ -98,12 +114,24 @@ export function Projects() {
 
         <label>Templates ({templates?.length ?? 0} available)</label>
         {(!templates || templates.length === 0) && (
-          <p className="note">
-            No templates yet. Go to the Templates tab and ingest at least one DOCX first.
-          </p>
+          <EmptyState
+            title="No templates yet"
+            body={
+              <>
+                Go to the <Link to="/templates">Templates</Link> tab and ingest at least one DOCX first.
+              </>
+            }
+          />
+        )}
+        {templates && templates.length > 0 && (
+          <SearchFilter
+            value={templatePickerSearch}
+            onChange={setTemplatePickerSearch}
+            placeholder="Filter templates…"
+          />
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', maxHeight: 200, overflow: 'auto', border: '1px solid #ddd', padding: '0.5rem' }}>
-          {templates?.map((t) => (
+          {filteredTemplates.map((t) => (
             <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 400, margin: 0 }}>
               <input
                 type="checkbox"
@@ -163,11 +191,24 @@ export function Projects() {
       </form>
 
       <h2>Existing projects ({projects?.length ?? 0})</h2>
+      {projects && projects.length > 0 && (
+        <SearchFilter
+          value={projectSearch}
+          onChange={setProjectSearch}
+          placeholder="Filter projects…"
+        />
+      )}
       {(!projects || projects.length === 0) && (
-        <p className="note">No projects yet.</p>
+        <EmptyState
+          title="No projects yet"
+          body="Create one above to get started."
+        />
+      )}
+      {projects && projects.length > 0 && filteredProjects.length === 0 && (
+        <EmptyState title="No matches" body="Try a different search term." />
       )}
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {projects?.map((p) => (
+        {filteredProjects.map((p) => (
           <li key={p.id} style={{ padding: '0.5rem 0.75rem', border: '1px solid #ddd', borderRadius: 4, marginBottom: '0.25rem' }}>
             <Link to={`/projects/${p.id}`} style={{ textDecoration: 'none', color: '#1a1a1a' }}>
               <strong>{p.name}</strong>

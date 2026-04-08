@@ -4,7 +4,7 @@
 // applied. The whole workflow lives in this single route file because
 // it's small and self-contained.
 
-import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { renderAsync as renderDocxAsync } from 'docx-preview';
@@ -20,6 +20,9 @@ import { requestDocumentEdits } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
 import { migrateAll, migrateDocumentEdits } from '../lib/document/migrate';
+import { DropZone } from '../components/DropZone';
+import { SearchFilter, matchesSearch } from '../components/SearchFilter';
+import { EmptyState } from '../components/EmptyState';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -34,13 +37,17 @@ export function Documents() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
 
   const selected = documents?.find((d) => d.id === selectedId) ?? null;
 
-  async function onUpload(e: ChangeEvent<HTMLInputElement>) {
+  const filtered = useMemo(
+    () => (documents ?? []).filter((d) => matchesSearch(`${d.name} ${d.filename}`, search)),
+    [documents, search],
+  );
+
+  async function onUpload(file: File) {
     setUploadError(null);
-    const file = e.target.files?.[0];
-    if (!file) return;
     if (!file.name.toLowerCase().endsWith('.docx')) {
       setUploadError(`Not a DOCX: ${file.name}`);
       return;
@@ -76,7 +83,6 @@ export function Documents() {
       setUploadError(message);
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
   }
 
@@ -101,23 +107,31 @@ export function Documents() {
         <Link to="/projects">Projects</Link>.
       </p>
 
-      <label htmlFor="document-input">Upload a DOCX to clean up</label>
-      <input
-        id="document-input"
-        type="file"
+      <DropZone
         accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        onChange={onUpload}
+        onFile={onUpload}
         disabled={uploading}
+        label="Drop a DOCX here, or click to choose"
+        hint="The original file is preserved; exports are produced as fresh copies."
       />
       {uploading && <p className="note">Parsing…</p>}
       {uploadError && <div className="error">Upload failed: {uploadError}</div>}
 
       <h2>Stored documents ({documents?.length ?? 0})</h2>
+      {documents && documents.length > 0 && (
+        <SearchFilter value={search} onChange={setSearch} placeholder="Filter documents…" />
+      )}
       {(!documents || documents.length === 0) && (
-        <p className="note">No documents yet. Upload one above.</p>
+        <EmptyState
+          title="No documents yet"
+          body="Drop a DOCX above to begin a cleanup pass."
+        />
+      )}
+      {documents && documents.length > 0 && filtered.length === 0 && (
+        <EmptyState title="No matches" body="Try a different search term." />
       )}
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {documents?.map((d) => (
+        {filtered.map((d) => (
           <li
             key={d.id}
             style={{
