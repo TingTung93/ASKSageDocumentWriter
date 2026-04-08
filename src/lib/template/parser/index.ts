@@ -20,7 +20,7 @@ import { parseNumberingXml } from './numbering';
 import { findContentControls } from './contentControls';
 import { detectFillRegions } from './fillRegions';
 
-export type { ParagraphInfo } from './document';
+export type { ParagraphInfo, RunInfo, TableInfo, TableRowInfo, TableCellInfo } from './document';
 
 export interface PartContent {
   /** Path inside the zip, e.g. "word/header1.xml" */
@@ -51,6 +51,13 @@ export interface ParseDocxResult {
    * synthesizer without re-parsing the DOCX.
    */
   paragraphs: ParagraphInfo[];
+  /**
+   * Tables from word/document.xml with row/cell/paragraph structure.
+   * Cells reference paragraphs by their index in the flat
+   * paragraphs[] array, so LLM tools can address table content
+   * either by paragraph index or by table/row/cell coordinates.
+   */
+  tables: import('./document').TableInfo[];
   /**
    * Parsed paragraph contents of every word/header*.xml part the DOCX
    * contains. Indices restart from 0 within each part. Headers
@@ -157,6 +164,7 @@ export async function parseDocx(
     schema,
     docx_blob: blob,
     paragraphs: document.paragraphs,
+    tables: document.tables,
     header_parts,
     footer_parts,
   };

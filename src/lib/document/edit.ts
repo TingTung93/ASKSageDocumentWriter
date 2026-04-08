@@ -45,10 +45,22 @@ export interface DocumentEditRequest {
   model?: string;
 }
 
+/** Narrowed paragraph_text op for the legacy UI accept flow. */
+export type ReplaceParagraphTextOp = Extract<
+  DocumentEditOp,
+  { op: 'replace_paragraph_text' }
+>;
+
 export interface DocumentEditResponse {
   llm_output: DocumentEditOutput;
-  /** Edits filtered to only those whose index actually exists in the input */
-  valid_edits: DocumentEditOp[];
+  /**
+   * Paragraph-text edits whose index exists in the input. The legacy
+   * UI accept flow consumes these. Other op types are kept in
+   * `all_valid_ops` for callers using the new union-based pipeline.
+   */
+  valid_edits: ReplaceParagraphTextOp[];
+  /** Every op the LLM returned that passed validation, in any shape */
+  all_valid_ops: DocumentEditOp[];
   tokens_in: number;
   tokens_out: number;
   model: string;
@@ -73,8 +85,35 @@ export async function requestDocumentEdits(
 
   // Defensive: filter to indices that actually exist in the input
   const validIndices = new Set(args.paragraphs.map((p) => p.index));
-  const valid_edits = (data.edits ?? []).filter(
-    (e) => e && typeof e.index === 'number' && validIndices.has(e.index),
+  const allOps = data.edits ?? [];
+  const all_valid_ops: DocumentEditOp[] = allOps.filter((op): op is DocumentEditOp => {
+    if (!op || typeof op !== 'object' || !('op' in op)) return false;
+    switch (op.op) {
+      case 'replace_paragraph_text':
+      case 'set_paragraph_style':
+      case 'set_paragraph_alignment':
+      case 'delete_paragraph':
+        return typeof op.index === 'number' && validIndices.has(op.index);
+      case 'replace_run_text':
+      case 'set_run_property':
+        return (
+          typeof op.paragraph_index === 'number' &&
+          validIndices.has(op.paragraph_index) &&
+          typeof op.run_index === 'number' &&
+          op.run_index >= 0
+        );
+      case 'set_cell_text':
+      case 'insert_table_row':
+      case 'delete_table_row':
+      case 'set_content_control_value':
+        return true; // table/sdt indices validated at writer time
+      default:
+        return false;
+    }
+  });
+
+  const valid_edits: ReplaceParagraphTextOp[] = all_valid_ops.filter(
+    (op): op is ReplaceParagraphTextOp => op.op === 'replace_paragraph_text',
   );
 
   const usage = (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
@@ -82,6 +121,7 @@ export async function requestDocumentEdits(
   return {
     llm_output: data,
     valid_edits,
+    all_valid_ops,
     tokens_in: usage.prompt_tokens ?? 0,
     tokens_out: usage.completion_tokens ?? 0,
     model,
