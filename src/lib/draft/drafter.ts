@@ -44,6 +44,13 @@ export interface DraftSectionArgs {
    * "looks" structurally without baking subject matter.
    */
   template_example?: string | null;
+  /**
+   * Pre-formatted revision notes from the critic loop. Passed
+   * through to the prompt builder which inlines them right after
+   * SUBJECT. Null on the first attempt; populated on revision
+   * iterations from `formatRevisionNotes(critique.issues)`.
+   */
+  revision_notes_block?: string | null;
   options?: DraftingOptions;
 }
 
@@ -64,6 +71,7 @@ export async function draftSection(
     notes_block: args.notes_block,
     references_block: args.references_block,
     template_example: args.template_example,
+    revision_notes_block: args.revision_notes_block,
   });
 
   const { data, raw } = await client.queryJson<LLMDraftOutput>({

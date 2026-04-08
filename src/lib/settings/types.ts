@@ -20,6 +20,23 @@ export interface ModelOverrides {
   schema_edit: string | null;
 }
 
+/**
+ * Critic loop settings — drives the per-section draft → critique →
+ * revise loop in the orchestrator. When `enabled === false`, the
+ * loop is bypassed and sections are drafted exactly once (the legacy
+ * single-pass behavior).
+ */
+export type CritiqueStrictness = 'lenient' | 'moderate' | 'strict';
+
+export interface CriticSettings {
+  enabled: boolean;
+  strictness: CritiqueStrictness;
+  /** 0..3. 0 = single-pass critic only, no revisions. */
+  max_iterations: number;
+  /** Optional model override for the critic call. Defaults to the drafting model. */
+  critic_model?: string;
+}
+
 export interface CostAssumptions {
   /** Estimated input tokens per drafted section */
   drafting_tokens_in_per_section: number;
@@ -58,6 +75,8 @@ export interface AppSettings {
   id: 'app';
   models: ModelOverrides;
   cost: CostAssumptions;
+  /** Critic loop configuration. Optional for migration compatibility. */
+  critic?: CriticSettings;
   updated_at: string;
 }
 
@@ -67,6 +86,12 @@ export const DEFAULT_MODEL_OVERRIDES: ModelOverrides = {
   critic: null,
   cleanup: null,
   schema_edit: null,
+};
+
+export const DEFAULT_CRITIC_SETTINGS: CriticSettings = {
+  enabled: true,
+  strictness: 'moderate',
+  max_iterations: 2,
 };
 
 export const DEFAULT_COST_ASSUMPTIONS: CostAssumptions = {
@@ -86,5 +111,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   id: 'app',
   models: DEFAULT_MODEL_OVERRIDES,
   cost: DEFAULT_COST_ASSUMPTIONS,
+  critic: DEFAULT_CRITIC_SETTINGS,
   updated_at: new Date(0).toISOString(),
 };

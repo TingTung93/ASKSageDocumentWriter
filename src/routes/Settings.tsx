@@ -128,6 +128,17 @@ export function Settings() {
         availableModels={filteredModels}
       />
 
+      <h2>Critic loop (agentic drafting)</h2>
+      <p className="note">
+        When enabled, every drafted section is checked by a separate
+        critic LLM call before being accepted. If the critic finds
+        medium-or-high severity issues, the orchestrator re-drafts up
+        to <code>max_iterations</code> times with the critic's feedback
+        inlined into the next attempt. Used by the auto-draft recipe
+        and by manual <code>Draft sections</code> runs.
+      </p>
+      <CriticSettingsSection critic={settings.critic ?? null} />
+
       <h2>Cost projection</h2>
       <p className="note">
         These numbers feed the rough token / cost estimates shown on the Documents
@@ -354,6 +365,72 @@ function PricingFilterControl({
         Free OpenRouter models have aggressive rate limits and shorter
         context windows — usable for cleanup and refinement passes, often
         too slow or context-limited for full template synthesis.
+      </p>
+    </div>
+  );
+}
+
+function CriticSettingsSection({
+  critic,
+}: {
+  critic: import('../lib/settings/types').CriticSettings | null;
+}) {
+  const enabled = critic?.enabled ?? true;
+  const strictness = critic?.strictness ?? 'moderate';
+  const maxIterations = critic?.max_iterations ?? 2;
+
+  async function update(patch: Partial<import('../lib/settings/types').CriticSettings>) {
+    const current = await loadSettings();
+    await saveSettings({
+      critic: { ...(current.critic ?? { enabled: true, strictness: 'moderate', max_iterations: 2 }), ...patch },
+    });
+    toast.success('Critic settings saved');
+  }
+
+  return (
+    <div className="card" style={{ padding: 'var(--space-3)' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => void update({ enabled: e.target.checked })}
+          style={{ width: 'auto' }}
+        />
+        Enable critic loop
+      </label>
+      <p className="note" style={{ marginTop: '0.4rem' }}>
+        When disabled, sections draft once and are accepted as-is (the legacy single-pass behavior). Saves cost but loses quality on tricky sections.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontWeight: 400 }}>
+          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Strictness</span>
+          <select
+            value={strictness}
+            onChange={(e) => void update({ strictness: e.target.value as 'lenient' | 'moderate' | 'strict' })}
+            disabled={!enabled}
+          >
+            <option value="lenient">lenient — flag concrete errors only</option>
+            <option value="moderate">moderate — also flag style/structure</option>
+            <option value="strict">strict — flag any improvable aspect</option>
+          </select>
+        </label>
+
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontWeight: 400 }}>
+          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Max revision iterations</span>
+          <select
+            value={maxIterations}
+            onChange={(e) => void update({ max_iterations: Number(e.target.value) })}
+            disabled={!enabled}
+          >
+            <option value="1">1 — critique once, never revise</option>
+            <option value="2">2 — up to 2 revisions per section (default)</option>
+            <option value="3">3 — up to 3 revisions per section</option>
+          </select>
+        </label>
+      </div>
+      <p className="note" style={{ marginTop: '0.4rem' }}>
+        Cost impact: enabling the critic with default settings adds ~25% to the per-project token spend in exchange for substantially better quality. See the design discussion in the project memory for the full math.
       </p>
     </div>
   );

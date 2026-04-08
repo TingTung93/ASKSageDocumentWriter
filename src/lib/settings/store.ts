@@ -5,10 +5,12 @@
 import { db } from '../db/schema';
 import {
   DEFAULT_COST_ASSUMPTIONS,
+  DEFAULT_CRITIC_SETTINGS,
   DEFAULT_MODEL_OVERRIDES,
   DEFAULT_SETTINGS,
   type AppSettings,
   type CostAssumptions,
+  type CriticSettings,
   type ModelOverrides,
   type ModelStage,
 } from './types';
@@ -20,6 +22,7 @@ export async function loadSettings(): Promise<AppSettings> {
     id: 'app',
     models: { ...DEFAULT_MODEL_OVERRIDES, ...row.models },
     cost: { ...DEFAULT_COST_ASSUMPTIONS, ...row.cost },
+    critic: { ...DEFAULT_CRITIC_SETTINGS, ...(row.critic ?? {}) },
     updated_at: row.updated_at ?? new Date(0).toISOString(),
   };
 }
@@ -27,6 +30,7 @@ export async function loadSettings(): Promise<AppSettings> {
 export interface SaveSettingsPatch {
   models?: Partial<ModelOverrides>;
   cost?: Partial<CostAssumptions>;
+  critic?: Partial<CriticSettings>;
 }
 
 export async function saveSettings(patch: SaveSettingsPatch): Promise<AppSettings> {
@@ -35,6 +39,7 @@ export async function saveSettings(patch: SaveSettingsPatch): Promise<AppSetting
     id: 'app',
     models: { ...current.models, ...(patch.models ?? {}) },
     cost: { ...current.cost, ...(patch.cost ?? {}) },
+    critic: { ...DEFAULT_CRITIC_SETTINGS, ...current.critic, ...(patch.critic ?? {}) },
     updated_at: new Date().toISOString(),
   };
   await db.settings.put(next);

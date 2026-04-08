@@ -46,6 +46,14 @@ export interface BuildDraftingPromptArgs {
    * look like in the source template — without baking subject matter.
    */
   template_example?: string | null;
+  /**
+   * Revision notes from the critic loop. When non-null, this is a
+   * pre-formatted block listing the issues from the previous attempt
+   * the drafter must fix this iteration. Inlined immediately after
+   * the SUBJECT block so it carries SUBJECT-level priority. Built by
+   * `lib/draft/critique.formatRevisionNotes`.
+   */
+  revision_notes_block?: string | null;
 }
 
 export interface BuiltDraftingPrompt {
@@ -114,6 +122,7 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
     notes_block,
     references_block,
     template_example,
+    revision_notes_block,
   } = args;
   const lines: string[] = [];
 
@@ -130,6 +139,15 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
     `Every section is about THIS subject. The section spec, template example, and any other input below are reused from a DIFFERENT document for STRUCTURE only — IGNORE any topic hints they contain that conflict with the subject above.`,
   );
   lines.push(`=== END SUBJECT ===`);
+
+  // ─── 1.5. REVISION NOTES from the critic loop (when present) ──────
+  // Inlined immediately after SUBJECT so it carries the same priority
+  // weight: the model must address every flagged issue from the prior
+  // attempt before producing a new draft.
+  if (revision_notes_block && revision_notes_block.trim().length > 0) {
+    lines.push(``);
+    lines.push(revision_notes_block);
+  }
 
   // ─── 2. ATTACHED REFERENCES (the user's source material) ──────────
   if (references_block) {

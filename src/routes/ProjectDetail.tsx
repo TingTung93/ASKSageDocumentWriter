@@ -34,6 +34,14 @@ import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
 import { buildProjectBundle } from '../lib/share/bundle';
 import { downloadBundle, bundleFilename } from '../lib/share/download';
+import {
+  cancelRecipeRun,
+  resumeRecipeRun,
+  runRecipe,
+  type RecipeRun,
+  type RecipeStage,
+} from '../lib/agent/recipe';
+import { PWS_RECIPE } from '../lib/agent/recipes/pws';
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -57,6 +65,13 @@ export function ProjectDetail() {
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+
+  // Agentic recipe runner state. The recipe walks Phase 2-5a stages
+  // and pauses at intervention points; the UI surfaces those via the
+  // currentRun.status === 'paused' branch below.
+  const [currentRun, setCurrentRun] = useState<RecipeRun | null>(null);
+  const [recipeRunning, setRecipeRunning] = useState(false);
+  const [recipeStageMessage, setRecipeStageMessage] = useState<string | null>(null);
 
   if (!id) return <main>Missing project id</main>;
   if (!project) return <main>Loading project…</main>;
@@ -160,6 +175,99 @@ export function ProjectDetail() {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`Share failed: ${message}`);
+    }
+  }
+
+  // ─── Agentic recipe entry points ─────────────────────────────────
+
+  async function onRunRecipe() {
+    if (!project) return;
+    if (!apiKey || !onAskSage) {
+      toast.error('Connect to Ask Sage on the Connection tab first.');
+      return;
+    }
+    setRecipeRunning(true);
+    setCurrentRun(null);
+    setRecipeStageMessage(null);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const run = await runRecipe({
+        client,
+        project,
+        templates: allTemplates ?? [],
+        recipe: PWS_RECIPE,
+        callbacks: {
+          onStageStart: (stage: RecipeStage, index, total) => {
+            setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
+          },
+          onStageProgress: (_stage, message) => {
+            setRecipeStageMessage(message);
+          },
+          onError: (stage, err) => {
+            toast.error(`${stage.name}: ${err.message}`);
+          },
+        },
+      });
+      setCurrentRun(run);
+      if (run.status === 'completed') {
+        toast.success(`Recipe complete · ${(run.total_tokens_in + run.total_tokens_out).toLocaleString()} tokens`);
+      } else if (run.status === 'paused') {
+        toast.info('Recipe paused for your review — see the panel below');
+      } else if (run.status === 'failed') {
+        toast.error('Recipe failed — check the panel below for details');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Recipe error: ${message}`);
+    } finally {
+      setRecipeRunning(false);
+    }
+  }
+
+  async function onResumeRecipe() {
+    if (!project || !currentRun) return;
+    if (!apiKey || !onAskSage) {
+      toast.error('Connect to Ask Sage on the Connection tab first.');
+      return;
+    }
+    setRecipeRunning(true);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const run = await resumeRecipeRun({
+        client,
+        project,
+        templates: allTemplates ?? [],
+        run_id: currentRun.id,
+        callbacks: {
+          onStageStart: (stage: RecipeStage, index, total) => {
+            setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
+          },
+          onStageProgress: (_stage, message) => {
+            setRecipeStageMessage(message);
+          },
+        },
+      });
+      setCurrentRun(run);
+      if (run.status === 'completed') {
+        toast.success('Recipe complete');
+      } else if (run.status === 'paused') {
+        toast.info('Recipe paused again');
+      }
+    } catch (err) {
+      toast.error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRecipeRunning(false);
+    }
+  }
+
+  async function onCancelRecipe() {
+    if (!currentRun) return;
+    try {
+      await cancelRecipeRun(currentRun.id);
+      setCurrentRun({ ...currentRun, status: 'cancelled' });
+      toast.info('Recipe cancelled');
+    } catch (err) {
+      toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -267,8 +375,16 @@ export function ProjectDetail() {
       })()}
 
       <div className="btn-row">
-        <button type="button" onClick={onStartDrafting} disabled={drafting || !apiKey}>
-          {drafting ? <Spinner light label="Drafting…" /> : 'Draft all sections'}
+        <button
+          type="button"
+          onClick={() => void onRunRecipe()}
+          disabled={recipeRunning || drafting || !apiKey || !onAskSage}
+          title="Run the agentic PWS recipe end-to-end: pre-flight gap analysis, drafting with critic loop, cross-section review, and final assembly"
+        >
+          {recipeRunning ? <Spinner light label={recipeStageMessage ?? 'Running recipe…'} /> : '🤖 Auto-draft this project'}
+        </button>
+        <button type="button" className="btn-secondary" onClick={onStartDrafting} disabled={drafting || recipeRunning || !apiKey}>
+          {drafting ? <Spinner light label="Drafting…" /> : 'Draft sections (manual)'}
         </button>
         <button type="button" className="btn-secondary" onClick={() => void onShare(false)}>
           Share project (templates only)
@@ -304,6 +420,15 @@ export function ProjectDetail() {
       )}
       {draftError && <div className="error">{draftError}</div>}
 
+      {currentRun && (
+        <RecipeRunPanel
+          run={currentRun}
+          onResume={() => void onResumeRecipe()}
+          onCancel={() => void onCancelRecipe()}
+          isRunning={recipeRunning}
+        />
+      )}
+
       <h2>Sections</h2>
       {projectTemplates.map((tpl) => (
         <TemplateDraftedSections
@@ -314,6 +439,132 @@ export function ProjectDetail() {
       ))}
     </main>
   );
+}
+
+function RecipeRunPanel({
+  run,
+  onResume,
+  onCancel,
+  isRunning,
+}: {
+  run: RecipeRun;
+  onResume: () => void;
+  onCancel: () => void;
+  isRunning: boolean;
+}) {
+  const stageEntries = Object.entries(run.stage_states);
+  const pausedStage = stageEntries.find(([, s]) => s.status === 'needs_intervention');
+  const failedStage = stageEntries.find(([, s]) => s.status === 'failed');
+  const totalTokens = run.total_tokens_in + run.total_tokens_out;
+  const statusColor =
+    run.status === 'completed'
+      ? 'badge-success'
+      : run.status === 'failed'
+        ? 'badge-danger'
+        : run.status === 'paused'
+          ? 'badge-warning'
+          : 'badge-primary';
+
+  return (
+    <div className="card" style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)' }}>
+      <div className="row" style={{ alignItems: 'center' }}>
+        <strong>🤖 Recipe run · {run.recipe_name}</strong>
+        <span className={`badge ${statusColor}`}>{run.status}</span>
+        <span className="badge">{totalTokens.toLocaleString()} tokens</span>
+        <span style={{ marginLeft: 'auto' }} />
+        {run.status === 'paused' && (
+          <>
+            <button
+              type="button"
+              className="btn-success btn-sm"
+              onClick={onResume}
+              disabled={isRunning}
+            >
+              {isRunning ? 'resuming…' : 'continue'}
+            </button>
+            <button type="button" className="btn-secondary btn-sm" onClick={onCancel}>
+              cancel
+            </button>
+          </>
+        )}
+      </div>
+
+      {pausedStage && (
+        <div
+          className="panel"
+          style={{ marginTop: 'var(--space-2)', borderLeft: '3px solid var(--color-warning)' }}
+        >
+          <strong>Paused at: {pausedStage[0]}</strong>
+          <pre
+            style={{
+              background: 'var(--color-surface-alt)',
+              padding: 'var(--space-2)',
+              fontSize: 11,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 280,
+              overflow: 'auto',
+              margin: '0.4rem 0 0',
+              borderRadius: 'var(--radius-sm)',
+            }}
+          >
+            {JSON.stringify(pausedStage[1].output, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {failedStage && (
+        <div className="error" style={{ marginTop: 'var(--space-2)' }}>
+          <strong>Failed at: {failedStage[0]}</strong>
+          {'\n'}
+          {failedStage[1].error}
+        </div>
+      )}
+
+      <details style={{ marginTop: 'var(--space-2)' }}>
+        <summary className="note" style={{ cursor: 'pointer' }}>
+          Stage history ({stageEntries.length})
+        </summary>
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+          {stageEntries.map(([id, state]) => (
+            <li
+              key={id}
+              style={{
+                padding: 'var(--space-1) var(--space-2)',
+                borderLeft: `3px solid ${stageBorderColor(state.status)}`,
+                marginBottom: '0.25rem',
+                background: 'var(--color-surface)',
+                fontSize: 12,
+              }}
+            >
+              <strong>{id}</strong>{' '}
+              <span className="badge">{state.status}</span>
+              {state.tokens_in !== undefined && state.tokens_out !== undefined && (
+                <span className="muted" style={{ marginLeft: '0.5rem' }}>
+                  {(state.tokens_in + state.tokens_out).toLocaleString()} tok
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
+function stageBorderColor(status: string): string {
+  switch (status) {
+    case 'completed':
+      return 'var(--color-success)';
+    case 'failed':
+      return 'var(--color-danger)';
+    case 'needs_intervention':
+      return 'var(--color-warning)';
+    case 'running':
+      return 'var(--color-primary)';
+    default:
+      return 'var(--color-border)';
+  }
 }
 
 function ProjectTemplatesEditor({
