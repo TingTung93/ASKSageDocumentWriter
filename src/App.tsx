@@ -2,6 +2,8 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { Welcome } from './routes/Welcome';
 import { Templates } from './routes/Templates';
+import { Projects } from './routes/Projects';
+import { ProjectDetail } from './routes/ProjectDetail';
 import { DebugPanel } from './components/DebugPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -20,6 +22,8 @@ export function App() {
               <Routes>
                 <Route path="/" element={<Welcome />} />
                 <Route path="/templates" element={<Templates />} />
+                <Route path="/projects" element={<Projects />} />
+                <Route path="/projects/:id" element={<ProjectDetail />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
