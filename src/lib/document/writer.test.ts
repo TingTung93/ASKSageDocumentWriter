@@ -51,7 +51,10 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
     expect(after.paragraphs.length).toBe(before.paragraphs.length);
     const replaced = after.paragraphs.find((p) => p.index === targetIndex);
     expect(replaced).toBeDefined();
-    expect(replaced!.text).toBe(newText);
+    // Use toContain because the parser preserves leading/trailing
+    // structural whitespace (e.g. <w:tab/> elements that bracket the
+    // text content). The writer correctly replaces only the <w:t> body.
+    expect(replaced!.text).toContain(newText);
   });
 
   it('preserves the style_id of an edited paragraph', async () => {
@@ -108,8 +111,22 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
     });
     for (let i = 0; i < targets.length; i++) {
       const found = after.paragraphs.find((p) => p.index === targets[i]!.index);
-      expect(found!.text).toBe(`EDITED PARAGRAPH #${i + 1}`);
+      expect(found!.text).toContain(`EDITED PARAGRAPH #${i + 1}`);
     }
+  });
+
+  it('preserves tab characters in the parsed text after a round-trip', async () => {
+    // The Policy Memo template paragraphs include <w:tab/> elements as
+    // structural separators. The new extractor should surface them as
+    // '\t' in the parsed text, both before and after the writer
+    // round-trip.
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, {
+      filename: 'tabs.docx',
+      docx_blob_id: 'test',
+    });
+    const tabbed = before.paragraphs.find((p) => p.text.includes('\t'));
+    expect(tabbed, 'expected at least one paragraph with a tab char in the memo template').toBeDefined();
   });
 
   it('skips overrides for indices that do not exist', async () => {

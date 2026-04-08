@@ -14,13 +14,21 @@ import {
   type HeaderFooterPart,
   type TemplateSchema,
 } from '../types';
-import { parseDocumentXml, type ParagraphInfo } from './document';
+import { parseDocumentXml, parseHeaderFooterXml, type ParagraphInfo } from './document';
 import { parseStylesXml } from './styles';
 import { parseNumberingXml } from './numbering';
 import { findContentControls } from './contentControls';
 import { detectFillRegions } from './fillRegions';
 
 export type { ParagraphInfo } from './document';
+
+export interface PartContent {
+  /** Path inside the zip, e.g. "word/header1.xml" */
+  part: string;
+  /** Display label inferred from the part name (e.g. "header1") */
+  label: string;
+  paragraphs: ParagraphInfo[];
+}
 
 export interface ParseDocxOptions {
   filename: string;
@@ -43,6 +51,15 @@ export interface ParseDocxResult {
    * synthesizer without re-parsing the DOCX.
    */
   paragraphs: ParagraphInfo[];
+  /**
+   * Parsed paragraph contents of every word/header*.xml part the DOCX
+   * contains. Indices restart from 0 within each part. Headers
+   * commonly hold CUI banners, document numbers, dates, and
+   * distribution lines on DHA templates.
+   */
+  header_parts: PartContent[];
+  /** Same shape, for word/footer*.xml parts. */
+  footer_parts: PartContent[];
 }
 
 export async function parseDocx(
@@ -130,7 +147,38 @@ export async function parseDocx(
     },
   };
 
-  return { schema, docx_blob: blob, paragraphs: document.paragraphs };
+  // Parse the contents of every header and footer part. The DOCX may
+  // have several of each (default / first / even). Each part is a
+  // self-contained XML document rooted at <w:hdr> or <w:ftr>.
+  const header_parts = await loadPartContents(zip, headers.map((h) => h.part));
+  const footer_parts = await loadPartContents(zip, footers.map((f) => f.part));
+
+  return {
+    schema,
+    docx_blob: blob,
+    paragraphs: document.paragraphs,
+    header_parts,
+    footer_parts,
+  };
+}
+
+async function loadPartContents(zip: JSZip, partNames: string[]): Promise<PartContent[]> {
+  const out: PartContent[] = [];
+  for (const part of partNames) {
+    const file = zip.file(part);
+    if (!file) continue;
+    try {
+      const xml = await file.async('string');
+      const dom = parseXml(xml);
+      const paragraphs = parseHeaderFooterXml(dom);
+      const labelMatch = part.match(/word\/(.*?)\.xml$/);
+      const label = labelMatch ? labelMatch[1]! : part;
+      out.push({ part, label, paragraphs });
+    } catch {
+      // Skip parts we can't parse — preview is best-effort.
+    }
+  }
+  return out;
 }
 
 /**
@@ -147,6 +195,10 @@ export async function extractParagraphs(
   });
   return result.paragraphs;
 }
+
+// Re-export so other modules can build their own header/footer rendering
+// against parsed parts.
+export type { PartContent as HeaderFooterPartContent };
 
 function parseXml(xml: string): Document {
   const dom = new DOMParser().parseFromString(xml, 'text/xml');

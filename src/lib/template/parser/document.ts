@@ -92,6 +92,21 @@ function walkParagraphs(scope: Element, visit: (p: Element) => void): void {
   Array.from(scope.getElementsByTagNameNS(W_NS, 'p')).forEach(visit);
 }
 
+/**
+ * Parse a header/footer XML document into a flat ParagraphInfo[] using
+ * the same paragraph parser as the body. Headers/footers don't have
+ * sectPr, so we skip page-setup extraction. Indices restart from 0
+ * within each part.
+ */
+export function parseHeaderFooterXml(dom: Document): ParagraphInfo[] {
+  const paragraphs: ParagraphInfo[] = [];
+  let index = 0;
+  Array.from(dom.getElementsByTagNameNS(W_NS, 'p')).forEach((p) => {
+    paragraphs.push(parseParagraph(p, index++));
+  });
+  return paragraphs;
+}
+
 function parseParagraph(p: Element, index: number): ParagraphInfo {
   const pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0] ?? null;
 
@@ -154,10 +169,13 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     }
   }
 
-  // Concatenate all w:t text content under this paragraph.
-  const text = Array.from(p.getElementsByTagNameNS(W_NS, 't'))
-    .map((t) => t.textContent ?? '')
-    .join('');
+  // Walk paragraph descendants in document order, translating each
+  // text-bearing element. <w:t> contributes its textContent (which
+  // already preserves spaces because XML preserves whitespace inside
+  // text nodes), <w:tab/> becomes '\t', <w:br/> becomes '\n'. Without
+  // this walk, paragraphs that contain tabs (e.g. "Subject:\tTitle")
+  // get parsed as "Subject:Title" with no separator.
+  const text = extractRunText(p);
 
   // Bookmarks: w:bookmarkStart and w:bookmarkEnd are siblings of paragraphs
   // OR can appear inside a paragraph. For Phase 1a we only track those
@@ -193,6 +211,48 @@ function parseParagraph(p: Element, index: number): ParagraphInfo {
     in_table: ancestors.in_table,
     el: p,
   };
+}
+
+/**
+ * Recursively walk paragraph (or run) descendants in document order
+ * and produce a text representation that preserves tabs and line
+ * breaks. We collect text from <w:t>, '\t' from <w:tab/>, '\n' from
+ * <w:br/>, and recurse into containers (runs, sdt content, etc.).
+ */
+function extractRunText(scope: Element): string {
+  const parts: string[] = [];
+  collect(scope, parts);
+  return parts.join('');
+}
+
+function collect(node: Element, out: string[]): void {
+  for (let i = 0; i < node.childNodes.length; i++) {
+    const child = node.childNodes[i]!;
+    if (child.nodeType !== 1) continue; // ELEMENT_NODE only
+    const el = child as Element;
+    if (el.namespaceURI !== W_NS) {
+      // Recurse into non-W elements just in case (rare)
+      collect(el, out);
+      continue;
+    }
+    const local = el.localName;
+    if (local === 't') {
+      out.push(el.textContent ?? '');
+    } else if (local === 'tab') {
+      out.push('\t');
+    } else if (local === 'br') {
+      out.push('\n');
+    } else if (local === 'cr') {
+      out.push('\n');
+    } else if (local === 'noBreakHyphen') {
+      out.push('\u2011');
+    } else if (local === 'softHyphen') {
+      // soft hyphens are invisible unless line breaks; skip
+    } else {
+      // Containers: w:r, w:sdt, w:sdtContent, w:smartTag, w:hyperlink, etc.
+      collect(el, out);
+    }
+  }
 }
 
 function isToggleOn(el: Element | undefined): boolean {
