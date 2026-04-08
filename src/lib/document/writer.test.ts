@@ -14,7 +14,7 @@ function loadFixture(name: string): Uint8Array {
 }
 
 describe('exportEditedDocx (clone-and-mutate writer)', () => {
-  it('round-trips a real DOCX without changes when no overrides are given', async () => {
+  it('round-trips a real DOCX without changes when no overrides are given (no-op passthrough)', async () => {
     const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
     const result = await exportEditedDocx(original, {});
     expect(result.applied).toBe(0);
@@ -25,6 +25,84 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
       docx_blob_id: 'test',
     });
     expect(reparsed.paragraphs.length).toBeGreaterThan(0);
+  });
+
+  it('no-op round-trip is structurally identical to the original (every paragraph matches)', async () => {
+    const fixtures = [
+      'DHA-Policy Memo Template (April 8 2025).docx',
+      'DHA Publication Template (updated 09.13.23).docx',
+    ];
+    for (const f of fixtures) {
+      const original = loadFixture(f);
+      const before = await parseDocx(original, { filename: f, docx_blob_id: 'before' });
+      const result = await exportEditedDocx(original, {});
+      const after = await parseDocx(result.blob, { filename: f, docx_blob_id: 'after' });
+
+      // Body paragraph counts and contents must match exactly.
+      expect(after.paragraphs.length).toBe(before.paragraphs.length);
+      for (let i = 0; i < before.paragraphs.length; i++) {
+        const b = before.paragraphs[i]!;
+        const a = after.paragraphs[i]!;
+        expect(a.index).toBe(b.index);
+        expect(a.text).toBe(b.text);
+        expect(a.style_id).toBe(b.style_id);
+        expect(a.alignment).toBe(b.alignment);
+        expect(a.indent_left_twips).toBe(b.indent_left_twips);
+        expect(a.bold).toBe(b.bold);
+        expect(a.italic).toBe(b.italic);
+        expect(a.in_table).toBe(b.in_table);
+        expect(a.content_control_tag).toBe(b.content_control_tag);
+        expect(a.numbering_id).toBe(b.numbering_id);
+        expect(a.numbering_level).toBe(b.numbering_level);
+      }
+
+      // Header and footer parts must also be unchanged.
+      expect(after.header_parts.length).toBe(before.header_parts.length);
+      for (let h = 0; h < before.header_parts.length; h++) {
+        expect(after.header_parts[h]!.paragraphs.length).toBe(before.header_parts[h]!.paragraphs.length);
+        for (let i = 0; i < before.header_parts[h]!.paragraphs.length; i++) {
+          expect(after.header_parts[h]!.paragraphs[i]!.text).toBe(
+            before.header_parts[h]!.paragraphs[i]!.text,
+          );
+        }
+      }
+      expect(after.footer_parts.length).toBe(before.footer_parts.length);
+      for (let f2 = 0; f2 < before.footer_parts.length; f2++) {
+        expect(after.footer_parts[f2]!.paragraphs.length).toBe(before.footer_parts[f2]!.paragraphs.length);
+      }
+
+      // Formatting metadata must also match.
+      expect(after.schema.formatting.named_styles.length).toBe(before.schema.formatting.named_styles.length);
+      expect(after.schema.formatting.numbering_definitions.length).toBe(before.schema.formatting.numbering_definitions.length);
+      expect(after.schema.formatting.page_setup).toEqual(before.schema.formatting.page_setup);
+    }
+  });
+
+  it('edited round-trip preserves all UNTOUCHED paragraphs identically', async () => {
+    // Confirm that editing one paragraph doesn't disturb any other
+    // paragraph's text, style, or properties — the surgical-edit
+    // contract.
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'before.docx', docx_blob_id: 'b' });
+    const targetIdx = before.paragraphs.find((p) => p.text.trim().length > 5)!.index;
+
+    const result = await exportEditedDocx(original, { [targetIdx]: 'NEW TEXT FOR ONE PARAGRAPH' });
+    const after = await parseDocx(result.blob, { filename: 'after.docx', docx_blob_id: 'a' });
+
+    expect(after.paragraphs.length).toBe(before.paragraphs.length);
+    for (let i = 0; i < before.paragraphs.length; i++) {
+      const b = before.paragraphs[i]!;
+      const a = after.paragraphs[i]!;
+      if (b.index === targetIdx) {
+        expect(a.text).toContain('NEW TEXT FOR ONE PARAGRAPH');
+        expect(a.style_id).toBe(b.style_id);
+        expect(a.in_table).toBe(b.in_table);
+      } else {
+        expect(a.text).toBe(b.text);
+        expect(a.style_id).toBe(b.style_id);
+        expect(a.alignment).toBe(b.alignment);
+      }
+    }
   });
 
   it('replaces a paragraph text in place and preserves the count', async () => {
