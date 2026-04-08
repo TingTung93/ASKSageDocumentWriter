@@ -52,7 +52,15 @@ const SYSTEM_PROMPT = `You are a careful editor reviewing a finished government 
 
 You will be shown a CHUNK of the document at a time. Each paragraph is labeled with its absolute index in the full document (the same indices the writer uses to apply your edits). Even though you only see a window, you MUST still emit edits for any paragraph in this window that needs one — do not defer to "the next chunk" and do not rewrite the chunk wholesale.
 
-You have a TYPED OP CATALOG you can emit. Pick the NARROWEST op for each change so the writer can preserve the maximum amount of surrounding formatting. If only one run inside a paragraph needs changing, use replace_run_text — do NOT replace the whole paragraph.
+You have a TYPED OP CATALOG you can emit. Pick the NARROWEST op for each change so the writer can preserve the maximum amount of surrounding formatting.
+
+CRITICAL — UNDERSTAND WHAT A "RUN" IS BEFORE EMITTING replace_run_text
+A "run" (<w:r> in OOXML) is a tiny formatting fragment, NOT a sentence or a paragraph. Word splits a paragraph into multiple runs whenever the formatting changes — at every bold span, italic span, hyperlink, font change, or color change. A typical paragraph has 1-10 runs. The DOCUMENT CHUNK below shows you each paragraph's runs explicitly with their actual text content. Read them carefully:
+- A run with text "Procure and deploy " (note the trailing space) is ONLY 19 characters.
+- If you want to rewrite "Procure and deploy " into "Procure and deploy a NAS/DAS/SAS enclosure in a RAID 6 configuration..." (380 characters), the rewrite SPANS the run boundary into the rest of the paragraph. The correct op is replace_paragraph_text — NOT replace_run_text with run_index 0.
+- replace_run_text replaces ONLY that one tiny fragment. Whatever runs come after it stay in place. If you give it a new_text longer than the run, the surplus does NOT spill over — the writer leaves the rest of the paragraph stranded after your new content, producing visible duplication.
+
+RULE: only use replace_run_text when your new_text is roughly the same length as the run's original text (give or take a few characters for typo fixes). For any rewrite that's substantially longer than the original run, use replace_paragraph_text. The system will auto-promote disproportionate replace_run_text ops to paragraph rewrites, but it's better to emit the right op the first time.
 
 You output STRICT JSON only — no markdown code fences, no commentary outside the JSON:
 
@@ -60,44 +68,71 @@ You output STRICT JSON only — no markdown code fences, no commentary outside t
   "edits": [ <op> , ... ]
 }
 
-OP CATALOG (use the narrowest op that does the job):
+OP CATALOG (pick the narrowest op that does the job):
 
-1. replace_paragraph_text — replace the entire visible text of one paragraph
+TEXT
+1. replace_paragraph_text — replace ALL visible text of one paragraph. Use this for any rewrite that spans more than one run.
    { "op": "replace_paragraph_text", "index": <int>, "new_text": "...", "rationale": "..." }
 
-2. replace_run_text — replace the text of ONE run inside a paragraph (preserves bold/italic spans on other runs in the same paragraph). Prefer this over replace_paragraph_text when only part of a paragraph needs changing.
+2. replace_run_text — replace ONE run's text. Use ONLY when the new text is comparable in length to the original run's text.
    { "op": "replace_run_text", "paragraph_index": <int>, "run_index": <int>, "new_text": "...", "rationale": "..." }
 
-3. set_run_property — toggle bold / italic / underline / strike on a specific run
-   { "op": "set_run_property", "paragraph_index": <int>, "run_index": <int>, "property": "bold" | "italic" | "underline" | "strike", "value": true | false, "rationale": "..." }
+STRUCTURE
+3. insert_paragraph_after — add a NEW paragraph after the given index. The new paragraph inherits formatting from the anchor unless you set style_id. Use this to add missing topic sentences, transitions, or signature blocks.
+   { "op": "insert_paragraph_after", "index": <int>, "new_text": "...", "style_id": "<optional pStyle id>", "rationale": "..." }
 
-4. set_cell_text — replace the visible text of one table cell
-   { "op": "set_cell_text", "table_index": <int>, "row_index": <int>, "cell_index": <int>, "new_text": "...", "rationale": "..." }
+4. merge_paragraphs — combine paragraph N with paragraph N+1. Use this to fix accidental fragmentation. The separator defaults to a single space; pass "" to concatenate without spacing.
+   { "op": "merge_paragraphs", "index": <int>, "separator": " ", "rationale": "..." }
 
-5. insert_table_row — clone a row and insert a new one after it (preserves the row's formatting / column widths / borders)
-   { "op": "insert_table_row", "table_index": <int>, "after_row_index": <int>, "cells": ["cell 1 text", "cell 2 text", ...], "rationale": "..." }
+5. split_paragraph — break one paragraph into two at a verbatim substring. The substring becomes the start of the new (second) paragraph.
+   { "op": "split_paragraph", "index": <int>, "split_at_text": "...", "rationale": "..." }
 
-6. delete_table_row — remove a row from a table
-   { "op": "delete_table_row", "table_index": <int>, "row_index": <int>, "rationale": "..." }
+6. delete_paragraph — remove a paragraph entirely. Use sparingly; prefer replace_paragraph_text.
+   { "op": "delete_paragraph", "index": <int>, "rationale": "..." }
 
-7. set_content_control_value — update a Word content control by tag (CUI banner, document number, classification, dates, etc. that are stored as <w:sdt> elements)
-   { "op": "set_content_control_value", "tag": "<sdt tag>", "value": "...", "rationale": "..." }
-
-8. set_paragraph_style — change a paragraph's style id (e.g., promote a paragraph to a heading)
+PARAGRAPH FORMATTING
+7. set_paragraph_style — change pStyle. Common ids: Normal, Heading1..6, BodyText, Quote, ListBullet, ListNumber.
    { "op": "set_paragraph_style", "index": <int>, "style_id": "<style id>", "rationale": "..." }
 
-9. set_paragraph_alignment — change a paragraph's alignment
-   { "op": "set_paragraph_alignment", "index": <int>, "alignment": "left" | "center" | "right" | "justify" | "both", "rationale": "..." }
+8. set_paragraph_alignment — left | center | right | justify | both.
+   { "op": "set_paragraph_alignment", "index": <int>, "alignment": "left", "rationale": "..." }
 
-10. delete_paragraph — remove a paragraph entirely (use sparingly; prefer replacing with corrected text)
-    { "op": "delete_paragraph", "index": <int>, "rationale": "..." }
+9. set_paragraph_indent — set left, first-line, or hanging indent in twips (1440 twips = 1 inch). Pass null on a field to clear it. Omit a field to leave it unchanged.
+   { "op": "set_paragraph_indent", "paragraph_index": <int>, "left_twips": 720, "first_line_twips": 360, "rationale": "..." }
+
+10. set_paragraph_spacing — space before/after the paragraph (twips) and line spacing. line_value+line_rule together: rule "auto" with value 240 = single, 360 = 1.5x, 480 = double; rule "exact" or "atLeast" with value in twips. Pass null on a field to clear, omit to leave unchanged.
+    { "op": "set_paragraph_spacing", "paragraph_index": <int>, "before_twips": 0, "after_twips": 240, "line_value": 360, "line_rule": "auto", "rationale": "..." }
+
+RUN FORMATTING
+11. set_run_property — toggle bold / italic / underline / strike on a run.
+    { "op": "set_run_property", "paragraph_index": <int>, "run_index": <int>, "property": "bold", "value": true, "rationale": "..." }
+
+12. set_run_font — change a run's font family and/or size. Pass null to clear; omit to leave unchanged.
+    { "op": "set_run_font", "paragraph_index": <int>, "run_index": <int>, "family": "Times New Roman", "size_pt": 12, "rationale": "..." }
+
+13. set_run_color — set a run's text color (hex without #) and/or highlight (palette name like "yellow", "green", "cyan"). Pass null to clear.
+    { "op": "set_run_color", "paragraph_index": <int>, "run_index": <int>, "color": "FF0000", "highlight": null, "rationale": "..." }
+
+TABLES
+14. set_cell_text — replace one table cell's text.
+    { "op": "set_cell_text", "table_index": <int>, "row_index": <int>, "cell_index": <int>, "new_text": "...", "rationale": "..." }
+
+15. insert_table_row — clone a row and insert a new one after it.
+    { "op": "insert_table_row", "table_index": <int>, "after_row_index": <int>, "cells": ["cell 1", "cell 2"], "rationale": "..." }
+
+16. delete_table_row — remove a row from a table.
+    { "op": "delete_table_row", "table_index": <int>, "row_index": <int>, "rationale": "..." }
+
+CONTENT CONTROLS
+17. set_content_control_value — update a Word content control by tag (CUI banner, document number, classification, dates).
+    { "op": "set_content_control_value", "tag": "<sdt tag>", "value": "...", "rationale": "..." }
 
 CRITICAL CONSTRAINTS:
 - A clean chunk yields { "edits": [] }. Do not invent edits to look productive.
 - All paragraph indices MUST refer to the exact integer labels shown in the DOCUMENT CHUNK below. Out-of-range indices are silently dropped.
 - ONLY emit edits for paragraphs labeled "[edit]". Paragraphs labeled "[ctx]" are context lines from the previous/next window — read them but do NOT propose edits against them; they will be handled in their own window.
-- Prefer replace_run_text over replace_paragraph_text when only part of a paragraph changes — this preserves bold/italic spans elsewhere in the paragraph.
-- Do NOT use markdown formatting (**, _, -). Inline formatting is encoded in run properties; use set_run_property to add/remove it.
+- replace_run_text new_text length must be COMPARABLE to the original run's text length. Use replace_paragraph_text for longer rewrites.
+- Do NOT use markdown formatting (**, _, -). Inline formatting is encoded in run properties; use set_run_property and set_run_font and set_run_color.
 - Preserve specialized terminology, acronyms, citations, dates, names, and section numbers exactly as written unless they are demonstrably wrong.
 - If ATTACHED REFERENCES are provided, they are AUTHORITATIVE for facts, terminology, and citations — prefer the reference's wording over the draft's when they disagree on a verifiable fact.
 - Honor the user's instruction — it controls scope and tone of edits.
@@ -222,9 +257,14 @@ export async function requestDocumentEdits(
     let chunkOut = 0;
     try {
       const { data, raw } = await client.queryJson<DocumentEditOutput>(queryInput);
-      const ops = (data.edits ?? []).filter((op) =>
+      const rawOps = (data.edits ?? []).filter((op) =>
         isValidOp(op, validIndices, chunk.editableIndices),
       );
+      // Auto-promote run-text ops that the LLM emitted with paragraph-
+      // spanning new_text. Without this the writer leaves the rest of
+      // the original paragraph stranded after the new content. See
+      // maybePromoteRunOp() for the rule and the rationale.
+      const ops = rawOps.map((op) => maybePromoteRunOp(op, args.paragraphs));
       for (const op of ops) {
         const key = opDedupKey(op);
         if (seenOpKeys.has(key)) continue;
@@ -335,13 +375,25 @@ function isValidOp(
     case 'set_paragraph_style':
     case 'set_paragraph_alignment':
     case 'delete_paragraph':
+    case 'insert_paragraph_after':
+    case 'merge_paragraphs':
+    case 'split_paragraph':
       return (
         typeof o.index === 'number' &&
         validIndices.has(o.index) &&
         editableIndices.has(o.index)
       );
+    case 'set_paragraph_indent':
+    case 'set_paragraph_spacing':
+      return (
+        typeof o.paragraph_index === 'number' &&
+        validIndices.has(o.paragraph_index) &&
+        editableIndices.has(o.paragraph_index)
+      );
     case 'replace_run_text':
     case 'set_run_property':
+    case 'set_run_font':
+    case 'set_run_color':
       return (
         typeof o.paragraph_index === 'number' &&
         validIndices.has(o.paragraph_index) &&
@@ -359,6 +411,54 @@ function isValidOp(
     default:
       return false;
   }
+}
+
+/**
+ * The LLM frequently emits `replace_run_text` with a `new_text` that
+ * is much longer than the actual run it targets — it treats "run 0"
+ * as if it meant "the start of paragraph N" and writes a full
+ * paragraph rewrite into the new_text. The writer then dutifully
+ * replaces just that one run, leaving the remaining runs of the
+ * paragraph in place after the new content. The result in the
+ * exported DOCX is "[new full paragraph][surviving fragment of the
+ * original paragraph]" — visible duplication.
+ *
+ * Promotion rule: if a `replace_run_text` op's new_text is much
+ * longer than the targeted run's actual text length, AND the new_text
+ * is also longer than a hard floor, rewrite the op to a
+ * `replace_paragraph_text` covering the whole paragraph. The LLM's
+ * intent was clearly a paragraph rewrite; we make it actually do that.
+ *
+ * Returns the promoted op (or the original op unchanged if no
+ * promotion was warranted).
+ */
+function maybePromoteRunOp(
+  op: DocumentEditOp,
+  paragraphs: ParagraphInfo[],
+): DocumentEditOp {
+  if (op.op !== 'replace_run_text') return op;
+  const p = paragraphs[op.paragraph_index];
+  if (!p) return op;
+  const targetRun = p.runs[op.run_index];
+  if (!targetRun) return op;
+  const runLen = targetRun.text.length;
+  const newLen = op.new_text.length;
+  // Hard floor: only promote if the new content is substantial enough
+  // that we're confident the LLM meant a paragraph rewrite. Avoids
+  // promoting legitimate "fix one word" replacements.
+  if (newLen < 80) return op;
+  // Disproportion ratio: promote if the new text is more than 3x the
+  // run's actual length. A 20-char run with a 400-char replacement is
+  // a clear sign the LLM thought it was rewriting the paragraph.
+  if (newLen <= runLen * 3) return op;
+  return {
+    op: 'replace_paragraph_text',
+    index: op.paragraph_index,
+    new_text: op.new_text,
+    rationale: op.rationale
+      ? `${op.rationale} [auto-promoted from replace_run_text — original run was only ${runLen} chars but the proposed new_text is ${newLen} chars, so the writer would have left the rest of the paragraph stranded after the new content]`
+      : `[auto-promoted from replace_run_text on run ${op.run_index} (${runLen} chars) → replace_paragraph_text (${newLen} chars). The LLM emitted a paragraph-spanning rewrite under a per-run op; promoting prevents the original text from being duplicated.]`,
+  };
 }
 
 /**
@@ -388,6 +488,20 @@ function opDedupKey(op: DocumentEditOp): string {
       return `spa:${op.index}:${op.alignment}`;
     case 'delete_paragraph':
       return `dp:${op.index}`;
+    case 'insert_paragraph_after':
+      return `ipa:${op.index}:${op.new_text}`;
+    case 'merge_paragraphs':
+      return `mp:${op.index}:${op.separator ?? ' '}`;
+    case 'split_paragraph':
+      return `sp:${op.index}:${op.split_at_text}`;
+    case 'set_paragraph_indent':
+      return `spi:${op.paragraph_index}:${op.left_twips ?? '_'}:${op.first_line_twips ?? '_'}:${op.hanging_twips ?? '_'}`;
+    case 'set_paragraph_spacing':
+      return `sps2:${op.paragraph_index}:${op.before_twips ?? '_'}:${op.after_twips ?? '_'}:${op.line_value ?? '_'}:${op.line_rule ?? '_'}`;
+    case 'set_run_font':
+      return `srf:${op.paragraph_index}:${op.run_index}:${op.family ?? '_'}:${op.size_pt ?? '_'}`;
+    case 'set_run_color':
+      return `src:${op.paragraph_index}:${op.run_index}:${op.color ?? '_'}:${op.highlight ?? '_'}`;
   }
 }
 
@@ -421,12 +535,21 @@ function buildEditMessage(a: BuildEditMessageArgs): string {
   }
   lines.push(`=== DOCUMENT CHUNK ===`);
   lines.push(
-    `Each line is one paragraph. The format is: <gate>[<index>]<flags> <text>. The gate is "[edit]" for paragraphs you may propose edits against, or "[ctx]" for read-only context paragraphs from the neighboring chunk. Indices are absolute over the full document. Flags appear in {curly braces} only when present and describe formatting context (style id, alignment, indent, list level). Use them to understand the role of the paragraph — e.g. don't rewrite a centered title as left-aligned body text.`,
+    `Each paragraph is rendered as a header line plus one indented line per <w:r> run. The header format is: <gate>[<index>]<flags> <text>. The gate is "[edit]" for paragraphs you may propose edits against, or "[ctx]" for read-only context paragraphs from the neighboring chunk. Indices are absolute over the full document. Flags appear in {curly braces} only when present and describe formatting context (style id, alignment, indent, list level). The run lines below the header show each run's index and verbatim text — this is what replace_run_text and set_run_* ops target. Pay attention to run lengths: replace_run_text only works for replacements comparable in size to the original run.`,
   );
   lines.push(``);
   for (const p of a.chunk.paragraphs) {
     const gate = a.chunk.editableIndices.has(p.index) ? '[edit]' : '[ctx] ';
     lines.push(`${gate}[${p.index}]${formatParagraphFlags(p)} ${p.text}`);
+    // Render runs only when the paragraph has more than one — single-
+    // run paragraphs don't add information and inflate token use.
+    if (p.runs.length > 1) {
+      for (let i = 0; i < p.runs.length; i++) {
+        const run = p.runs[i]!;
+        const text = run.text.length > 0 ? JSON.stringify(run.text) : '""';
+        lines.push(`    run[${i}] (${run.text.length} chars): ${text}`);
+      }
+    }
   }
   lines.push(`=== END DOCUMENT CHUNK ===`);
   lines.push(``);

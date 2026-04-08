@@ -242,6 +242,69 @@ export async function applyDocumentEdits(
           applied.push({ op: op.op, success: true });
           break;
         }
+        case 'insert_paragraph_after': {
+          const p = paragraphs[op.index];
+          if (!p) throw new Error(`paragraph index ${op.index} out of range`);
+          insertParagraphAfter(dom, p, op.new_text, op.style_id);
+          paragraphs = listBodyParagraphs(dom);
+          tables = listTables(dom);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'merge_paragraphs': {
+          const p1 = paragraphs[op.index];
+          const p2 = paragraphs[op.index + 1];
+          if (!p1) throw new Error(`paragraph index ${op.index} out of range`);
+          if (!p2) throw new Error(`merge_paragraphs: no paragraph at index ${op.index + 1} to merge into ${op.index}`);
+          mergeParagraphs(dom, p1, p2, op.separator ?? ' ');
+          paragraphs = listBodyParagraphs(dom);
+          tables = listTables(dom);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'split_paragraph': {
+          const p = paragraphs[op.index];
+          if (!p) throw new Error(`paragraph index ${op.index} out of range`);
+          splitParagraph(dom, p, op.split_at_text);
+          paragraphs = listBodyParagraphs(dom);
+          tables = listTables(dom);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'set_paragraph_indent': {
+          const p = paragraphs[op.paragraph_index];
+          if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
+          setParagraphIndent(dom, p, op.left_twips, op.first_line_twips, op.hanging_twips);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'set_paragraph_spacing': {
+          const p = paragraphs[op.paragraph_index];
+          if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
+          setParagraphSpacing(dom, p, op.before_twips, op.after_twips, op.line_value, op.line_rule);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'set_run_font': {
+          const p = paragraphs[op.paragraph_index];
+          if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
+          const runs = listRuns(p);
+          const r = runs[op.run_index];
+          if (!r) throw new Error(`run index ${op.run_index} out of range`);
+          setRunFont(dom, r, op.family, op.size_pt);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
+        case 'set_run_color': {
+          const p = paragraphs[op.paragraph_index];
+          if (!p) throw new Error(`paragraph index ${op.paragraph_index} out of range`);
+          const runs = listRuns(p);
+          const r = runs[op.run_index];
+          if (!r) throw new Error(`run index ${op.run_index} out of range`);
+          setRunColor(dom, r, op.color, op.highlight);
+          applied.push({ op: op.op, success: true });
+          break;
+        }
         default: {
           const _exhaustive: never = op;
           throw new Error(`unknown op: ${JSON.stringify(_exhaustive)}`);
@@ -541,6 +604,292 @@ async function toBlob(input: ArrayBuffer | Uint8Array | Blob): Promise<Blob> {
  * gets flattened) but preserves the paragraph's style id, alignment,
  * indentation, list membership, and any surrounding XML structure.
  */
+// ─── Phase E: structural ops (insert / merge / split) ───────────
+
+/**
+ * Insert a new paragraph immediately after `anchor`. The new paragraph
+ * inherits the anchor's pPr (so it picks up the same style, alignment,
+ * indentation, list membership) unless `styleId` is provided, in
+ * which case the cloned pPr's pStyle is overwritten.
+ */
+function insertParagraphAfter(
+  dom: Document,
+  anchor: Element,
+  newText: string,
+  styleId?: string,
+): void {
+  const newP = dom.createElementNS(W_NS, 'w:p');
+  // Clone the anchor's pPr so the new paragraph picks up its formatting.
+  const anchorPPr = anchor.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (anchorPPr) {
+    const clonedPPr = anchorPPr.cloneNode(true) as Element;
+    newP.appendChild(clonedPPr);
+    if (styleId) {
+      let pStyle = clonedPPr.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+      if (!pStyle) {
+        pStyle = dom.createElementNS(W_NS, 'w:pStyle');
+        clonedPPr.insertBefore(pStyle, clonedPPr.firstChild);
+      }
+      pStyle.setAttributeNS(W_NS, 'w:val', styleId);
+    }
+  } else if (styleId) {
+    const pPr = dom.createElementNS(W_NS, 'w:pPr');
+    const pStyle = dom.createElementNS(W_NS, 'w:pStyle');
+    pStyle.setAttributeNS(W_NS, 'w:val', styleId);
+    pPr.appendChild(pStyle);
+    newP.appendChild(pPr);
+  }
+  // Add a single run carrying the new text.
+  const r = dom.createElementNS(W_NS, 'w:r');
+  const t = dom.createElementNS(W_NS, 'w:t');
+  t.setAttribute('xml:space', 'preserve');
+  t.textContent = newText;
+  r.appendChild(t);
+  newP.appendChild(r);
+  // Insert after the anchor in the parent.
+  const parent = anchor.parentNode;
+  if (!parent) throw new Error('insertParagraphAfter: anchor has no parent');
+  if (anchor.nextSibling) {
+    parent.insertBefore(newP, anchor.nextSibling);
+  } else {
+    parent.appendChild(newP);
+  }
+}
+
+/**
+ * Merge paragraph `p2` into `p1` and remove `p2`. The combined text
+ * lives in `p1`'s first run; the separator is appended between the
+ * two paragraphs' visible text. `p1`'s pPr is preserved (so the
+ * resulting merged paragraph keeps p1's style/alignment/indent).
+ */
+function mergeParagraphs(dom: Document, p1: Element, p2: Element, separator: string): void {
+  const text1 = collectVisibleText(p1);
+  const text2 = collectVisibleText(p2);
+  const combined = `${text1}${separator}${text2}`;
+  replaceParagraphText(dom, p1, combined);
+  p2.parentNode?.removeChild(p2);
+}
+
+/**
+ * Split paragraph `p` at the first occurrence of `splitAtText`. The
+ * split point becomes the start of a new paragraph inserted after
+ * `p`. The new paragraph inherits `p`'s pPr (style, alignment, etc).
+ * Throws if `splitAtText` is not found in the paragraph's visible
+ * text.
+ */
+function splitParagraph(dom: Document, p: Element, splitAtText: string): void {
+  const fullText = collectVisibleText(p);
+  const splitIdx = fullText.indexOf(splitAtText);
+  if (splitIdx === -1) {
+    throw new Error(
+      `split_paragraph: split_at_text not found in paragraph (looked for "${splitAtText.slice(0, 60)}${splitAtText.length > 60 ? '…' : ''}" in "${fullText.slice(0, 80)}${fullText.length > 80 ? '…' : ''}")`,
+    );
+  }
+  const before = fullText.slice(0, splitIdx);
+  const after = fullText.slice(splitIdx);
+  // Replace the original paragraph's text with the "before" half.
+  replaceParagraphText(dom, p, before);
+  // Insert a new paragraph after `p` carrying the "after" half.
+  // The styleId is undefined so insertParagraphAfter clones p's pPr.
+  insertParagraphAfter(dom, p, after, undefined);
+}
+
+/** Collect all `<w:t>` text from a paragraph in document order. */
+function collectVisibleText(p: Element): string {
+  const ts = Array.from(p.getElementsByTagNameNS(W_NS, 't'));
+  return ts.map((t) => t.textContent ?? '').join('');
+}
+
+// ─── Phase F: paragraph & run formatting ────────────────────────
+
+/**
+ * Set / clear the indent fields on a paragraph. Each field is
+ * tri-state: undefined = leave unchanged, null = clear the attribute,
+ * number = set the attribute. We mutate `<w:ind>` inside `<w:pPr>`,
+ * creating either as needed.
+ */
+function setParagraphIndent(
+  dom: Document,
+  p: Element,
+  left_twips: number | null | undefined,
+  first_line_twips: number | null | undefined,
+  hanging_twips: number | null | undefined,
+): void {
+  let pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (!pPr) {
+    pPr = dom.createElementNS(W_NS, 'w:pPr');
+    p.insertBefore(pPr, p.firstChild);
+  }
+  let ind = pPr.getElementsByTagNameNS(W_NS, 'ind')[0];
+  if (!ind) {
+    ind = dom.createElementNS(W_NS, 'w:ind');
+    pPr.appendChild(ind);
+  }
+  applyTwipAttr(ind, 'w:left', left_twips);
+  applyTwipAttr(ind, 'w:firstLine', first_line_twips);
+  applyTwipAttr(ind, 'w:hanging', hanging_twips);
+  // If every attribute was cleared, drop the empty <w:ind> element so
+  // the document doesn't carry no-op nodes.
+  if (ind.attributes.length === 0) {
+    ind.parentNode?.removeChild(ind);
+  }
+}
+
+/**
+ * Set / clear paragraph spacing fields on `<w:spacing>` inside `<w:pPr>`.
+ * Same tri-state semantics as setParagraphIndent.
+ */
+function setParagraphSpacing(
+  dom: Document,
+  p: Element,
+  before_twips: number | null | undefined,
+  after_twips: number | null | undefined,
+  line_value: number | null | undefined,
+  line_rule: 'auto' | 'exact' | 'atLeast' | undefined,
+): void {
+  let pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+  if (!pPr) {
+    pPr = dom.createElementNS(W_NS, 'w:pPr');
+    p.insertBefore(pPr, p.firstChild);
+  }
+  let spacing = pPr.getElementsByTagNameNS(W_NS, 'spacing')[0];
+  if (!spacing) {
+    spacing = dom.createElementNS(W_NS, 'w:spacing');
+    pPr.appendChild(spacing);
+  }
+  applyTwipAttr(spacing, 'w:before', before_twips);
+  applyTwipAttr(spacing, 'w:after', after_twips);
+  if (line_value !== undefined) {
+    if (line_value === null) {
+      spacing.removeAttributeNS(W_NS, 'line');
+      spacing.removeAttributeNS(W_NS, 'lineRule');
+    } else {
+      spacing.setAttributeNS(W_NS, 'w:line', String(line_value));
+      if (line_rule) {
+        spacing.setAttributeNS(W_NS, 'w:lineRule', line_rule);
+      }
+    }
+  } else if (line_rule) {
+    spacing.setAttributeNS(W_NS, 'w:lineRule', line_rule);
+  }
+  if (spacing.attributes.length === 0) {
+    spacing.parentNode?.removeChild(spacing);
+  }
+}
+
+/** Helper for the tri-state twip attribute pattern. */
+function applyTwipAttr(el: Element, qname: string, value: number | null | undefined): void {
+  if (value === undefined) return;
+  const localName = qname.startsWith('w:') ? qname.slice(2) : qname;
+  if (value === null) {
+    el.removeAttributeNS(W_NS, localName);
+  } else {
+    el.setAttributeNS(W_NS, qname, String(value));
+  }
+}
+
+/**
+ * Set / clear a run's font family and/or size. Mutates `<w:rFonts>`
+ * and `<w:sz>` inside the run's `<w:rPr>`. Tri-state: undefined =
+ * leave unchanged, null = clear, value = set.
+ */
+function setRunFont(
+  dom: Document,
+  r: Element,
+  family: string | null | undefined,
+  size_pt: number | null | undefined,
+): void {
+  const rPr = ensureRPr(dom, r);
+  if (family !== undefined) {
+    if (family === null) {
+      const existing = rPr.getElementsByTagNameNS(W_NS, 'rFonts')[0];
+      if (existing) rPr.removeChild(existing);
+    } else {
+      let rFonts = rPr.getElementsByTagNameNS(W_NS, 'rFonts')[0];
+      if (!rFonts) {
+        rFonts = dom.createElementNS(W_NS, 'w:rFonts');
+        rPr.appendChild(rFonts);
+      }
+      // Set all four font slots so it sticks regardless of script.
+      rFonts.setAttributeNS(W_NS, 'w:ascii', family);
+      rFonts.setAttributeNS(W_NS, 'w:hAnsi', family);
+      rFonts.setAttributeNS(W_NS, 'w:cs', family);
+      rFonts.setAttributeNS(W_NS, 'w:eastAsia', family);
+    }
+  }
+  if (size_pt !== undefined) {
+    if (size_pt === null) {
+      const existingSz = rPr.getElementsByTagNameNS(W_NS, 'sz')[0];
+      if (existingSz) rPr.removeChild(existingSz);
+      const existingSzCs = rPr.getElementsByTagNameNS(W_NS, 'szCs')[0];
+      if (existingSzCs) rPr.removeChild(existingSzCs);
+    } else {
+      // Word stores font size in HALF-points.
+      const halfPoints = String(Math.round(size_pt * 2));
+      let sz = rPr.getElementsByTagNameNS(W_NS, 'sz')[0];
+      if (!sz) {
+        sz = dom.createElementNS(W_NS, 'w:sz');
+        rPr.appendChild(sz);
+      }
+      sz.setAttributeNS(W_NS, 'w:val', halfPoints);
+      let szCs = rPr.getElementsByTagNameNS(W_NS, 'szCs')[0];
+      if (!szCs) {
+        szCs = dom.createElementNS(W_NS, 'w:szCs');
+        rPr.appendChild(szCs);
+      }
+      szCs.setAttributeNS(W_NS, 'w:val', halfPoints);
+    }
+  }
+}
+
+/**
+ * Set / clear a run's text color (hex without #) and/or highlight
+ * (Word palette name). Pass null to clear. Empty string is treated
+ * as null for color.
+ */
+function setRunColor(
+  dom: Document,
+  r: Element,
+  color: string | null,
+  highlight: string | null | undefined,
+): void {
+  const rPr = ensureRPr(dom, r);
+  if (color === null || color === '' || color === 'auto') {
+    const existing = rPr.getElementsByTagNameNS(W_NS, 'color')[0];
+    if (existing) rPr.removeChild(existing);
+  } else {
+    let colorEl = rPr.getElementsByTagNameNS(W_NS, 'color')[0];
+    if (!colorEl) {
+      colorEl = dom.createElementNS(W_NS, 'w:color');
+      rPr.appendChild(colorEl);
+    }
+    colorEl.setAttributeNS(W_NS, 'w:val', color.replace(/^#/, ''));
+  }
+  if (highlight !== undefined) {
+    if (highlight === null || highlight === '') {
+      const existing = rPr.getElementsByTagNameNS(W_NS, 'highlight')[0];
+      if (existing) rPr.removeChild(existing);
+    } else {
+      let h = rPr.getElementsByTagNameNS(W_NS, 'highlight')[0];
+      if (!h) {
+        h = dom.createElementNS(W_NS, 'w:highlight');
+        rPr.appendChild(h);
+      }
+      h.setAttributeNS(W_NS, 'w:val', highlight);
+    }
+  }
+}
+
+/** Get-or-create the `<w:rPr>` element for a run. */
+function ensureRPr(dom: Document, r: Element): Element {
+  let rPr = r.getElementsByTagNameNS(W_NS, 'rPr')[0];
+  if (!rPr) {
+    rPr = dom.createElementNS(W_NS, 'w:rPr');
+    r.insertBefore(rPr, r.firstChild);
+  }
+  return rPr;
+}
+
 function replaceParagraphText(dom: Document, p: Element, newText: string): void {
   const textEls = Array.from(p.getElementsByTagNameNS(W_NS, 't'));
 

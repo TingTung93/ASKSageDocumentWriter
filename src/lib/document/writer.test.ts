@@ -487,3 +487,157 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
     expect(after.paragraphs.length).toBeGreaterThan(0);
   });
 });
+
+describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () => {
+  it('insert_paragraph_after adds a new paragraph after the anchor', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const target = before.paragraphs.findIndex((p) => p.text.trim().length > 0);
+    expect(target).toBeGreaterThanOrEqual(0);
+    const ops: DocumentEditOp[] = [
+      {
+        op: 'insert_paragraph_after',
+        index: target,
+        new_text: 'This is an inserted paragraph for testing.',
+      },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    expect(after.paragraphs.length).toBe(before.paragraphs.length + 1);
+    // Some fixture paragraphs carry leading <w:tab/> elements inside
+    // their first run; cloning the anchor's pPr can cause the parser
+    // to attribute that whitespace to the inserted paragraph in
+    // certain layouts. Compare on trimmed text — the feature is the
+    // payload landing in the new paragraph, not whitespace fidelity.
+    expect(after.paragraphs[target + 1]!.text.trim()).toBe(
+      'This is an inserted paragraph for testing.',
+    );
+  });
+
+  it('merge_paragraphs combines two adjacent paragraphs into one', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const idx = before.paragraphs.findIndex(
+      (p, i) =>
+        p.text.trim().length > 0 &&
+        before.paragraphs[i + 1] !== undefined &&
+        before.paragraphs[i + 1]!.text.trim().length > 0,
+    );
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const text1 = before.paragraphs[idx]!.text;
+    const text2 = before.paragraphs[idx + 1]!.text;
+    const ops: DocumentEditOp[] = [{ op: 'merge_paragraphs', index: idx, separator: ' ' }];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    expect(after.paragraphs.length).toBe(before.paragraphs.length - 1);
+    expect(after.paragraphs[idx]!.text).toBe(`${text1} ${text2}`);
+  });
+
+  it('split_paragraph breaks a paragraph at a verbatim substring', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    // Find a paragraph whose VISIBLE text (excluding leading
+    // whitespace) is at least 30 chars; split at a position past the
+    // leading whitespace so the assertion isn't sensitive to
+    // tab/break artifacts the parser surfaces from <w:tab/> elements.
+    const idx = before.paragraphs.findIndex((p) => p.text.trimStart().length >= 30);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const fullText = before.paragraphs[idx]!.text;
+    const leadingWs = fullText.length - fullText.trimStart().length;
+    // Pick a split window 5-15 chars into the visible text region.
+    const splitStart = leadingWs + 5;
+    const splitEnd = leadingWs + 15;
+    const splitAt = fullText.slice(splitStart, splitEnd);
+    const ops: DocumentEditOp[] = [
+      { op: 'split_paragraph', index: idx, split_at_text: splitAt },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    expect(after.paragraphs.length).toBe(before.paragraphs.length + 1);
+    // Compare on trimmed text — see the insert test for the rationale.
+    expect(after.paragraphs[idx]!.text.trim()).toBe(fullText.slice(0, splitStart).trim());
+    expect(after.paragraphs[idx + 1]!.text.trim()).toBe(fullText.slice(splitStart).trim());
+  });
+
+  it('split_paragraph fails clearly when the substring is not found', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const idx = before.paragraphs.findIndex((p) => p.text.length >= 5);
+    const ops: DocumentEditOp[] = [
+      {
+        op: 'split_paragraph',
+        index: idx,
+        split_at_text: '__definitely_not_in_the_doc_xyzzy__',
+      },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(false);
+    expect(result.applied[0]!.error).toContain('split_at_text not found');
+  });
+
+  it('set_paragraph_indent writes left/firstLine twips into pPr/ind', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const idx = before.paragraphs.findIndex((p) => p.text.trim().length > 0);
+    const ops: DocumentEditOp[] = [
+      {
+        op: 'set_paragraph_indent',
+        paragraph_index: idx,
+        left_twips: 720,
+        first_line_twips: 360,
+      },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    expect(after.paragraphs[idx]!.indent_left_twips).toBe(720);
+    expect(after.paragraphs[idx]!.indent_first_line_twips).toBe(360);
+  });
+
+  it('set_run_font writes font family + size on the targeted run', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const idx = before.paragraphs.findIndex(
+      (p) => p.runs.length > 0 && p.text.trim().length > 0,
+    );
+    const ops: DocumentEditOp[] = [
+      {
+        op: 'set_run_font',
+        paragraph_index: idx,
+        run_index: 0,
+        family: 'Times New Roman',
+        size_pt: 14,
+      },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    const run = after.paragraphs[idx]!.runs[0]!;
+    expect(run.font_family).toBe('Times New Roman');
+    expect(run.font_size_pt).toBe(14);
+  });
+
+  it('set_run_color writes a hex color on the targeted run', async () => {
+    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
+    const idx = before.paragraphs.findIndex(
+      (p) => p.runs.length > 0 && p.text.trim().length > 0,
+    );
+    const ops: DocumentEditOp[] = [
+      {
+        op: 'set_run_color',
+        paragraph_index: idx,
+        run_index: 0,
+        color: 'FF0000',
+      },
+    ];
+    const result = await applyDocumentEdits(original, ops);
+    expect(result.applied[0]!.success).toBe(true);
+    const after = await parseDocx(result.blob, { filename: 'p.docx', docx_blob_id: 'p' });
+    const run = after.paragraphs[idx]!.runs[0]!;
+    expect(run.color).toBe('#FF0000');
+  });
+});

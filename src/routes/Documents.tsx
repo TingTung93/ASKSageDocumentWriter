@@ -831,9 +831,16 @@ function paragraphAnchorOf(edit: StoredEdit): number | null {
     case 'set_paragraph_style':
     case 'set_paragraph_alignment':
     case 'delete_paragraph':
+    case 'insert_paragraph_after':
+    case 'merge_paragraphs':
+    case 'split_paragraph':
       return op.index;
     case 'replace_run_text':
     case 'set_run_property':
+    case 'set_run_font':
+    case 'set_run_color':
+    case 'set_paragraph_indent':
+    case 'set_paragraph_spacing':
       return op.paragraph_index;
     default:
       return null;
@@ -853,9 +860,16 @@ function editAnchorIndex(edit: StoredEdit): number {
     case 'set_paragraph_style':
     case 'set_paragraph_alignment':
     case 'delete_paragraph':
+    case 'insert_paragraph_after':
+    case 'merge_paragraphs':
+    case 'split_paragraph':
       return op.index;
     case 'replace_run_text':
     case 'set_run_property':
+    case 'set_run_font':
+    case 'set_run_color':
+    case 'set_paragraph_indent':
+    case 'set_paragraph_spacing':
       return op.paragraph_index;
     case 'set_cell_text':
       return 1_000_000 + op.table_index * 1000 + op.row_index * 10 + op.cell_index;
@@ -941,6 +955,20 @@ function editTitle(edit: StoredEdit): string {
       return `Paragraph #${op.index} — set alignment to ${op.alignment}`;
     case 'delete_paragraph':
       return `Paragraph #${op.index} — delete`;
+    case 'insert_paragraph_after':
+      return `Paragraph #${op.index} — insert new paragraph after`;
+    case 'merge_paragraphs':
+      return `Paragraph #${op.index} — merge with #${op.index + 1}`;
+    case 'split_paragraph':
+      return `Paragraph #${op.index} — split at "${op.split_at_text.slice(0, 30)}${op.split_at_text.length > 30 ? '…' : ''}"`;
+    case 'set_paragraph_indent':
+      return `Paragraph #${op.paragraph_index} — set indent`;
+    case 'set_paragraph_spacing':
+      return `Paragraph #${op.paragraph_index} — set spacing`;
+    case 'set_run_font':
+      return `Paragraph #${op.paragraph_index} run #${op.run_index} — set font${op.family ? ` ${op.family}` : ''}${op.size_pt ? ` ${op.size_pt}pt` : ''}`;
+    case 'set_run_color':
+      return `Paragraph #${op.paragraph_index} run #${op.run_index} — set color${op.color ? ` #${op.color}` : ' (clear)'}`;
   }
 }
 
@@ -1076,6 +1104,98 @@ function EditBody({ edit }: { edit: StoredEdit }) {
       return (
         <div style={{ marginTop: '0.4rem', fontSize: 12, color: '#900' }}>
           Will remove row {op.row_index} from table {op.table_index}.
+        </div>
+      );
+    case 'insert_paragraph_after':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#666' }}>NEW PARAGRAPH</div>
+          <div style={{ background: '#efe', padding: '0.4rem', border: '1px solid #cfc', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+            {op.new_text}
+          </div>
+          {op.style_id && (
+            <div className="note" style={{ marginTop: '0.25rem' }}>
+              Style: <code>{op.style_id}</code>
+            </div>
+          )}
+        </div>
+      );
+    case 'merge_paragraphs':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          Merge paragraph #{op.index} with paragraph #{op.index + 1}.
+          {op.separator !== undefined && (
+            <> Separator: <code>{op.separator === '' ? '(none)' : `"${op.separator}"`}</code></>
+          )}
+        </div>
+      );
+    case 'split_paragraph':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, color: '#666' }}>SPLIT AT</div>
+          <div style={{ background: '#f4f4f4', padding: '0.4rem', border: '1px solid #ddd', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'var(--font-mono)' }}>
+            {op.split_at_text}
+          </div>
+        </div>
+      );
+    case 'set_paragraph_indent':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          {op.left_twips !== undefined && (
+            <div>left: <code>{op.left_twips === null ? '(clear)' : `${op.left_twips} twips (${(op.left_twips / 1440).toFixed(2)}")`}</code></div>
+          )}
+          {op.first_line_twips !== undefined && (
+            <div>first line: <code>{op.first_line_twips === null ? '(clear)' : `${op.first_line_twips} twips`}</code></div>
+          )}
+          {op.hanging_twips !== undefined && (
+            <div>hanging: <code>{op.hanging_twips === null ? '(clear)' : `${op.hanging_twips} twips`}</code></div>
+          )}
+        </div>
+      );
+    case 'set_paragraph_spacing':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          {op.before_twips !== undefined && (
+            <div>before: <code>{op.before_twips === null ? '(clear)' : `${op.before_twips} twips`}</code></div>
+          )}
+          {op.after_twips !== undefined && (
+            <div>after: <code>{op.after_twips === null ? '(clear)' : `${op.after_twips} twips`}</code></div>
+          )}
+          {op.line_value !== undefined && (
+            <div>line: <code>{op.line_value === null ? '(clear)' : `${op.line_value}${op.line_rule ? ` (${op.line_rule})` : ''}`}</code></div>
+          )}
+        </div>
+      );
+    case 'set_run_font':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          {op.family !== undefined && (
+            <div>family: <code>{op.family === null ? '(clear)' : op.family}</code></div>
+          )}
+          {op.size_pt !== undefined && (
+            <div>size: <code>{op.size_pt === null ? '(clear)' : `${op.size_pt}pt`}</code></div>
+          )}
+        </div>
+      );
+    case 'set_run_color':
+      return (
+        <div style={{ marginTop: '0.4rem', fontSize: 12 }}>
+          {op.color !== undefined && (
+            <div>
+              color:{' '}
+              {op.color === null ? (
+                <code>(clear)</code>
+              ) : (
+                <span>
+                  <code>#{op.color.replace(/^#/, '')}</code>{' '}
+                  <span style={{ display: 'inline-block', width: 12, height: 12, background: `#${op.color.replace(/^#/, '')}`, border: '1px solid #999', verticalAlign: 'middle' }} />
+                </span>
+              )}
+            </div>
+          )}
+          {op.highlight !== undefined && (
+            <div>highlight: <code>{op.highlight === null ? '(clear)' : op.highlight}</code></div>
+          )}
         </div>
       );
     default: {
