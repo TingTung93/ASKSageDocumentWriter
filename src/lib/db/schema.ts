@@ -2,6 +2,7 @@ import Dexie, { type Table } from 'dexie';
 import type { TemplateSchema } from '../template/types';
 import type { DraftParagraph } from '../draft/types';
 import type { StoredEdit } from '../document/types';
+import type { AppSettings } from '../settings/types';
 
 // Phase 1a stores template DOCX bytes alongside the parsed schema.
 // Phase 1b adds the semantic half. Phase 2 introduces projects and
@@ -120,6 +121,7 @@ class DocWriterDb extends Dexie {
   drafts!: Table<DraftRecord, string>;
   documents!: Table<DocumentRecord, string>;
   audit!: Table<AuditRecord, number>;
+  settings!: Table<AppSettings, string>;
 
   constructor() {
     super('asksage-doc-writer');
@@ -136,6 +138,16 @@ class DocWriterDb extends Dexie {
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
       documents: 'id, name, ingested_at',
       audit: '++id, ts, endpoint, ok',
+    });
+    // v3 adds the singleton settings table (per-stage model overrides
+    // and cost projection assumptions).
+    this.version(3).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
     });
   }
 }

@@ -14,6 +14,9 @@ import { draftProject } from '../lib/draft/orchestrator';
 import { runValidation } from '../lib/critique';
 import { exportProjectAsJson, downloadJsonExport } from '../lib/export';
 import type { DraftParagraph } from '../lib/draft/types';
+import { loadSettings } from '../lib/settings/store';
+import { estimateProjectDrafting, formatTokens, formatUsd } from '../lib/settings/cost';
+import { DEFAULT_COST_ASSUMPTIONS } from '../lib/settings/types';
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -28,6 +31,9 @@ export function ProjectDetail() {
   );
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const settings = useLiveQuery(() => loadSettings(), []);
+  const draftingModelOverride = settings?.models.drafting ?? null;
+  const cost = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
 
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -70,6 +76,7 @@ export function ProjectDetail() {
       await draftProject(client, {
         project,
         templates: projectTemplates,
+        ...(draftingModelOverride ? { options: { model: draftingModelOverride } } : {}),
         callbacks: {
           onSectionStart: (tpl, sec) => {
             // eslint-disable-next-line no-console
@@ -157,6 +164,40 @@ export function ProjectDetail() {
         choice for market research / capability survey sections that need
         current outside-document context.
       </p>
+
+      {(() => {
+        const est = estimateProjectDrafting(totalSections, cost);
+        return (
+          <div
+            style={{
+              background: '#f6f6fa',
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              padding: '0.5rem 0.75rem',
+              marginBottom: '0.5rem',
+              fontSize: 12,
+              color: '#444',
+              maxWidth: 500,
+            }}
+          >
+            <strong>Estimated cost</strong>{' '}
+            <span className="note">
+              ({totalSections} section{totalSections === 1 ? '' : 's'} ·{' '}
+              {draftingModelOverride ?? 'default model'})
+            </span>
+            <div style={{ marginTop: '0.25rem' }}>
+              ~{formatTokens(est.tokens_in)} in / ~{formatTokens(est.tokens_out)} out · ~
+              {formatTokens(est.tokens_total)} total
+              {cost.usd_per_1k_in + cost.usd_per_1k_out > 0 && (
+                <> · {formatUsd(est.usd_total)}</>
+              )}
+            </div>
+            <div className="note" style={{ marginTop: '0.25rem' }}>
+              Tune assumptions on the <Link to="/settings">Settings</Link> tab.
+            </div>
+          </div>
+        );
+      })()}
 
       <button type="button" onClick={onStartDrafting} disabled={drafting || !apiKey}>
         {drafting ? 'Drafting…' : 'Draft all sections'}

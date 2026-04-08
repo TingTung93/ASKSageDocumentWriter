@@ -23,6 +23,9 @@ import { migrateAll, migrateDocumentEdits } from '../lib/document/migrate';
 import { DropZone } from '../components/DropZone';
 import { SearchFilter, matchesSearch } from '../components/SearchFilter';
 import { EmptyState } from '../components/EmptyState';
+import { loadSettings } from '../lib/settings/store';
+import { estimateDocumentCleanup, formatTokens, formatUsd } from '../lib/settings/cost';
+import { DEFAULT_COST_ASSUMPTIONS, type CostAssumptions } from '../lib/settings/types';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -180,6 +183,9 @@ export function Documents() {
 function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const settings = useLiveQuery(() => loadSettings(), []);
+  const cleanupModelOverride = settings?.models.cleanup ?? null;
+  const cost: CostAssumptions = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
   const [instruction, setInstruction] = useState('Review this document for grammar, language, clarity, and obvious errors. Propose surgical edits only — leave clean paragraphs alone.');
   const [running, setRunning] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -188,6 +194,11 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const [headerParts, setHeaderParts] = useState<HeaderFooterPartContent[]>([]);
   const [footerParts, setFooterParts] = useState<HeaderFooterPartContent[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
+
+  const cleanupEstimate = useMemo(
+    () => estimateDocumentCleanup(doc.paragraph_count, cost),
+    [doc.paragraph_count, cost],
+  );
 
   const proposed = doc.edits.filter((e) => e.status === 'proposed');
   const accepted = doc.edits.filter((e) => e.status === 'accepted');
@@ -238,6 +249,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         document_name: doc.name,
         paragraphs,
         instruction: instruction.trim(),
+        ...(cleanupModelOverride ? { model: cleanupModelOverride } : {}),
       });
 
       // Build a quick lookup from index → original text for diff display
@@ -355,6 +367,34 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       {parseError && <div className="error">Preview parse failed: {parseError}</div>}
 
       <h3>Cleanup pass</h3>
+      <div
+        style={{
+          background: '#f6f6fa',
+          border: '1px solid #ddd',
+          borderRadius: 6,
+          padding: '0.5rem 0.75rem',
+          marginBottom: '0.5rem',
+          fontSize: 12,
+          color: '#444',
+        }}
+      >
+        <strong>Estimated cost</strong>{' '}
+        <span className="note">
+          ({doc.paragraph_count} paragraphs ·{' '}
+          {cleanupModelOverride ?? 'default model'})
+        </span>
+        <div style={{ marginTop: '0.25rem' }}>
+          ~{formatTokens(cleanupEstimate.tokens_in)} in /{' '}
+          ~{formatTokens(cleanupEstimate.tokens_out)} out ·{' '}
+          ~{formatTokens(cleanupEstimate.tokens_total)} total
+          {cost.usd_per_1k_in + cost.usd_per_1k_out > 0 && (
+            <> · {formatUsd(cleanupEstimate.usd_total)}</>
+          )}
+        </div>
+        <div className="note" style={{ marginTop: '0.25rem' }}>
+          Tune assumptions on the <a href="#/settings">Settings</a> tab.
+        </div>
+      </div>
       <form onSubmit={onRequestEdits}>
         <label htmlFor="cleanup-instruction">Instruction</label>
         <textarea

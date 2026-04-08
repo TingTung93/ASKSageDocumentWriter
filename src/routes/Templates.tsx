@@ -11,6 +11,7 @@ import type { ApplyResult } from '../lib/edit/types';
 import { DropZone } from '../components/DropZone';
 import { SearchFilter, matchesSearch } from '../components/SearchFilter';
 import { EmptyState } from '../components/EmptyState';
+import { loadSettings } from '../lib/settings/store';
 
 // Phase 1a UI: drop a DOCX file → parser produces structural schema →
 // row in the local template library → click to view the schema.
@@ -26,6 +27,8 @@ export function Templates() {
   const [search, setSearch] = useState('');
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const settings = useLiveQuery(() => loadSettings(), []);
+  const synthesisModelOverride = settings?.models.synthesis ?? null;
 
   const selected = templates?.find((t) => t.id === selectedId) ?? null;
   const filtered = useMemo(
@@ -49,7 +52,12 @@ export function Templates() {
     console.info(`[Templates] synthesizing semantic half for ${template.id} via ${DEFAULT_SYNTHESIS_MODEL}`);
     try {
       const client = new AskSageClient(baseUrl, apiKey);
-      const result = await synthesizeSchema(client, template.schema_json, template.docx_bytes);
+      const result = await synthesizeSchema(
+        client,
+        template.schema_json,
+        template.docx_bytes,
+        synthesisModelOverride ? { model: synthesisModelOverride } : undefined,
+      );
       const updated: TemplateRecord = {
         ...template,
         schema_json: result.schema,
@@ -281,6 +289,8 @@ async function updateStyle(
 function RefinePanel({ templateId, schema }: { templateId: string; schema: TemplateSchema }) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
+  const settings = useLiveQuery(() => loadSettings(), []);
+  const schemaEditModelOverride = settings?.models.schema_edit ?? null;
   const [instruction, setInstruction] = useState('');
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -304,6 +314,7 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
       const response = await requestSchemaEdits(client, {
         schema,
         instruction: instruction.trim(),
+        ...(schemaEditModelOverride ? { model: schemaEditModelOverride } : {}),
       });
       setPending({
         applied: response.applied,

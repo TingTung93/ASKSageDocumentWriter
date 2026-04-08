@@ -37,6 +37,9 @@ export function Shell({ children }: ShellProps) {
         <NavLink to="/audit" style={navLinkStyle}>
           Audit
         </NavLink>
+        <NavLink to="/settings" style={navLinkStyle}>
+          Settings
+        </NavLink>
         <span className="status">{status}</span>
       </nav>
       {children}
