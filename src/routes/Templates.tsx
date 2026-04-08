@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type TemplateRecord } from '../lib/db/schema';
 import { parseDocx } from '../lib/template/parser';
@@ -6,6 +6,8 @@ import type { TemplateSchema } from '../lib/template/types';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { synthesizeSchema, DEFAULT_SYNTHESIS_MODEL } from '../lib/template/synthesis/synthesize';
+import { requestSchemaEdits } from '../lib/edit/schema-edit';
+import type { ApplyResult } from '../lib/edit/types';
 
 // Phase 1a UI: drop a DOCX file → parser produces structural schema →
 // row in the local template library → click to view the schema.
@@ -167,6 +169,7 @@ export function Templates() {
       {selected && (
         <SchemaViewer
           schema={selected.schema_json}
+          templateId={selected.id}
           onSynthesize={() => onSynthesize(selected)}
           synthesizing={synthesizingId === selected.id}
           synthError={synthError}
@@ -179,14 +182,15 @@ export function Templates() {
 
 interface SchemaViewerProps {
   schema: TemplateSchema;
+  templateId: string;
   onSynthesize: () => void;
   synthesizing: boolean;
   synthError: string | null;
   canSynthesize: boolean;
 }
 
-function SchemaViewer({ schema, onSynthesize, synthesizing, synthError, canSynthesize }: SchemaViewerProps) {
-  const [tab, setTab] = useState<'summary' | 'json'>('summary');
+function SchemaViewer({ schema, templateId, onSynthesize, synthesizing, synthError, canSynthesize }: SchemaViewerProps) {
+  const [tab, setTab] = useState<'summary' | 'json' | 'refine'>('summary');
   const hasSemantic = schema.source.semantic_synthesizer !== null;
 
   return (
@@ -195,6 +199,7 @@ function SchemaViewer({ schema, onSynthesize, synthesizing, synthError, canSynth
       <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem', alignItems: 'center' }}>
         <TabBtn active={tab === 'summary'} onClick={() => setTab('summary')}>Summary</TabBtn>
         <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Raw JSON</TabBtn>
+        <TabBtn active={tab === 'refine'} onClick={() => setTab('refine')}>Refine</TabBtn>
         <span style={{ flex: 1 }} />
         <button
           type="button"
@@ -217,8 +222,161 @@ function SchemaViewer({ schema, onSynthesize, synthesizing, synthError, canSynth
         </button>
       </div>
       {synthError && <div className="error">Synthesis failed: {synthError}</div>}
-      {tab === 'summary' ? <SummaryView schema={schema} /> : <JsonView value={schema} />}
+      {tab === 'summary' && <SummaryView schema={schema} />}
+      {tab === 'json' && <JsonView value={schema} />}
+      {tab === 'refine' && <RefinePanel templateId={templateId} schema={schema} />}
     </section>
+  );
+}
+
+function RefinePanel({ templateId, schema }: { templateId: string; schema: TemplateSchema }) {
+  const apiKey = useAuth((s) => s.apiKey);
+  const baseUrl = useAuth((s) => s.baseUrl);
+  const [instruction, setInstruction] = useState('');
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<{
+    applied: ApplyResult<TemplateSchema>;
+    rationale: string | undefined;
+    tokens_in: number;
+    tokens_out: number;
+  } | null>(null);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!apiKey || !instruction.trim()) return;
+    setError(null);
+    setRunning(true);
+    setPending(null);
+    // eslint-disable-next-line no-console
+    console.info(`[Refine] requesting edits for template ${templateId}: "${instruction.trim()}"`);
+    try {
+      const client = new AskSageClient(baseUrl, apiKey);
+      const response = await requestSchemaEdits(client, {
+        schema,
+        instruction: instruction.trim(),
+      });
+      setPending({
+        applied: response.applied,
+        rationale: response.llm_output.rationale,
+        tokens_in: response.tokens_in,
+        tokens_out: response.tokens_out,
+      });
+      // eslint-disable-next-line no-console
+      console.info(
+        `[Refine] received ${response.llm_output.edits.length} edit(s); tokens=${response.tokens_in}+${response.tokens_out}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // eslint-disable-next-line no-console
+      console.error('[Refine] failed:', err);
+      setError(message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function onAccept() {
+    if (!pending) return;
+    const updated: TemplateRecord = {
+      id: templateId,
+      name: pending.applied.result.name,
+      filename: schema.source.filename,
+      ingested_at: schema.source.ingested_at,
+      // Preserve the existing DOCX bytes from the stored record
+      docx_bytes: (await db.templates.get(templateId))!.docx_bytes,
+      schema_json: pending.applied.result,
+    };
+    await db.templates.put(updated);
+    setPending(null);
+    setInstruction('');
+  }
+
+  function onReject() {
+    setPending(null);
+  }
+
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      <p className="note">
+        Free-form instructions to the LLM. It returns a small list of edit operations
+        instead of regenerating the whole schema — much cheaper for localized changes
+        than re-running the full synthesis pass. The result is a preview you can accept
+        or reject.
+      </p>
+      <p className="note">
+        Examples: <em>"Make the purpose section's intent more specific to maintenance contracts"</em>{' '}
+        · <em>"Add must_mention=DHA to all sections"</em>{' '}
+        · <em>"Reorder so References comes last"</em>{' '}
+        · <em>"Remove the banned phrase 'leverage' and add 'going forward'"</em>
+      </p>
+
+      <form onSubmit={onSubmit}>
+        <label htmlFor="refine-instruction">Instruction</label>
+        <textarea
+          id="refine-instruction"
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          rows={3}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            font: 'inherit',
+            fontFamily: 'inherit',
+            border: '1px solid #ccc',
+            borderRadius: 4,
+          }}
+          disabled={running || !apiKey}
+        />
+        <button type="submit" disabled={running || !apiKey || !instruction.trim()}>
+          {running ? 'Asking the LLM…' : 'Request edits'}
+        </button>
+      </form>
+
+      {error && <div className="error">Refinement failed: {error}</div>}
+
+      {pending && (
+        <section
+          style={{
+            marginTop: '1rem',
+            padding: '0.75rem',
+            background: '#fff8e0',
+            border: '1px solid #d4a000',
+            borderRadius: 4,
+          }}
+        >
+          <h3 style={{ margin: '0 0 0.5rem', fontSize: 14 }}>
+            Proposed edits ({pending.applied.applied.length})
+          </h3>
+          <p className="note" style={{ margin: '0 0 0.5rem' }}>
+            Tokens: {pending.tokens_in} in / {pending.tokens_out} out
+            {pending.rationale && <> · LLM rationale: <em>{pending.rationale}</em></>}
+          </p>
+          <ul style={{ listStyle: 'none', padding: 0, fontSize: 12, fontFamily: 'ui-monospace, Consolas, monospace' }}>
+            {pending.applied.applied.map((a, i) => (
+              <li
+                key={i}
+                style={{
+                  padding: '0.2rem 0',
+                  color: a.success ? '#060' : '#900',
+                }}
+              >
+                {a.success ? '✓' : '✗'} {a.op}
+                {a.error && ` — ${a.error}`}
+              </li>
+            ))}
+          </ul>
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <button type="button" onClick={onAccept} style={{ background: '#060', borderColor: '#060' }}>
+              Accept and save
+            </button>
+            <button type="button" onClick={onReject} style={{ background: '#666', borderColor: '#666' }}>
+              Reject
+            </button>
+          </div>
+        </section>
+      )}
+    </div>
   );
 }
 
