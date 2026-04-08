@@ -160,21 +160,36 @@ const autoFillSharedInputsStage: RecipeStage = {
       // NOT overwrite user-provided values.
       const applied: Array<{ key: string; value: string; source: string }> = [];
       const updated_shared_inputs = { ...ctx.project.shared_inputs };
+      const updated_meta = { ...(ctx.project.shared_inputs_meta ?? {}) };
+      const filled_at = new Date().toISOString();
       for (const [key, prop] of Object.entries(proposals)) {
         const existing = updated_shared_inputs[key];
         if (existing && existing.trim()) continue;
         updated_shared_inputs[key] = prop.value;
-        applied.push({ key, value: prop.value, source: `preflight:${prop.source}` });
+        const source = `preflight:${prop.source}` as
+          | 'preflight:project_subject'
+          | 'preflight:reference_file'
+          | 'preflight:inferred'
+          | 'preflight:default';
+        updated_meta[key] = {
+          source,
+          source_label: prop.source_label,
+          confidence: prop.confidence,
+          filled_at,
+        };
+        applied.push({ key, value: prop.value, source });
       }
       if (applied.length > 0) {
         const patched = {
           ...ctx.project,
           shared_inputs: updated_shared_inputs,
+          shared_inputs_meta: updated_meta,
           updated_at: new Date().toISOString(),
         };
         await db.projects.put(patched);
         // Mutate ctx.project so later stages see the filled values.
         ctx.project.shared_inputs = updated_shared_inputs;
+        ctx.project.shared_inputs_meta = updated_meta;
       }
       return { kind: 'ok', output: { applied, proposals } };
     } catch (err) {
