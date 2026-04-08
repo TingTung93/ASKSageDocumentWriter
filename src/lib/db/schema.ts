@@ -108,6 +108,21 @@ export interface ProjectRecord {
    * project_input_field names (e.g. "cui_banner", "document_number").
    */
   shared_inputs: Record<string, string>;
+  /**
+   * Per-key metadata for shared_inputs values. Tracks where the
+   * value came from (manual entry vs the agentic auto-fill stage).
+   * Used by the UI to show an "auto-filled" badge so the user
+   * knows which values to spot-check. Optional for migration safety.
+   */
+  shared_inputs_meta?: Record<
+    string,
+    {
+      source: 'manual' | 'preflight' | 'preflight:project_subject' | 'preflight:reference_file' | 'preflight:inferred' | 'preflight:default';
+      source_label?: string;
+      confidence?: number;
+      filled_at: string;
+    }
+  >;
   /** Optional model overrides per stage */
   model_overrides: {
     drafting?: string;

@@ -36,12 +36,19 @@ import { buildProjectBundle } from '../lib/share/bundle';
 import { downloadBundle, bundleFilename } from '../lib/share/download';
 import {
   cancelRecipeRun,
+  loadRecipeRunsForProject,
   resumeRecipeRun,
   runRecipe,
   type RecipeRun,
   type RecipeStage,
 } from '../lib/agent/recipe';
 import { PWS_RECIPE } from '../lib/agent/recipes/pws';
+import {
+  assembleProjectFromDrafts,
+  downloadBlob,
+  type AssembleProjectResult,
+} from '../lib/export/downloadAssembled';
+import { AssembledDocxPreview } from '../components/AssembledDocxPreview';
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -73,6 +80,14 @@ export function ProjectDetail() {
   const [recipeRunning, setRecipeRunning] = useState(false);
   const [recipeStageMessage, setRecipeStageMessage] = useState<string | null>(null);
 
+  // Past recipe runs for this project (newest first). useLiveQuery
+  // re-fetches whenever the recipe_runs table changes, so the history
+  // updates automatically as runs complete.
+  const pastRuns = useLiveQuery(
+    () => (id ? loadRecipeRunsForProject(id) : Promise.resolve([])),
+    [id, currentRun?.id],
+  );
+
   if (!id) return <main>Missing project id</main>;
   if (!project) return <main>Loading project…</main>;
   if (!allTemplates) return <main>Loading…</main>;
@@ -88,8 +103,15 @@ export function ProjectDetail() {
 
   async function onSharedInputChange(key: string, value: string) {
     if (!project) return;
+    // When the user edits a previously auto-filled value, drop the
+    // auto-fill metadata for that key — the value is now manual.
+    const meta = { ...(project.shared_inputs_meta ?? {}) };
+    if (meta[key]) {
+      delete meta[key];
+    }
     await updateProject(project.id, {
       shared_inputs: { ...project.shared_inputs, [key]: value },
+      shared_inputs_meta: meta,
     });
   }
 
@@ -310,6 +332,7 @@ export function ProjectDetail() {
             key={f.key}
             field={f}
             value={project.shared_inputs[f.key] ?? ''}
+            meta={project.shared_inputs_meta?.[f.key]}
             onChange={(v) => onSharedInputChange(f.key, v)}
           />
         ))}
@@ -429,6 +452,21 @@ export function ProjectDetail() {
         />
       )}
 
+      {pastRuns && pastRuns.length > 0 && (
+        <RecipeHistoryPanel
+          runs={pastRuns}
+          currentRunId={currentRun?.id ?? null}
+          onLoadRun={(run) => setCurrentRun(run)}
+        />
+      )}
+
+      {(drafts ?? []).some((d) => d.status === 'ready') && (
+        <AssembledOutputPanel
+          project={project}
+          templates={projectTemplates}
+        />
+      )}
+
       <h2>Sections</h2>
       {projectTemplates.map((tpl) => (
         <TemplateDraftedSections
@@ -438,6 +476,243 @@ export function ProjectDetail() {
         />
       ))}
     </main>
+  );
+}
+
+/**
+ * Re-assembles the project's drafts into finished DOCX(s) on demand
+ * via lib/export/downloadAssembled.assembleProjectFromDrafts. The
+ * assembly is deterministic so we can rebuild from current Dexie
+ * state at any time — no dependency on a live recipe run, no stale
+ * blob URLs from a previous session, no need for the user to have
+ * gone through the auto-draft flow at all. Manual drafters benefit
+ * too.
+ *
+ * For each template the user can: download, or preview inline via
+ * docx-preview. Preview is opt-in (one click to expand) so the
+ * panel doesn't burn render time on every page load.
+ */
+function AssembledOutputPanel({
+  project,
+  templates,
+}: {
+  project: ProjectRecord;
+  templates: TemplateRecord[];
+}) {
+  const [results, setResults] = useState<AssembleProjectResult[] | null>(null);
+  const [assembling, setAssembling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [previewTemplateId, setPreviewTemplateId] = useState<string | null>(null);
+
+  async function reassemble() {
+    setAssembling(true);
+    setError(null);
+    try {
+      const out = await assembleProjectFromDrafts(project, templates);
+      setResults(out);
+      if (out.length === 0) {
+        toast.info('No ready drafts to assemble. Draft at least one section first.');
+      } else {
+        toast.success(
+          `Assembled ${out.length} template${out.length === 1 ? '' : 's'} from current drafts`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error(`Assembly failed: ${message}`);
+    } finally {
+      setAssembling(false);
+    }
+  }
+
+  function onDownload(r: AssembleProjectResult) {
+    downloadBlob(r.blob, r.filename);
+    toast.success(`Downloaded ${r.filename}`);
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)' }}>
+      <div className="row" style={{ alignItems: 'center' }}>
+        <strong>📄 Assembled output</strong>
+        <span className="muted" style={{ fontSize: 12 }}>
+          re-assembled from current drafts on demand — works regardless of recipe-run age
+        </span>
+        <span style={{ marginLeft: 'auto' }} />
+        <button
+          type="button"
+          className={results === null ? '' : 'btn-secondary'}
+          onClick={() => void reassemble()}
+          disabled={assembling}
+        >
+          {assembling ? 'Assembling…' : results === null ? 'Assemble drafts → DOCX' : 'Re-assemble'}
+        </button>
+      </div>
+
+      {error && <div className="error" style={{ marginTop: 'var(--space-2)' }}>{error}</div>}
+
+      {results && results.length === 0 && (
+        <p className="note" style={{ marginTop: 'var(--space-2)' }}>
+          No ready drafts found. Draft at least one section before assembling.
+        </p>
+      )}
+
+      {results && results.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+          {results.map((r) => {
+            const isPreviewing = previewTemplateId === r.template_id;
+            const summary = r.result;
+            return (
+              <li
+                key={r.template_id}
+                style={{
+                  marginBottom: 'var(--space-2)',
+                  padding: 'var(--space-2) var(--space-3)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--color-surface)',
+                }}
+              >
+                <div className="row" style={{ alignItems: 'center' }}>
+                  <strong>{r.template_name}</strong>
+                  {summary.total_assembled > 0 && (
+                    <span className="badge badge-success">
+                      {summary.total_assembled} assembled
+                    </span>
+                  )}
+                  {summary.total_skipped > 0 && (
+                    <span className="badge badge-warning">
+                      {summary.total_skipped} skipped
+                    </span>
+                  )}
+                  {summary.total_failed > 0 && (
+                    <span className="badge badge-danger">
+                      {summary.total_failed} failed
+                    </span>
+                  )}
+                  <span style={{ marginLeft: 'auto' }} />
+                  <button
+                    type="button"
+                    className="btn-secondary btn-sm"
+                    onClick={() =>
+                      setPreviewTemplateId(isPreviewing ? null : r.template_id)
+                    }
+                  >
+                    {isPreviewing ? 'hide preview' : 'preview'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-sm"
+                    onClick={() => onDownload(r)}
+                  >
+                    download
+                  </button>
+                </div>
+                <div className="note" style={{ marginTop: '0.3rem' }}>
+                  {r.filename} · {(r.blob.size / 1024).toFixed(1)} KB
+                </div>
+                {summary.section_results.some((s) => s.status.kind !== 'assembled' && s.status.kind !== 'skipped_no_draft') && (
+                  <details style={{ marginTop: '0.4rem' }}>
+                    <summary className="note" style={{ cursor: 'pointer' }}>
+                      Section status detail ({summary.section_results.length})
+                    </summary>
+                    <ul style={{ listStyle: 'none', padding: 'var(--space-2)', margin: '0.4rem 0 0', fontSize: 11 }}>
+                      {summary.section_results.map((s) => (
+                        <li key={s.section_id} style={{ marginBottom: '0.2rem' }}>
+                          <strong>{s.section_name}</strong>{' '}
+                          <span className="badge">{s.status.kind}</span>
+                          {s.status.kind === 'failed' && (
+                            <span style={{ color: 'var(--color-danger)' }}> — {s.status.error}</span>
+                          )}
+                          {s.status.kind === 'skipped_unsupported_region' && (
+                            <span className="muted"> — {s.status.reason}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                {isPreviewing && (
+                  <div style={{ marginTop: 'var(--space-2)' }}>
+                    <AssembledDocxPreview blob={r.blob} cacheKey={r.template_id} />
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Compact list of past recipe runs for the project. Lets the user
+ * load any historical run back into the live RecipeRunPanel for
+ * inspection. Newest first.
+ */
+function RecipeHistoryPanel({
+  runs,
+  currentRunId,
+  onLoadRun,
+}: {
+  runs: RecipeRun[];
+  currentRunId: string | null;
+  onLoadRun: (run: RecipeRun) => void;
+}) {
+  return (
+    <details className="card" style={{ marginTop: 'var(--space-3)', padding: 'var(--space-2) var(--space-3)' }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+        Recipe run history ({runs.length})
+      </summary>
+      <ul style={{ listStyle: 'none', padding: 0, marginTop: 'var(--space-2)' }}>
+        {runs.map((r) => {
+          const isCurrent = r.id === currentRunId;
+          const statusBadge =
+            r.status === 'completed'
+              ? 'badge-success'
+              : r.status === 'failed'
+                ? 'badge-danger'
+                : r.status === 'paused'
+                  ? 'badge-warning'
+                  : 'badge';
+          return (
+            <li
+              key={r.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.4rem 0.6rem',
+                marginBottom: '0.25rem',
+                background: isCurrent ? 'var(--color-primary-soft)' : 'var(--color-surface)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 12,
+              }}
+            >
+              <strong>{r.recipe_name}</strong>
+              <span className={`badge ${statusBadge}`}>{r.status}</span>
+              <span className="muted">{new Date(r.started_at).toLocaleString()}</span>
+              <span className="muted">
+                {(r.total_tokens_in + r.total_tokens_out).toLocaleString()} tok
+              </span>
+              <span style={{ marginLeft: 'auto' }} />
+              {!isCurrent && (
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  onClick={() => onLoadRun(r)}
+                >
+                  load
+                </button>
+              )}
+              {isCurrent && <span className="badge badge-primary">current</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </details>
   );
 }
 
@@ -730,18 +1005,45 @@ function ProjectTemplatesEditor({
 function SharedInputControl({
   field,
   value,
+  meta,
   onChange,
 }: {
   field: SharedInputField;
   value: string;
+  meta?: NonNullable<ProjectRecord['shared_inputs_meta']>[string];
   onChange: (v: string) => void;
 }) {
   const id = `field-${field.key}`;
+  const isAutoFilled = meta?.source.startsWith('preflight') ?? false;
+  const sourceLabel = meta?.source.replace('preflight:', '') ?? null;
+
   return (
-    <div style={{ marginBottom: '0.5rem' }}>
-      <label htmlFor={id}>
-        {field.display_name}
-        {field.required && <span style={{ color: '#b00' }}> *</span>}
+    <div
+      style={{
+        marginBottom: '0.5rem',
+        // Subtle highlight on auto-filled rows so the user's eye is drawn there.
+        ...(isAutoFilled
+          ? {
+              padding: '0.4rem 0.6rem',
+              border: '1px solid var(--color-primary)',
+              borderLeft: '3px solid var(--color-primary)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--color-primary-soft)',
+            }
+          : {}),
+      }}
+    >
+      <label htmlFor={id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+        <span>{field.display_name}</span>
+        {field.required && <span style={{ color: '#b00' }}>*</span>}
+        {isAutoFilled && (
+          <span
+            className="badge badge-primary"
+            title={`Auto-filled by the recipe pre-flight (source: ${sourceLabel}${meta?.source_label ? ` — ${meta.source_label}` : ''}${meta?.confidence !== undefined ? `, confidence ${(meta.confidence * 100).toFixed(0)}%` : ''}). Click the field to edit; the badge clears on manual edit.`}
+          >
+            auto-filled · {sourceLabel}
+          </span>
+        )}
       </label>
       {field.allowed_values && field.allowed_values.length > 0 ? (
         <select
@@ -765,6 +1067,9 @@ function SharedInputControl({
       )}
       <p className="note">
         Used by {field.template_ids.length} template{field.template_ids.length === 1 ? '' : 's'} · type: {field.control_type}
+        {isAutoFilled && meta?.filled_at && (
+          <> · filled {new Date(meta.filled_at).toLocaleString()}</>
+        )}
       </p>
     </div>
   );
