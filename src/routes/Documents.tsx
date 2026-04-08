@@ -4,9 +4,10 @@
 // applied. The whole workflow lives in this single route file because
 // it's small and self-contained.
 
-import { useEffect, useState, type ChangeEvent, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { renderAsync as renderDocxAsync } from 'docx-preview';
 import { db, type DocumentRecord } from '../lib/db/schema';
 import {
   parseDocx,
@@ -320,23 +321,14 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       </p>
 
       <h3>Document preview</h3>
-      <p className="note">
-        Approximate rendering of the parsed paragraphs with their styles
-        applied. Paragraphs with accepted edits show the new text and a
-        green left border. Paragraphs with proposed edits keep the
-        original text and show an amber border. Click any highlighted
-        paragraph to scroll to its diff card below.
-      </p>
+      <PreviewTabs
+        doc={doc}
+        paragraphs={paragraphs}
+        headerParts={headerParts}
+        footerParts={footerParts}
+        parseError={parseError}
+      />
       {parseError && <div className="error">Preview parse failed: {parseError}</div>}
-      {!paragraphs && !parseError && <p className="note">Parsing for preview…</p>}
-      {paragraphs && (
-        <DocumentPreview
-          paragraphs={paragraphs}
-          headerParts={headerParts}
-          footerParts={footerParts}
-          edits={doc.edits}
-        />
-      )}
 
       <h3>Cleanup pass</h3>
       <form onSubmit={onRequestEdits}>
@@ -517,7 +509,166 @@ function DiffView({ before, after }: { before: string; after: string }) {
   );
 }
 
-// ─── Document preview rendering ───────────────────────────────────
+// ─── Preview tabs ─────────────────────────────────────────────────
+//
+// Two view modes:
+//   Visual    — high-fidelity render via docx-preview. Read-only,
+//               looks like Word, includes tables/headers/footers/
+//               images/page setup.
+//   Editable  — our data-driven render. Lower fidelity but every
+//               paragraph is clickable and edit-aware (proposed/
+//               accepted highlights, click-to-scroll).
+//
+// The user defaults to Visual because that's the "looks like the
+// real document" experience. They switch to Editable when they want
+// to navigate edits paragraph-by-paragraph.
+
+function PreviewTabs({
+  doc,
+  paragraphs,
+  headerParts,
+  footerParts,
+  parseError,
+}: {
+  doc: DocumentRecord;
+  paragraphs: ParagraphInfo[] | null;
+  headerParts: HeaderFooterPartContent[];
+  footerParts: HeaderFooterPartContent[];
+  parseError: string | null;
+}) {
+  const [tab, setTab] = useState<'visual' | 'editable'>('visual');
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem' }}>
+        <button
+          type="button"
+          onClick={() => setTab('visual')}
+          style={{
+            margin: 0,
+            padding: '0.35rem 0.75rem',
+            background: tab === 'visual' ? '#2050a0' : '#ddd',
+            color: tab === 'visual' ? '#fff' : '#333',
+            borderColor: tab === 'visual' ? '#2050a0' : '#bbb',
+            fontWeight: 600,
+            fontSize: 12,
+          }}
+        >
+          Visual (docx-preview)
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('editable')}
+          style={{
+            margin: 0,
+            padding: '0.35rem 0.75rem',
+            background: tab === 'editable' ? '#2050a0' : '#ddd',
+            color: tab === 'editable' ? '#fff' : '#333',
+            borderColor: tab === 'editable' ? '#2050a0' : '#bbb',
+            fontWeight: 600,
+            fontSize: 12,
+          }}
+        >
+          Editable
+        </button>
+      </div>
+      <p className="note" style={{ marginTop: 0 }}>
+        {tab === 'visual'
+          ? 'High-fidelity render via docx-preview. Read-only — switch to Editable to navigate edits paragraph-by-paragraph.'
+          : 'Data-driven render of parsed paragraphs. Lower fidelity but every paragraph is clickable. Accepted edits show the new text in green; proposed edits show the original text in amber.'}
+      </p>
+      {tab === 'visual' && <VisualPreview doc={doc} />}
+      {tab === 'editable' && (
+        <>
+          {!paragraphs && !parseError && <p className="note">Parsing for preview…</p>}
+          {paragraphs && (
+            <DocumentPreview
+              paragraphs={paragraphs}
+              headerParts={headerParts}
+              footerParts={footerParts}
+              edits={doc.edits}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function VisualPreview({ doc }: { doc: DocumentRecord }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [rendering, setRendering] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const container = containerRef.current;
+    if (!container) return;
+    container.innerHTML = '';
+    setError(null);
+    setRendering(true);
+    // eslint-disable-next-line no-console
+    console.info(`[VisualPreview] rendering ${doc.id} via docx-preview`);
+    renderDocxAsync(doc.docx_bytes, container, undefined, {
+      className: 'docx-preview',
+      inWrapper: true,
+      breakPages: true,
+      ignoreFonts: false,
+      ignoreLastRenderedPageBreak: true,
+      experimental: false,
+      renderHeaders: true,
+      renderFooters: true,
+      renderFootnotes: true,
+      renderEndnotes: true,
+      renderChanges: false,
+      useBase64URL: true,
+    } as Parameters<typeof renderDocxAsync>[3])
+      .then(() => {
+        if (cancelled) return;
+        setRendering(false);
+        // eslint-disable-next-line no-console
+        console.info(`[VisualPreview] render complete for ${doc.id}`);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setRendering(false);
+        // eslint-disable-next-line no-console
+        console.error('[VisualPreview] render failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc.id, doc.docx_bytes]);
+
+  return (
+    <div>
+      {rendering && <p className="note">Rendering with docx-preview…</p>}
+      {error && (
+        <div className="error">
+          Visual render failed: {error}
+          {'\n\n'}
+          Switch to Editable to use the data-driven preview instead.
+        </div>
+      )}
+      <div
+        ref={containerRef}
+        style={{
+          background: '#f5f5f5',
+          border: '1px solid #ccc',
+          borderRadius: 4,
+          padding: '1rem',
+          marginBottom: '1rem',
+          maxHeight: '70vh',
+          overflow: 'auto',
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── Document preview rendering (data-driven, edit-aware) ─────────
 //
 // Approximates how the parsed DOCX would look in Word, using the
 // per-paragraph properties the parser already extracts (style_name,

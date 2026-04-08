@@ -26,6 +26,24 @@ export async function exportEditedDocx(
   originalBytes: ArrayBuffer | Uint8Array | Blob,
   overrides: Record<number, string>,
 ): Promise<ApplyEditsResult> {
+  // ─── No-op passthrough ────────────────────────────────────────────
+  // If there are zero edits to apply, return the original bytes
+  // unchanged. We still validate the input is a real DOCX (one cheap
+  // zip-directory load) so we don't return garbage to a confused
+  // caller, but we skip the parse → serialize → re-zip round trip
+  // entirely. The exported bytes are the input bytes — the strongest
+  // possible guarantee for the "open and re-export with no edits"
+  // workflow: the export IS the input.
+  const overrideCount = Object.keys(overrides).length;
+  if (overrideCount === 0) {
+    const validateZip = await JSZip.loadAsync(originalBytes);
+    if (!validateZip.file('word/document.xml')) {
+      throw new Error('Not a valid DOCX: word/document.xml is missing');
+    }
+    const blob = await toBlob(originalBytes);
+    return { blob, applied: 0, skipped: [] };
+  }
+
   const zip = await JSZip.loadAsync(originalBytes);
   const file = zip.file('word/document.xml');
   if (!file) {
@@ -81,6 +99,17 @@ export async function exportEditedDocx(
 
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+async function toBlob(input: ArrayBuffer | Uint8Array | Blob): Promise<Blob> {
+  if (input instanceof Blob) return input;
+  // Browser path
+  if (typeof window !== 'undefined' && typeof window.Blob !== 'undefined') {
+    return new Blob([input as BlobPart], { type: DOCX_MIME });
+  }
+  // jsdom test path — return the input cast as Blob (parser tests
+  // accept ArrayBuffer/Uint8Array directly via parseDocx).
+  return input as unknown as Blob;
+}
 
 /**
  * Replace the visible text of a paragraph while preserving its run
