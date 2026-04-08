@@ -201,6 +201,20 @@ export interface DocumentRecord {
   /** Cumulative tokens spent on edit passes */
   total_tokens_in: number;
   total_tokens_out: number;
+  // ─── v6: cleanup-pass context (Ask-Sage-only) ───
+  /**
+   * Files attached to this specific document for the cleanup pass.
+   * Re-uploaded to /server/file at edit time and inlined into the
+   * cleanup prompt as ATTACHED REFERENCES — same shape as project
+   * context files so we can share storage helpers.
+   */
+  reference_files?: ProjectContextFile[];
+  /** Optional Ask Sage RAG dataset name for the cleanup pass */
+  cleanup_dataset_name?: string;
+  /** Web search mode for the cleanup pass (mirrors project.live_search) */
+  cleanup_live_search?: 0 | 1 | 2;
+  /** RAG references cap forwarded to /server/query (default 5) */
+  cleanup_limit_references?: number;
 }
 
 class DocWriterDb extends Dexie {
@@ -253,6 +267,18 @@ class DocWriterDb extends Dexie {
     // at read time by getContextItems(): file entries missing `bytes`
     // are dropped with a one-time toast asking the user to re-attach.
     this.version(5).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+    });
+    // v6 adds cleanup-pass context to DocumentRecord (reference_files,
+    // dataset name, live search mode, references cap). Schema indices
+    // are unchanged — these are just new optional fields stored inline
+    // on the existing `documents` rows. Bump kept for clarity.
+    this.version(6).stores({
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',

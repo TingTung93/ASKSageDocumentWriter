@@ -22,6 +22,7 @@ import { DropZone } from '../components/DropZone';
 import { EmptyState } from '../components/EmptyState';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
+import { extractedTextFromRet } from '../lib/asksage/extract';
 import { draftProject } from '../lib/draft/orchestrator';
 import { runValidation } from '../lib/critique';
 import { exportProjectAsJson, downloadJsonExport } from '../lib/export';
@@ -590,25 +591,7 @@ function TemplateDraftedSections({
  * returned. This is the diagnostic loop we kept needing during the
  * transfusion / SHARP investigation.
  */
-/**
- * Mirror of the same helper in lib/draft/orchestrator. Health.mil
- * returns `ret` as a string; swagger v1.56 says object. Handle both.
- */
-function extractedTextFromRet(ret: string | Record<string, unknown>): string {
-  if (typeof ret === 'string') return ret;
-  if (ret && typeof ret === 'object') {
-    const maybeText = (ret as { text?: unknown }).text;
-    if (typeof maybeText === 'string') return maybeText;
-    const maybeContent = (ret as { content?: unknown }).content;
-    if (typeof maybeContent === 'string') return maybeContent;
-    try {
-      return JSON.stringify(ret);
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
+// extractedTextFromRet now lives in lib/asksage/extract — imported above.
 
 function DraftDiagnostics({ draft }: { draft: DraftRecord }) {
   const promptChars = draft.prompt_sent?.length ?? 0;
@@ -700,15 +683,27 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
 
   async function onAttach(file: File) {
     setAttaching(true);
+    let attached: ProjectContextFile | null = null;
     try {
-      const item = await attachProjectFile(project.id, file);
+      attached = await attachProjectFile(project.id, file);
       toast.success(
-        `${file.name} attached · ${(item.size_bytes / 1024).toFixed(1)} KB`,
+        `${file.name} attached · ${(attached.size_bytes / 1024).toFixed(1)} KB`,
       );
     } catch (err) {
       toast.error(`Attach failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setAttaching(false);
+    }
+
+    // Phase 1 (agentic auto-triggers): immediately run /server/file
+    // extraction on the new attachment so the user sees the extracted
+    // char/token count without having to click "test extract". Only
+    // fires when connected to Ask Sage. Chunking stays manual per
+    // design decision 5=A — that's a heavier per-file LLM round-trip
+    // and shouldn't run until the user is committed to the file.
+    // Wrapped so an extraction failure can't break the attach flow.
+    if (attached && apiKey && onAskSage) {
+      void onTestExtraction(attached);
     }
   }
 

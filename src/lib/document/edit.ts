@@ -1,24 +1,63 @@
 // Asks the LLM to review a finished document and propose surgical
-// edits. The system prompt locks the model to a strict JSON output of
-// `replace_paragraph_text` operations indexed against the paragraph
-// list we send. The dispatcher applies them to a working state, and
-// the writer eventually splices them into the original DOCX bytes.
+// edits.
+//
+// Two important properties of this module:
+//
+//   1. Long documents are walked in SMALL OVERLAPPING WINDOWS so the
+//      model can't get lazy and only edit the first chunk it sees.
+//      Each window is its own /server/query call; ops are merged
+//      into a single result. Empty per-chunk responses are silently
+//      absorbed — they are NOT surfaced as toasts or rationale lines.
+//
+//   2. The cleanup pass can be GROUNDED with reference context: an
+//      Ask Sage RAG dataset, web search (live=1|2), and/or attached
+//      reference files that get extracted via /server/file and inlined
+//      into every chunk's prompt. This mirrors the drafting pipeline.
+//
+// The model still emits the typed DocumentEditOp catalog. The writer
+// validates indices and applies them surgically against the original
+// DOCX, preserving every other formatting node.
 
 import type { LLMClient } from '../provider/types';
 import type { ParagraphInfo } from '../template/parser';
+import type { ProjectContextFile } from '../db/schema';
+import { AskSageClient } from '../asksage/client';
+import { blobToFile, extractedTextFromRet } from '../asksage/extract';
 import type { DocumentEditOp, DocumentEditOutput } from './types';
 
 export const DEFAULT_DOCUMENT_EDIT_MODEL = 'google-claude-46-sonnet';
 
-const SYSTEM_PROMPT = `You are a careful editor reviewing a finished government document. Your job is to propose SURGICAL improvements — fix grammar, tighten wording, correct factual or formal errors, remove redundancy, and clean up obvious typos. You preserve the author's voice and intent and you NEVER rewrite paragraphs that are already clean.
+/**
+ * Significant-paragraph window size for the chunked edit pass. Smaller
+ * windows force the model to spend attention on every section of the
+ * document — large windows let it summarize the body and miss edits
+ * past the first ~third. Tune cautiously: too small and you waste
+ * tokens on the system prompt + reference block per chunk.
+ */
+export const EDIT_CHUNK_SIZE = 40;
 
-You have a TYPED OP CATALOG you can emit. Pick the narrowest op for each change so the writer can preserve the maximum amount of surrounding formatting.
+/**
+ * Number of significant paragraphs that overlap between consecutive
+ * windows. Gives the model continuity context (so a sentence that
+ * spans a chunk boundary still has its lead-in visible) without
+ * double-charging too many tokens. Ops on overlapped paragraphs are
+ * de-duped at merge time.
+ */
+export const EDIT_CHUNK_OVERLAP = 5;
+
+/** Per-reference-file character cap (≈2k tokens). */
+const REFERENCE_FILE_CAP_CHARS = 8000;
+
+const SYSTEM_PROMPT = `You are a careful editor reviewing a finished government document. Your job is to propose SURGICAL improvements ONLY — fix grammar, tighten wording, correct factual or formal errors, remove redundancy, and clean up obvious typos. You preserve the author's voice and intent and you NEVER rewrite paragraphs that are already clean.
+
+You will be shown a CHUNK of the document at a time. Each paragraph is labeled with its absolute index in the full document (the same indices the writer uses to apply your edits). Even though you only see a window, you MUST still emit edits for any paragraph in this window that needs one — do not defer to "the next chunk" and do not rewrite the chunk wholesale.
+
+You have a TYPED OP CATALOG you can emit. Pick the NARROWEST op for each change so the writer can preserve the maximum amount of surrounding formatting. If only one run inside a paragraph needs changing, use replace_run_text — do NOT replace the whole paragraph.
 
 You output STRICT JSON only — no markdown code fences, no commentary outside the JSON:
 
 {
-  "edits": [ <op> , ... ],
-  "rationale": "<optional one-sentence overall summary>"
+  "edits": [ <op> , ... ]
 }
 
 OP CATALOG (use the narrowest op that does the job):
@@ -54,11 +93,13 @@ OP CATALOG (use the narrowest op that does the job):
     { "op": "delete_paragraph", "index": <int>, "rationale": "..." }
 
 CRITICAL CONSTRAINTS:
-- Only emit edits where a change is actually warranted. A clean document yields an empty edits array.
-- All paragraph indices MUST refer to paragraphs from the DOCUMENT BODY block below. Run indices MUST be valid for that paragraph. Out-of-range indices are silently dropped.
-- Prefer replace_run_text over replace_paragraph_text when only one run changes — this preserves bold/italic spans elsewhere in the paragraph.
+- A clean chunk yields { "edits": [] }. Do not invent edits to look productive.
+- All paragraph indices MUST refer to the exact integer labels shown in the DOCUMENT CHUNK below. Out-of-range indices are silently dropped.
+- ONLY emit edits for paragraphs labeled "[edit]". Paragraphs labeled "[ctx]" are context lines from the previous/next window — read them but do NOT propose edits against them; they will be handled in their own window.
+- Prefer replace_run_text over replace_paragraph_text when only part of a paragraph changes — this preserves bold/italic spans elsewhere in the paragraph.
 - Do NOT use markdown formatting (**, _, -). Inline formatting is encoded in run properties; use set_run_property to add/remove it.
 - Preserve specialized terminology, acronyms, citations, dates, names, and section numbers exactly as written unless they are demonstrably wrong.
+- If ATTACHED REFERENCES are provided, they are AUTHORITATIVE for facts, terminology, and citations — prefer the reference's wording over the draft's when they disagree on a verifiable fact.
 - Honor the user's instruction — it controls scope and tone of edits.
 
 Return STRICT JSON only.`;
@@ -69,6 +110,29 @@ export interface DocumentEditRequest {
   /** Free-form user instruction. e.g. "tighten language" or "fix typos only" */
   instruction: string;
   model?: string;
+  // ─── grounding context (all optional) ───
+  /** Ask Sage RAG dataset name; passed straight to /server/query */
+  dataset?: string;
+  /** RAG references cap; default 5 when dataset is set, 0 otherwise */
+  limit_references?: number;
+  /** Web search toggle: 0 off, 1 Google results, 2 Google + crawl */
+  live?: 0 | 1 | 2;
+  /**
+   * Reference files to inline into the prompt as ATTACHED REFERENCES.
+   * Each file is uploaded once via /server/file (Ask-Sage-only) and
+   * the extracted text is reused for every chunk.
+   */
+  references?: ProjectContextFile[];
+  /** Progress callback fired after each chunk completes. */
+  on_chunk_done?: (info: ChunkProgress) => void;
+}
+
+export interface ChunkProgress {
+  chunk_index: number;
+  chunk_count: number;
+  ops_emitted: number;
+  tokens_in: number;
+  tokens_out: number;
 }
 
 /** Narrowed paragraph_text op for the legacy UI accept flow. */
@@ -90,7 +154,9 @@ export interface DocumentEditResponse {
   tokens_in: number;
   tokens_out: number;
   model: string;
+  /** Concatenated chunk prompts, for the diagnostic "what did the model see" view */
   prompt_sent: string;
+  chunk_count: number;
 }
 
 export async function requestDocumentEdits(
@@ -98,90 +164,332 @@ export async function requestDocumentEdits(
   args: DocumentEditRequest,
 ): Promise<DocumentEditResponse> {
   const model = args.model ?? DEFAULT_DOCUMENT_EDIT_MODEL;
-  const message = buildEditMessage(args);
 
-  const { data, raw } = await client.queryJson<DocumentEditOutput>({
-    message,
-    system_prompt: SYSTEM_PROMPT,
-    model,
-    dataset: 'none',
-    temperature: 0,
-    usage: true,
-  });
+  // 1. Pre-flight: extract attached reference files (Ask-Sage-only).
+  //    Re-uploaded once here and reused for every chunk in the run.
+  //    Failures are non-fatal — the chunk just won't see that file.
+  const referencesBlock = await buildReferencesBlock(client, args.references ?? []);
 
-  // Defensive: filter to indices that actually exist in the input
+  // 2. Build chunks. Significant paragraphs only — blank ones are
+  //    layout artifacts; we still keep their absolute indices intact
+  //    so the writer applies edits to the right place.
+  const significant = args.paragraphs.filter((p) => p.text.trim().length > 0);
+  const chunks = chunkParagraphs(significant, EDIT_CHUNK_SIZE, EDIT_CHUNK_OVERLAP);
+
+  // 3. Walk chunks sequentially. Per-chunk responses that come back
+  //    empty are silently absorbed (no toast, no rationale).
+  const allOps: DocumentEditOp[] = [];
+  const seenOpKeys = new Set<string>();
+  const promptParts: string[] = [];
+  let tokensIn = 0;
+  let tokensOut = 0;
+
   const validIndices = new Set(args.paragraphs.map((p) => p.index));
-  const allOps = data.edits ?? [];
-  const all_valid_ops: DocumentEditOp[] = allOps.filter((op): op is DocumentEditOp => {
-    if (!op || typeof op !== 'object' || !('op' in op)) return false;
-    switch (op.op) {
-      case 'replace_paragraph_text':
-      case 'set_paragraph_style':
-      case 'set_paragraph_alignment':
-      case 'delete_paragraph':
-        return typeof op.index === 'number' && validIndices.has(op.index);
-      case 'replace_run_text':
-      case 'set_run_property':
-        return (
-          typeof op.paragraph_index === 'number' &&
-          validIndices.has(op.paragraph_index) &&
-          typeof op.run_index === 'number' &&
-          op.run_index >= 0
-        );
-      case 'set_cell_text':
-      case 'insert_table_row':
-      case 'delete_table_row':
-      case 'set_content_control_value':
-        return true; // table/sdt indices validated at writer time
-      default:
-        return false;
-    }
-  });
 
-  const valid_edits: ReplaceParagraphTextOp[] = all_valid_ops.filter(
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const message = buildEditMessage({
+      document_name: args.document_name,
+      instruction: args.instruction,
+      chunk,
+      chunk_index: i,
+      chunk_count: chunks.length,
+      total_significant: significant.length,
+      total_paragraphs: args.paragraphs.length,
+      references_block: referencesBlock,
+    });
+    promptParts.push(`--- CHUNK ${i + 1} / ${chunks.length} ---\n${message}`);
+
+    const queryInput: Parameters<LLMClient['queryJson']>[0] = {
+      message,
+      system_prompt: SYSTEM_PROMPT,
+      model,
+      dataset: args.dataset && args.dataset.length > 0 ? args.dataset : 'none',
+      temperature: 0,
+      usage: true,
+    };
+    if (typeof args.limit_references === 'number') {
+      queryInput.limit_references = args.limit_references;
+    } else if (args.dataset && args.dataset !== 'none') {
+      queryInput.limit_references = 5;
+    }
+    if (typeof args.live === 'number') {
+      queryInput.live = args.live;
+    }
+
+    let chunkOpsCount = 0;
+    let chunkIn = 0;
+    let chunkOut = 0;
+    try {
+      const { data, raw } = await client.queryJson<DocumentEditOutput>(queryInput);
+      const ops = (data.edits ?? []).filter((op) =>
+        isValidOp(op, validIndices, chunk.editableIndices),
+      );
+      for (const op of ops) {
+        const key = opDedupKey(op);
+        if (seenOpKeys.has(key)) continue;
+        seenOpKeys.add(key);
+        allOps.push(op);
+        chunkOpsCount += 1;
+      }
+      const usage =
+        (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
+      chunkIn = usage.prompt_tokens ?? 0;
+      chunkOut = usage.completion_tokens ?? 0;
+      tokensIn += chunkIn;
+      tokensOut += chunkOut;
+    } catch (err) {
+      // Silent absorption per spec: a single chunk failing should not
+      // abort the whole pass. Log to console for diagnostics.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[requestDocumentEdits] chunk ${i + 1}/${chunks.length} failed:`,
+        err,
+      );
+    }
+
+    args.on_chunk_done?.({
+      chunk_index: i,
+      chunk_count: chunks.length,
+      ops_emitted: chunkOpsCount,
+      tokens_in: chunkIn,
+      tokens_out: chunkOut,
+    });
+  }
+
+  const valid_edits: ReplaceParagraphTextOp[] = allOps.filter(
     (op): op is ReplaceParagraphTextOp => op.op === 'replace_paragraph_text',
   );
 
-  const usage = (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
-
   return {
-    llm_output: data,
+    llm_output: { edits: allOps },
     valid_edits,
-    all_valid_ops,
-    tokens_in: usage.prompt_tokens ?? 0,
-    tokens_out: usage.completion_tokens ?? 0,
+    all_valid_ops: allOps,
+    tokens_in: tokensIn,
+    tokens_out: tokensOut,
     model,
-    prompt_sent: message,
+    prompt_sent: promptParts.join('\n\n'),
+    chunk_count: chunks.length,
   };
 }
 
-function buildEditMessage(args: DocumentEditRequest): string {
-  const { document_name, paragraphs, instruction } = args;
-  // Filter to non-empty paragraphs (the LLM doesn't need to see blank
-  // ones — the parser keeps them but they're not editable text).
-  const significant = paragraphs.filter((p) => p.text.trim().length > 0);
+// ─── Chunking ─────────────────────────────────────────────────────
 
+interface EditChunk {
+  /**
+   * The actual paragraph window the model sees (in document order),
+   * including overlap context from neighboring chunks.
+   */
+  paragraphs: ParagraphInfo[];
+  /**
+   * The subset of paragraph indices in this window that the model is
+   * allowed to emit edits against. Overlap rows are read-only context.
+   */
+  editableIndices: Set<number>;
+}
+
+function chunkParagraphs(
+  significant: ParagraphInfo[],
+  size: number,
+  overlap: number,
+): EditChunk[] {
+  if (significant.length === 0) return [];
+  if (significant.length <= size) {
+    return [
+      {
+        paragraphs: significant,
+        editableIndices: new Set(significant.map((p) => p.index)),
+      },
+    ];
+  }
+
+  const chunks: EditChunk[] = [];
+  const stride = Math.max(1, size - overlap);
+  for (let editStart = 0; editStart < significant.length; editStart += stride) {
+    const editEnd = Math.min(significant.length, editStart + size);
+    // Window includes `overlap` paragraphs of context on each side
+    // (when available), but only [editStart, editEnd) is editable.
+    const winStart = Math.max(0, editStart - overlap);
+    const winEnd = Math.min(significant.length, editEnd + overlap);
+    const windowParas = significant.slice(winStart, winEnd);
+    const editable = new Set(
+      significant.slice(editStart, editEnd).map((p) => p.index),
+    );
+    chunks.push({ paragraphs: windowParas, editableIndices: editable });
+    if (editEnd >= significant.length) break;
+  }
+  return chunks;
+}
+
+// ─── Op validation + dedup ────────────────────────────────────────
+
+function isValidOp(
+  op: unknown,
+  validIndices: Set<number>,
+  editableIndices: Set<number>,
+): op is DocumentEditOp {
+  if (!op || typeof op !== 'object' || !('op' in op)) return false;
+  const o = op as DocumentEditOp;
+  switch (o.op) {
+    case 'replace_paragraph_text':
+    case 'set_paragraph_style':
+    case 'set_paragraph_alignment':
+    case 'delete_paragraph':
+      return (
+        typeof o.index === 'number' &&
+        validIndices.has(o.index) &&
+        editableIndices.has(o.index)
+      );
+    case 'replace_run_text':
+    case 'set_run_property':
+      return (
+        typeof o.paragraph_index === 'number' &&
+        validIndices.has(o.paragraph_index) &&
+        editableIndices.has(o.paragraph_index) &&
+        typeof o.run_index === 'number' &&
+        o.run_index >= 0
+      );
+    case 'set_cell_text':
+    case 'insert_table_row':
+    case 'delete_table_row':
+    case 'set_content_control_value':
+      // Table / sdt ops are not gated by paragraph windows; the writer
+      // validates them at apply time.
+      return true;
+    default:
+      return false;
+  }
+}
+
+/**
+ * Stable string key used to de-dup ops emitted in overlapped windows.
+ * The same paragraph can appear in two adjacent chunks; if both chunks
+ * propose the same edit we keep only the first.
+ */
+function opDedupKey(op: DocumentEditOp): string {
+  switch (op.op) {
+    case 'replace_paragraph_text':
+      return `rp:${op.index}:${op.new_text}`;
+    case 'replace_run_text':
+      return `rr:${op.paragraph_index}:${op.run_index}:${op.new_text}`;
+    case 'set_run_property':
+      return `srp:${op.paragraph_index}:${op.run_index}:${op.property}:${op.value}`;
+    case 'set_cell_text':
+      return `sct:${op.table_index}:${op.row_index}:${op.cell_index}:${op.new_text}`;
+    case 'insert_table_row':
+      return `itr:${op.table_index}:${op.after_row_index}:${op.cells.join('|')}`;
+    case 'delete_table_row':
+      return `dtr:${op.table_index}:${op.row_index}`;
+    case 'set_content_control_value':
+      return `scc:${op.tag}:${op.value}`;
+    case 'set_paragraph_style':
+      return `sps:${op.index}:${op.style_id}`;
+    case 'set_paragraph_alignment':
+      return `spa:${op.index}:${op.alignment}`;
+    case 'delete_paragraph':
+      return `dp:${op.index}`;
+  }
+}
+
+// ─── Prompt assembly ──────────────────────────────────────────────
+
+interface BuildEditMessageArgs {
+  document_name: string;
+  instruction: string;
+  chunk: EditChunk;
+  chunk_index: number;
+  chunk_count: number;
+  total_significant: number;
+  total_paragraphs: number;
+  references_block: string;
+}
+
+function buildEditMessage(a: BuildEditMessageArgs): string {
   const lines: string[] = [];
-  lines.push(`Document: ${document_name}`);
-  lines.push(`Total paragraphs in source: ${paragraphs.length}`);
-  lines.push(`Significant (non-empty) paragraphs sent below: ${significant.length}`);
-  lines.push(``);
-  lines.push(`User instruction: ${instruction || '(no specific instruction; perform a general cleanup pass for grammar, language, and obvious errors)'}`);
-  lines.push(``);
-  lines.push(`=== DOCUMENT BODY ===`);
+  lines.push(`Document: ${a.document_name}`);
   lines.push(
-    `Each line is one paragraph. The format is: [<index>]<flags> <text>. Flags appear in {curly braces} only when present and describe the paragraph's formatting context (style id, alignment, indent, list level). Use them to understand the role of the paragraph — e.g. don't rewrite a centered title as left-aligned body text. Only edit paragraphs that need improvement; leave the rest alone.`,
+    `Chunk: ${a.chunk_index + 1} of ${a.chunk_count} · ${a.total_significant} significant paragraphs total · ${a.total_paragraphs} including blanks`,
   );
   lines.push(``);
-  for (const p of significant) {
-    lines.push(`[${p.index}]${formatParagraphFlags(p)} ${p.text}`);
-  }
-  lines.push(`=== END DOCUMENT BODY ===`);
+  lines.push(
+    `User instruction: ${a.instruction || '(no specific instruction; perform a general cleanup pass for grammar, language, and obvious errors)'}`,
+  );
   lines.push(``);
-  lines.push(`Return STRICT JSON only with the edits array. Empty edits array is fine if the document is already clean.`);
+  if (a.references_block) {
+    lines.push(a.references_block);
+    lines.push(``);
+  }
+  lines.push(`=== DOCUMENT CHUNK ===`);
+  lines.push(
+    `Each line is one paragraph. The format is: <gate>[<index>]<flags> <text>. The gate is "[edit]" for paragraphs you may propose edits against, or "[ctx]" for read-only context paragraphs from the neighboring chunk. Indices are absolute over the full document. Flags appear in {curly braces} only when present and describe formatting context (style id, alignment, indent, list level). Use them to understand the role of the paragraph — e.g. don't rewrite a centered title as left-aligned body text.`,
+  );
+  lines.push(``);
+  for (const p of a.chunk.paragraphs) {
+    const gate = a.chunk.editableIndices.has(p.index) ? '[edit]' : '[ctx] ';
+    lines.push(`${gate}[${p.index}]${formatParagraphFlags(p)} ${p.text}`);
+  }
+  lines.push(`=== END DOCUMENT CHUNK ===`);
+  lines.push(``);
+  lines.push(
+    `Return STRICT JSON only with the edits array. Empty edits array is fine if this chunk is already clean.`,
+  );
 
   return lines.join('\n');
 }
+
+// ─── Reference files: upload + extract + render ───────────────────
+
+async function buildReferencesBlock(
+  client: LLMClient,
+  files: ProjectContextFile[],
+): Promise<string> {
+  if (files.length === 0) return '';
+  // /server/file is Ask-Sage-only. If the user is on OpenRouter we
+  // bail out — the UI hides the reference uploader on that provider,
+  // but defend in depth here too.
+  if (!(client instanceof AskSageClient)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[requestDocumentEdits] reference files supplied with a non-AskSage client; ignoring.',
+    );
+    return '';
+  }
+
+  const sections: string[] = [];
+  for (const f of files) {
+    try {
+      const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
+      const upload = await client.uploadFile(fileObj);
+      const text = extractedTextFromRet(upload.ret).trim();
+      if (!text) continue;
+      const truncated =
+        text.length > REFERENCE_FILE_CAP_CHARS
+          ? text.slice(0, REFERENCE_FILE_CAP_CHARS - 1).trimEnd() + '…'
+          : text;
+      sections.push(
+        `--- ${f.filename} (${truncated.length.toLocaleString()} chars${text.length > REFERENCE_FILE_CAP_CHARS ? ` of ${text.length.toLocaleString()}` : ''}) ---\n${truncated}`,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[requestDocumentEdits] failed to extract reference ${f.filename}:`,
+        err,
+      );
+    }
+  }
+
+  if (sections.length === 0) return '';
+
+  return [
+    `=== ATTACHED REFERENCES ===`,
+    `The following files were attached by the user as authoritative grounding context. Prefer their wording for facts, terminology, and citations when they disagree with the draft.`,
+    ``,
+    sections.join('\n\n'),
+    `=== END ATTACHED REFERENCES ===`,
+  ].join('\n');
+}
+
+// ─── Paragraph flag formatting ────────────────────────────────────
 
 function formatParagraphFlags(p: ParagraphInfo): string {
   const flags: string[] = [];
