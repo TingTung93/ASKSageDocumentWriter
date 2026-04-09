@@ -8,12 +8,14 @@ import {
   DEFAULT_CRITIC_SETTINGS,
   DEFAULT_MODEL_OVERRIDES,
   DEFAULT_SETTINGS,
+  DEFAULT_STYLE_REVIEW_SETTINGS,
   DEFAULT_USER_DEFAULTS,
   type AppSettings,
   type CostAssumptions,
   type CriticSettings,
   type ModelOverrides,
   type ModelStage,
+  type StyleReviewSettings,
   type UserDefaults,
 } from './types';
 
@@ -25,6 +27,7 @@ export async function loadSettings(): Promise<AppSettings> {
     models: { ...DEFAULT_MODEL_OVERRIDES, ...row.models },
     cost: { ...DEFAULT_COST_ASSUMPTIONS, ...row.cost },
     critic: { ...DEFAULT_CRITIC_SETTINGS, ...(row.critic ?? {}) },
+    style_review: { ...DEFAULT_STYLE_REVIEW_SETTINGS, ...(row.style_review ?? {}) },
     user_defaults: {
       ...DEFAULT_USER_DEFAULTS,
       ...(row.user_defaults ?? {}),
@@ -38,6 +41,7 @@ export interface SaveSettingsPatch {
   models?: Partial<ModelOverrides>;
   cost?: Partial<CostAssumptions>;
   critic?: Partial<CriticSettings>;
+  style_review?: Partial<StyleReviewSettings>;
   user_defaults?: UserDefaults;
 }
 
@@ -48,6 +52,11 @@ export async function saveSettings(patch: SaveSettingsPatch): Promise<AppSetting
     models: { ...current.models, ...(patch.models ?? {}) },
     cost: { ...current.cost, ...(patch.cost ?? {}) },
     critic: { ...DEFAULT_CRITIC_SETTINGS, ...current.critic, ...(patch.critic ?? {}) },
+    style_review: {
+      ...DEFAULT_STYLE_REVIEW_SETTINGS,
+      ...current.style_review,
+      ...(patch.style_review ?? {}),
+    },
     user_defaults: patch.user_defaults
       ? { ...current.user_defaults, ...patch.user_defaults }
       : current.user_defaults,

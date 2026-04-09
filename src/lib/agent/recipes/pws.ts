@@ -21,6 +21,11 @@ import { getContextItems, renderNotesBlock } from '../../project/context';
 import { draftProject } from '../../draft/orchestrator';
 import { runMetadataBatch } from '../../draft/metadata_batch';
 import { runCrossSectionReview, type DraftedSectionInput } from '../../draft/cross_section';
+import {
+  runStyleConsistencyReview,
+  type StyleReviewSectionInput,
+} from '../../draft/style_consistency';
+import { loadSettings } from '../../settings/store';
 import { assembleProjectDocx } from '../../export/assemble';
 import { blobToFile, extractedTextFromRet } from '../../asksage/extract';
 import { extractFileLocally, cacheExtractedText } from '../../project/local_extract';
@@ -664,6 +669,136 @@ const crossSectionReviewStage: RecipeStage = {
 };
 
 /**
+ * Stage 6.5 — style consistency review. Reads every drafted section
+ * back out of Dexie, runs ONE LLM pass that looks at the whole
+ * document's formatting (role usage, table structure, leaked
+ * markdown, heading hierarchy, bullet nesting), and applies the
+ * model's structured fix ops back to the per-section drafts before
+ * the assembler runs.
+ *
+ * Skipped when `settings.style_review.enabled` is false. Always
+ * non-fatal: if the LLM call or sanitization fails, the stage logs
+ * and falls through to assembly with the unchanged drafts.
+ */
+const styleConsistencyReviewStage: RecipeStage = {
+  id: 'style-consistency-review',
+  name: 'Style consistency review',
+  description:
+    'Look across the whole drafted document for inconsistent formatting, malformed tables, leaked markdown, and role mismatches; apply the model\'s fix ops before assembly.',
+  required: false,
+  intervention_point: false,
+  async run(ctx): Promise<RecipeStageResult> {
+    try {
+      const settings = await loadSettings();
+      const enabled = settings.style_review?.enabled ?? true;
+      if (!enabled) {
+        return {
+          kind: 'ok',
+          output: { skipped: true, reason: 'style_review.enabled is false' },
+        };
+      }
+
+      const allDrafts = await db.drafts
+        .where('project_id')
+        .equals(ctx.project.id)
+        .toArray();
+      const draftsBySectionId = new Map<string, DraftRecord>();
+      for (const d of allDrafts) {
+        if (d.status === 'ready') draftsBySectionId.set(d.section_id, d);
+      }
+
+      // Build the input list in document order, grouped by template.
+      // Order matters for the model — it reads the SECTION LIST as a
+      // sequence and reasons about hierarchy across neighbouring
+      // sections.
+      const sections: StyleReviewSectionInput[] = [];
+      for (const tpl of ctx.templates) {
+        for (const section of tpl.schema_json.sections) {
+          const draft = draftsBySectionId.get(section.id);
+          if (!draft) continue;
+          sections.push({
+            template_id: tpl.id,
+            template_name: tpl.name,
+            section,
+            paragraphs: draft.paragraphs,
+          });
+        }
+      }
+      if (sections.length === 0) {
+        return {
+          kind: 'ok',
+          output: { skipped: true, reason: 'no drafted sections to review' },
+        };
+      }
+
+      const result = await runStyleConsistencyReview({
+        client: ctx.client,
+        project_description: ctx.project.description,
+        templates: ctx.templates.map((t) => t.schema_json),
+        sections,
+        model: settings.style_review?.review_model,
+        max_ops: settings.style_review?.max_ops,
+      });
+
+      // Persist updated drafts back to Dexie. Only sections whose
+      // paragraph list actually changed get a write — comparing by
+      // identity is enough because applyStyleFixOps deep-clones the
+      // map.
+      let sectionsUpdated = 0;
+      for (const [section_id, updatedParagraphs] of result.updated) {
+        const original = draftsBySectionId.get(section_id);
+        if (!original) continue;
+        if (original.paragraphs === updatedParagraphs) continue;
+        // Quick equality check: if structurally identical, skip the write.
+        const before = JSON.stringify(original.paragraphs);
+        const after = JSON.stringify(updatedParagraphs);
+        if (before === after) continue;
+        await db.drafts.put({
+          ...original,
+          paragraphs: updatedParagraphs,
+          generated_at: new Date().toISOString(),
+        });
+        sectionsUpdated += 1;
+      }
+
+      return {
+        kind: 'ok',
+        output: {
+          ops_proposed: result.ops.length,
+          ops_applied: result.ops_applied.length,
+          ops_dropped: result.ops_dropped.length,
+          sections_updated: sectionsUpdated,
+          model: result.model,
+          // Surface a compact view of the applied ops so the UI can
+          // show what was changed without re-querying Dexie.
+          applied_ops: result.ops_applied.map((o) => ({
+            kind: o.kind,
+            section_id: o.section_id,
+            paragraph_index: o.paragraph_index,
+            reason: o.reason,
+          })),
+        },
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        usage_by_model: result.usage_by_model,
+      };
+    } catch (err) {
+      // Non-fatal: the assembler still has the unchanged drafts. Log
+      // and return ok with a skipped marker so the runner moves on.
+      // eslint-disable-next-line no-console
+      console.error('[style-consistency-review] failed, falling through:', err);
+      return {
+        kind: 'ok',
+        output: {
+          skipped: true,
+          reason: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+  },
+};
+
+/**
  * Stage 7 — assemble DOCX. Calls the Phase 5a writer once per template
  * and stashes the blob(s) on the stage output for the UI to offer as
  * downloads.
@@ -761,6 +896,7 @@ export const PWS_RECIPE: Recipe = {
     draftSectionsStage,
     fillPlaceholdersStage,
     crossSectionReviewStage,
+    styleConsistencyReviewStage,
     assembleDocxStage,
   ],
 };

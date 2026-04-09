@@ -160,6 +160,19 @@ export function Settings() {
       </p>
       <CriticSettingsSection critic={settings.critic ?? null} />
 
+      <h2>Style consistency review</h2>
+      <p className="note">
+        After every section is drafted and the cross-section content
+        review runs, this pass takes one more LLM call that looks at
+        the WHOLE document's formatting — role usage, table structure,
+        leaked markdown, heading hierarchy, bullet nesting — and emits
+        structured fix ops that get applied before DOCX assembly. Use
+        this when independently-drafted sections have produced
+        inconsistent formatting (mixed fonts, malformed tables, stray
+        markdown). One LLM call per project run.
+      </p>
+      <StyleReviewSettingsSection styleReview={settings.style_review ?? null} />
+
       <h2>User defaults</h2>
       <p className="note">
         Key/value pairs that get auto-populated into every NEW project's
@@ -631,6 +644,55 @@ function CriticSettingsSection({
       </div>
       <p className="note" style={{ marginTop: '0.4rem' }}>
         Cost impact: enabling the critic with default settings adds ~25% to the per-project token spend in exchange for substantially better quality. See the design discussion in the project memory for the full math.
+      </p>
+    </div>
+  );
+}
+
+function StyleReviewSettingsSection({
+  styleReview,
+}: {
+  styleReview: import('../lib/settings/types').StyleReviewSettings | null;
+}) {
+  const enabled = styleReview?.enabled ?? true;
+  const maxOps = styleReview?.max_ops ?? 200;
+
+  async function update(patch: Partial<import('../lib/settings/types').StyleReviewSettings>) {
+    await saveSettings({ style_review: patch });
+    toast.success('Style review settings saved');
+  }
+
+  return (
+    <div className="card" style={{ padding: 'var(--space-3)' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => void update({ enabled: e.target.checked })}
+          style={{ width: 'auto' }}
+        />
+        Enable style consistency review
+      </label>
+      <p className="note" style={{ marginTop: '0.4rem' }}>
+        When disabled, the recipe runner skips this stage and goes straight from cross-section review to DOCX assembly. Save cost; lose normalization.
+      </p>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontWeight: 400 }}>
+          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Max fix ops per run</span>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            step={10}
+            value={maxOps}
+            onChange={(e) => void update({ max_ops: Math.max(1, Number(e.target.value) || 200) })}
+            disabled={!enabled}
+          />
+        </label>
+      </div>
+      <p className="note" style={{ marginTop: '0.4rem' }}>
+        Cost impact: one extra LLM call per project run. Token cost scales with the total drafted content (the whole document JSON is sent in one shot).
       </p>
     </div>
   );

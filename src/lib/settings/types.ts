@@ -37,6 +37,26 @@ export interface CriticSettings {
   critic_model?: string;
 }
 
+/**
+ * Style consistency review settings — drives the document-level
+ * formatting/style normalization pass that runs between
+ * cross-section review and DOCX assembly. The reviewer looks at the
+ * whole drafted document JSON and emits structured fix ops to
+ * normalize role usage, table structure, leaked markdown, and
+ * heading/bullet hierarchy. See lib/draft/style_consistency.ts.
+ *
+ * Default enabled=true because per-section drafts are independent
+ * and almost always benefit from one normalization pass before the
+ * assembler runs. Users who want to skip the cost can flip this off.
+ */
+export interface StyleReviewSettings {
+  enabled: boolean;
+  /** Optional model override for the review call. Defaults to the drafting model. */
+  review_model?: string;
+  /** Hard cap on the number of fix ops we will accept from the model. Defaults to 200. */
+  max_ops?: number;
+}
+
 export interface CostAssumptions {
   /** Estimated input tokens per drafted section */
   drafting_tokens_in_per_section: number;
@@ -102,6 +122,8 @@ export interface AppSettings {
   cost: CostAssumptions;
   /** Critic loop configuration. Optional for migration compatibility. */
   critic?: CriticSettings;
+  /** Style consistency review configuration. Optional for migration compatibility. */
+  style_review?: StyleReviewSettings;
   /** User-level defaults that auto-populate new projects. */
   user_defaults?: UserDefaults;
   updated_at: string;
@@ -119,6 +141,11 @@ export const DEFAULT_CRITIC_SETTINGS: CriticSettings = {
   enabled: true,
   strictness: 'moderate',
   max_iterations: 2,
+};
+
+export const DEFAULT_STYLE_REVIEW_SETTINGS: StyleReviewSettings = {
+  enabled: true,
+  max_ops: 200,
 };
 
 export const DEFAULT_COST_ASSUMPTIONS: CostAssumptions = {
@@ -139,6 +166,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   models: DEFAULT_MODEL_OVERRIDES,
   cost: DEFAULT_COST_ASSUMPTIONS,
   critic: DEFAULT_CRITIC_SETTINGS,
+  style_review: DEFAULT_STYLE_REVIEW_SETTINGS,
   user_defaults: DEFAULT_USER_DEFAULTS,
   updated_at: new Date(0).toISOString(),
 };
