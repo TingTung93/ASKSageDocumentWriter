@@ -21,7 +21,7 @@
 import JSZip from 'jszip';
 import type { TemplateRecord } from '../db/schema';
 import type { BodyFillRegion } from '../template/types';
-import type { DraftParagraph } from '../draft/types';
+import type { DraftParagraph, DraftRun } from '../draft/types';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DOCX_MIME =
@@ -335,8 +335,12 @@ function processSection(
     if (groups.length === 1) {
       const group = groups[0]!;
       const formatTemplates = collectFormatTemplates(group.paragraphs);
-      const newEls = draft.map((dp) =>
-        buildParagraph(dom, dp, availableStyleIds, formatTemplates, inventory),
+      const newEls = buildSectionElements(
+        dom,
+        draft,
+        availableStyleIds,
+        formatTemplates,
+        inventory,
       );
       const firstOld = group.paragraphs[0]!;
       for (const n of newEls) {
@@ -363,8 +367,12 @@ function processSection(
       const group = groups[i]!;
       const slice = slices[i]!;
       const formatTemplates = collectFormatTemplates(group.paragraphs);
-      const newEls = slice.map((dp) =>
-        buildParagraph(dom, dp, availableStyleIds, formatTemplates, inventory),
+      const newEls = buildSectionElements(
+        dom,
+        slice,
+        availableStyleIds,
+        formatTemplates,
+        inventory,
       );
       const firstOld = group.paragraphs[0]!;
       for (const n of newEls) {
@@ -480,17 +488,26 @@ async function processDocumentPartSection(
       // headers fall through to body styling — acceptable for v1.
       const partInventory = collectGlobalFormatInventory(partDom);
       void inventory; // body-side inventory intentionally unused here
-      for (const dp of draft) {
-        root.appendChild(
-          buildParagraph(partDom, dp, availableStyleIds, emptyTemplates, partInventory),
-        );
+      const newEls = buildSectionElements(
+        partDom,
+        draft,
+        availableStyleIds,
+        emptyTemplates,
+        partInventory,
+      );
+      for (const el of newEls) {
+        root.appendChild(el);
       }
     } else {
       const formatTemplates = collectFormatTemplates(oldParagraphs);
       const partInventory = collectGlobalFormatInventory(partDom);
       void inventory;
-      const newEls = draft.map((dp) =>
-        buildParagraph(partDom, dp, availableStyleIds, formatTemplates, partInventory),
+      const newEls = buildSectionElements(
+        partDom,
+        draft,
+        availableStyleIds,
+        formatTemplates,
+        partInventory,
       );
       // Insert the new paragraphs immediately before the first old
       // one, then remove the old paragraphs. Anything that wasn't a
@@ -861,6 +878,184 @@ function selectFormatTemplate(
 }
 
 /**
+ * Build the full element list to splice into a section, walking the
+ * draft once and collapsing every run of consecutive table_row
+ * paragraphs into a single real <w:tbl>. Non-row paragraphs go through
+ * `buildParagraph` unchanged.
+ *
+ * Returns a mixed Element[] of <w:p> and <w:tbl> nodes — both are
+ * legal direct children of <w:body> and <w:tc>, so the splice path
+ * doesn't need to know which is which.
+ */
+function buildSectionElements(
+  dom: Document,
+  draft: DraftParagraph[],
+  availableStyleIds: Set<string>,
+  templates: FormatTemplates,
+  inventory: FormatInventory,
+): Element[] {
+  const out: Element[] = [];
+  let i = 0;
+  while (i < draft.length) {
+    const dp = draft[i]!;
+    if (dp.role === 'table_row') {
+      // Collect the maximal run of consecutive table_row paragraphs
+      // and build them as one <w:tbl>.
+      const rows: DraftParagraph[] = [];
+      while (i < draft.length && draft[i]!.role === 'table_row') {
+        rows.push(draft[i]!);
+        i += 1;
+      }
+      out.push(buildTable(dom, rows, templates));
+      continue;
+    }
+    out.push(buildParagraph(dom, dp, availableStyleIds, templates, inventory));
+    i += 1;
+  }
+  // Word refuses a <w:tbl> as the LAST element of a <w:tc> without a
+  // trailing <w:p>. Append a tiny empty paragraph if we end on a table.
+  if (out.length > 0 && out[out.length - 1]!.localName === 'tbl') {
+    out.push(emptyParagraph(dom));
+  }
+  return out;
+}
+
+function emptyParagraph(dom: Document): Element {
+  const p = dom.createElementNS(W_NS, 'w:p');
+  return p;
+}
+
+// ─── <w:tbl> construction ─────────────────────────────────────────
+//
+// Real Word tables. Built from a contiguous run of `table_row`
+// DraftParagraphs. Column count is the max cells.length across rows;
+// short rows get padded with empty cells, long rows extend the grid.
+// Borders use a basic single-line all-around style; cell widths are
+// computed by splitting a fixed 9000-twip page width (≈6.25" — fits
+// inside the standard 1" margins of an 8.5"-wide page) evenly across
+// columns. Header rows (is_header=true) get bold rPr applied to all
+// cells and a <w:tblHeader/> trPr so the row repeats across pages.
+
+const PAGE_WIDTH_TWIPS = 9000;
+
+function buildTable(
+  dom: Document,
+  rows: DraftParagraph[],
+  templates: FormatTemplates,
+): Element {
+  // Column count = max cells across rows. Floor at 1 so we never
+  // produce an empty grid.
+  let cols = 1;
+  for (const r of rows) {
+    if (Array.isArray(r.cells) && r.cells.length > cols) {
+      cols = r.cells.length;
+    }
+  }
+  const colWidth = Math.floor(PAGE_WIDTH_TWIPS / cols);
+
+  const tbl = dom.createElementNS(W_NS, 'w:tbl');
+
+  // ── tblPr ──
+  const tblPr = dom.createElementNS(W_NS, 'w:tblPr');
+  const tblW = dom.createElementNS(W_NS, 'w:tblW');
+  tblW.setAttributeNS(W_NS, 'w:w', String(PAGE_WIDTH_TWIPS));
+  tblW.setAttributeNS(W_NS, 'w:type', 'dxa');
+  tblPr.appendChild(tblW);
+
+  const tblBorders = dom.createElementNS(W_NS, 'w:tblBorders');
+  for (const side of ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']) {
+    const b = dom.createElementNS(W_NS, `w:${side}`);
+    b.setAttributeNS(W_NS, 'w:val', 'single');
+    b.setAttributeNS(W_NS, 'w:sz', '4');
+    b.setAttributeNS(W_NS, 'w:space', '0');
+    b.setAttributeNS(W_NS, 'w:color', 'auto');
+    tblBorders.appendChild(b);
+  }
+  tblPr.appendChild(tblBorders);
+
+  const tblLayout = dom.createElementNS(W_NS, 'w:tblLayout');
+  tblLayout.setAttributeNS(W_NS, 'w:type', 'fixed');
+  tblPr.appendChild(tblLayout);
+
+  tbl.appendChild(tblPr);
+
+  // ── tblGrid ──
+  const tblGrid = dom.createElementNS(W_NS, 'w:tblGrid');
+  for (let c = 0; c < cols; c++) {
+    const gridCol = dom.createElementNS(W_NS, 'w:gridCol');
+    gridCol.setAttributeNS(W_NS, 'w:w', String(colWidth));
+    tblGrid.appendChild(gridCol);
+  }
+  tbl.appendChild(tblGrid);
+
+  // ── rows ──
+  for (const row of rows) {
+    tbl.appendChild(buildTableRow(dom, row, cols, colWidth, templates));
+  }
+
+  return tbl;
+}
+
+function buildTableRow(
+  dom: Document,
+  row: DraftParagraph,
+  cols: number,
+  colWidth: number,
+  templates: FormatTemplates,
+): Element {
+  const tr = dom.createElementNS(W_NS, 'w:tr');
+
+  // Header rows: <w:trPr><w:tblHeader/></w:trPr> so Word repeats the
+  // row across page breaks. Cells in header rows also get bold runs.
+  const isHeader = row.is_header === true;
+  if (isHeader) {
+    const trPr = dom.createElementNS(W_NS, 'w:trPr');
+    trPr.appendChild(dom.createElementNS(W_NS, 'w:tblHeader'));
+    tr.appendChild(trPr);
+  }
+
+  const cells = Array.isArray(row.cells) ? row.cells : [];
+  for (let c = 0; c < cols; c++) {
+    const text = c < cells.length ? cells[c]! : '';
+    tr.appendChild(buildTableCell(dom, text, colWidth, templates, isHeader));
+  }
+  return tr;
+}
+
+function buildTableCell(
+  dom: Document,
+  text: string,
+  colWidth: number,
+  templates: FormatTemplates,
+  bold: boolean,
+): Element {
+  const tc = dom.createElementNS(W_NS, 'w:tc');
+
+  // tcPr: width
+  const tcPr = dom.createElementNS(W_NS, 'w:tcPr');
+  const tcW = dom.createElementNS(W_NS, 'w:tcW');
+  tcW.setAttributeNS(W_NS, 'w:w', String(colWidth));
+  tcW.setAttributeNS(W_NS, 'w:type', 'dxa');
+  tcPr.appendChild(tcW);
+  tc.appendChild(tcPr);
+
+  // <w:tc> requires at least one <w:p>. Build a body-styled paragraph
+  // carrying the cell text. Header rows force-apply bold via runs[].
+  const cellDp: DraftParagraph = bold
+    ? { role: 'body', text: '', runs: [{ text, bold: true }] }
+    : { role: 'body', text };
+  const p = buildParagraph(
+    dom,
+    cellDp,
+    /* availableStyleIds */ new Set<string>(),
+    templates,
+    { byRole: new Map() },
+  );
+  tc.appendChild(p);
+  return tc;
+}
+
+/**
  * Build a fresh <w:p> element from a DraftParagraph. The paragraph
  * inherits pPr/rPr from a representative paragraph in the section it's
  * replacing — that's how tab stops, indents, alignment, line spacing,
@@ -954,6 +1149,32 @@ function buildParagraph(
     setLeftIndent(dom, pPr, level * INDENT_STEP_TWIPS);
   }
 
+  // Bullet/step fallback: if the source pPr has no real numPr binding
+  // (or carries the numId=0 sentinel meaning "no list"), the paragraph
+  // would render as ordinary prose with no bullet glyph and no
+  // indent. Apply a manual left indent and prepend a Unicode bullet
+  // glyph so the visual hierarchy survives even on templates whose
+  // numbering definitions we can't lift. Indent grows by 0.25" per
+  // level (360 twips) on top of a base 360-twip indent.
+  let manualBulletPrefix: string | null = null;
+  if (dp.role === 'bullet' || dp.role === 'step') {
+    if (!hasUsableNumPr(pPr)) {
+      const baseTwips = 360 + level * 360;
+      setLeftIndent(dom, pPr, baseTwips);
+      removeChildrenByLocalName(pPr, 'numPr');
+      manualBulletPrefix =
+        dp.role === 'bullet' ? `${BULLET_GLYPHS[level % BULLET_GLYPHS.length]}\u00a0` : `\u00a0\u00a0`;
+    }
+  }
+
+  // page_break_before — hard "start this paragraph on a new page"
+  // toggle. OOXML <w:pageBreakBefore/> sits inside pPr; Word respects
+  // it whether or not the paragraph carries other formatting.
+  if (dp.page_break_before === true) {
+    removeChildrenByLocalName(pPr, 'pageBreakBefore');
+    pPr.appendChild(dom.createElementNS(W_NS, 'w:pageBreakBefore'));
+  }
+
   // Only attach pPr if it has any children — an empty pPr is legal
   // but pollutes the diff. Skipping when empty also matches the
   // original codepath's behavior when no style was available.
@@ -961,31 +1182,156 @@ function buildParagraph(
     p.appendChild(pPr);
   }
 
-  // ── Run + text ──
-  // table_row → flattened "cell1, cell2, cell3" (v1 compromise).
-  let text: string;
-  if (dp.role === 'table_row' && Array.isArray(dp.cells) && dp.cells.length > 0) {
-    text = dp.cells.join(', ');
+  // ── Run(s) + text ──
+  // Three input shapes for paragraph content:
+  //   1. dp.runs[] non-empty → rich-text path. One <w:r> per run with
+  //      the source rPr augmented by per-run bold/italic/underline.
+  //   2. dp.role === 'table_row' AND dp.cells[] → degraded fallback for
+  //      a stray table_row that wasn't grouped into a real <w:tbl>.
+  //      The grouping happens in buildSectionElements; this branch only
+  //      fires when buildParagraph is called directly on a row that
+  //      somehow escaped grouping (defensive).
+  //   3. plain dp.text path (the most common case).
+  if (Array.isArray(dp.runs) && dp.runs.length > 0) {
+    appendRichRuns(dom, p, dp.runs, tpl.rPr, manualBulletPrefix);
   } else {
-    text = dp.text ?? '';
+    let text: string;
+    if (dp.role === 'table_row' && Array.isArray(dp.cells) && dp.cells.length > 0) {
+      text = dp.cells.join(', ');
+    } else {
+      text = dp.text ?? '';
+    }
+    if (manualBulletPrefix) {
+      text = manualBulletPrefix + text;
+    }
+    appendPlainTextRun(dom, p, text, tpl.rPr);
   }
 
+  return p;
+}
+
+/**
+ * Bullet glyphs for the manual-fallback indent path. Indexed by level
+ * so nested levels visually differ. Mirrors Word's default
+ * ListBullet/ListBullet2/ListBullet3 glyphs.
+ */
+const BULLET_GLYPHS = ['\u2022', '\u25E6', '\u25AA', '\u2022', '\u25E6', '\u25AA'] as const;
+
+/**
+ * True when the pPr already has a <w:numPr> with a numId other than
+ * "0". numId=0 is OOXML's "no list" sentinel — a paragraph carrying
+ * it renders as plain prose, so we still need the manual bullet
+ * fallback.
+ */
+function hasUsableNumPr(pPr: Element): boolean {
+  const numPr = firstChildNS(pPr, 'numPr');
+  if (!numPr) return false;
+  const numId = firstChildNS(numPr, 'numId');
+  if (!numId) return false;
+  const val = numId.getAttributeNS(W_NS, 'val') ?? numId.getAttribute('w:val');
+  return val !== null && val !== '0';
+}
+
+/**
+ * Append a single <w:r> with cloned rPr and the given text. Used for
+ * the plain-text path and as a building block for richer flows.
+ */
+function appendPlainTextRun(
+  dom: Document,
+  p: Element,
+  text: string,
+  baseRPr: Element | null,
+): void {
   const r = dom.createElementNS(W_NS, 'w:r');
-  // Re-attach the source rPr (font/size/bold/etc.) so the inserted
-  // text matches the surrounding paragraphs visually.
-  if (tpl.rPr) {
-    r.appendChild(tpl.rPr.cloneNode(true) as Element);
+  if (baseRPr) {
+    r.appendChild(baseRPr.cloneNode(true) as Element);
   }
   const t = dom.createElementNS(W_NS, 'w:t');
-  // xml:space="preserve" so leading/trailing whitespace is honored.
-  // Using setAttribute (not NS) because xml:space is an XML-namespace
-  // attribute and the parser accepts the unqualified form for output.
   t.setAttribute('xml:space', 'preserve');
   t.textContent = text;
   r.appendChild(t);
   p.appendChild(r);
+}
 
-  return p;
+/**
+ * Build one <w:r> per DraftRun and append them to `p`. Each run
+ * starts from a deep clone of `baseRPr` (so font/size/color carry
+ * through) and then layers the run's own bold/italic/underline/strike
+ * toggles on top — explicit `false` clears the inherited toggle,
+ * `undefined` leaves it alone.
+ *
+ * The first run absorbs `manualBulletPrefix` if supplied so the
+ * bullet glyph rides at the front of the paragraph's text content
+ * exactly like the plain-text path would emit it.
+ */
+function appendRichRuns(
+  dom: Document,
+  p: Element,
+  runs: DraftRun[],
+  baseRPr: Element | null,
+  manualBulletPrefix: string | null,
+): void {
+  let prefix = manualBulletPrefix ?? '';
+  for (const run of runs) {
+    const text = (run.text ?? '');
+    if (!text && !prefix) continue;
+    const r = dom.createElementNS(W_NS, 'w:r');
+
+    // Clone base rPr first so we layer toggles on top of font/size/color.
+    const rPr = baseRPr
+      ? (baseRPr.cloneNode(true) as Element)
+      : dom.createElementNS(W_NS, 'w:rPr');
+    applyRunToggle(dom, rPr, 'b', run.bold);
+    applyRunToggle(dom, rPr, 'i', run.italic);
+    applyRunToggle(dom, rPr, 'u', run.underline, 'single');
+    applyRunToggle(dom, rPr, 'strike', run.strike);
+    if (rPr.firstChild) {
+      r.appendChild(rPr);
+    }
+
+    const t = dom.createElementNS(W_NS, 'w:t');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = prefix + text;
+    r.appendChild(t);
+    p.appendChild(r);
+    prefix = '';
+  }
+  // If every run was empty, still emit the prefix as a stand-alone run
+  // so the bullet glyph isn't dropped.
+  if (prefix) {
+    appendPlainTextRun(dom, p, prefix, baseRPr);
+  }
+}
+
+/**
+ * Apply a boolean run toggle to an rPr element. Behavior matches
+ * OOXML semantics:
+ *
+ *   - toggle === true  → ensure <w:{tag}/> exists (with optional w:val
+ *     attribute, e.g. w:val="single" for underline)
+ *   - toggle === false → ensure <w:{tag} w:val="false"/> exists,
+ *     overriding any inherited setting
+ *   - toggle undefined → leave whatever the cloned rPr already had
+ *
+ * For the underline tag the optional `valWhenTrue` argument supplies
+ * the underline style ("single", "double", etc.). Other tags ignore it.
+ */
+function applyRunToggle(
+  dom: Document,
+  rPr: Element,
+  tag: 'b' | 'i' | 'u' | 'strike',
+  toggle: boolean | undefined,
+  valWhenTrue?: string,
+): void {
+  if (toggle === undefined) return;
+  removeChildrenByLocalName(rPr, tag);
+  const el = dom.createElementNS(W_NS, `w:${tag}`);
+  if (toggle === false) {
+    el.setAttributeNS(W_NS, 'w:val', 'false');
+  } else if (valWhenTrue) {
+    el.setAttributeNS(W_NS, 'w:val', valWhenTrue);
+  }
+  rPr.appendChild(el);
 }
 
 function removeChildrenByLocalName(parent: Element, localName: string): void {

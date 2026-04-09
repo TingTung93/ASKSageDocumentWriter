@@ -2000,3 +2000,559 @@ describe('assembleProjectDocx — DraftParagraph.level field', () => {
     expect(ilvl('level negative')).toBe('0');
   });
 });
+
+// ─── Inline runs, page breaks, real tables, bullet fallback ────────
+//
+// Pins the formatting/table feature set. The drafter can now emit:
+//   - runs[]              → mixed bold/italic/underline inside a paragraph
+//   - page_break_before   → forces a hard page break before the paragraph
+//   - is_header           → marks a table_row as a header (bold + tblHeader)
+//   - consecutive table_row paragraphs → real <w:tbl> with borders
+//   - bullet/step roles in templates with no list inventory → manual indent
+//
+// All four features must be additive: every existing test in the
+// suites above still passes unchanged.
+
+describe('assembleProjectDocx — inline runs and rich-text formatting', () => {
+  // Reuse the synthetic template builder pattern from earlier suites.
+  async function buildPlainTemplate(): Promise<TemplateRecord> {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t xml:space="preserve">Section</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+      <w:r>
+        <w:rPr><w:rFonts w:ascii="Times New Roman"/><w:sz w:val="24"/></w:rPr>
+        <w:t xml:space="preserve">body line</w:t>
+      </w:r>
+    </w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+  </w:body>
+</w:document>`;
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+  <w:style w:type="paragraph" w:styleId="BodyText"><w:name w:val="Body Text"/></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const ab = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(ab).set(u8);
+    const blob = new Blob([ab]);
+    const parsed = await parseDocx(blob, {
+      filename: 'plain.docx',
+      docx_blob_id: 'plain',
+    });
+    return {
+      id: 'tpl_plain',
+      name: 'plain',
+      filename: 'plain.docx',
+      ingested_at: new Date().toISOString(),
+      docx_bytes: blob,
+      schema_json: {
+        ...parsed.schema,
+        sections: [
+          {
+            id: 'sec_one',
+            name: 'Section',
+            order: 0,
+            required: true,
+            fill_region: {
+              kind: 'heading_bounded',
+              heading_text: 'Section',
+              heading_style_id: 'Heading1',
+              body_style_id: 'Normal',
+              anchor_paragraph_index: 0,
+              end_anchor_paragraph_index: 1,
+              permitted_roles: [
+                'heading',
+                'body',
+                'bullet',
+                'step',
+                'table_row',
+              ],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  async function loadDom(blob: Blob): Promise<{ dom: Document; W_NS: string }> {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(blob);
+    const xml = await zip.file('word/document.xml')!.async('string');
+    const dom = new DOMParser().parseFromString(xml, 'text/xml');
+    return { dom, W_NS: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main' };
+  }
+
+  it('runs[] produces multiple <w:r> with per-run rPr toggles layered onto cloned base rPr', async () => {
+    const template = await buildPlainTemplate();
+    const drafted: DraftParagraph[] = [
+      {
+        role: 'body',
+        text: '',
+        runs: [
+          { text: 'The contractor shall comply with ' },
+          { text: 'FAR 52.204-21', bold: true },
+          { text: ' for all CUI handling.' },
+        ],
+      },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    expect(
+      result.section_results.find((r) => r.section_id === 'sec_one')?.status.kind,
+    ).toBe('assembled');
+
+    const { dom, W_NS } = await loadDom(result.blob);
+    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
+    const target = paragraphs.find((p) =>
+      (p.textContent ?? '').includes('FAR 52.204-21'),
+    )!;
+    const runs = Array.from(target.getElementsByTagNameNS(W_NS, 'r'));
+    expect(runs.length).toBe(3);
+
+    // The middle run should carry bold ON; the others should not have a
+    // bold element added (cloned base rPr had none).
+    function hasExplicitBold(run: Element): boolean {
+      const rPr = run.getElementsByTagNameNS(W_NS, 'rPr')[0];
+      if (!rPr) return false;
+      const bs = rPr.getElementsByTagNameNS(W_NS, 'b');
+      return bs.length > 0 && bs[0]!.getAttributeNS(W_NS, 'val') !== 'false';
+    }
+    expect(hasExplicitBold(runs[0]!)).toBe(false);
+    expect(hasExplicitBold(runs[1]!)).toBe(true);
+    expect(hasExplicitBold(runs[2]!)).toBe(false);
+
+    // Every run inherits the cloned base rPr (rFonts/sz from the template).
+    for (const r of runs) {
+      const rPr = r.getElementsByTagNameNS(W_NS, 'rPr')[0]!;
+      expect(rPr.getElementsByTagNameNS(W_NS, 'rFonts').length).toBe(1);
+      expect(rPr.getElementsByTagNameNS(W_NS, 'sz').length).toBe(1);
+    }
+
+    // Concatenated text matches.
+    expect(target.textContent).toBe(
+      'The contractor shall comply with FAR 52.204-21 for all CUI handling.',
+    );
+  });
+
+  it('underline run emits <w:u w:val="single"/>; explicit bold:false clears inherited bold', async () => {
+    const template = await buildPlainTemplate();
+    const drafted: DraftParagraph[] = [
+      {
+        role: 'body',
+        text: '',
+        runs: [
+          { text: 'underlined term', underline: true },
+          { text: ' — and ', bold: false },
+          { text: 'italicized note', italic: true },
+        ],
+      },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    const { dom, W_NS } = await loadDom(result.blob);
+    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
+    const target = paragraphs.find((p) =>
+      (p.textContent ?? '').includes('underlined term'),
+    )!;
+    const runs = Array.from(target.getElementsByTagNameNS(W_NS, 'r'));
+    expect(runs.length).toBe(3);
+
+    // Run 0: <w:u w:val="single"/>
+    const u0 = runs[0]!.getElementsByTagNameNS(W_NS, 'u')[0]!;
+    expect(u0.getAttributeNS(W_NS, 'val')).toBe('single');
+
+    // Run 1: <w:b w:val="false"/> — explicit clear
+    const b1 = runs[1]!.getElementsByTagNameNS(W_NS, 'b')[0]!;
+    expect(b1.getAttributeNS(W_NS, 'val')).toBe('false');
+
+    // Run 2: <w:i/>
+    const i2 = runs[2]!.getElementsByTagNameNS(W_NS, 'i')[0]!;
+    expect(i2.getAttributeNS(W_NS, 'val')).toBeNull();
+  });
+
+  it('page_break_before adds <w:pageBreakBefore/> to pPr', async () => {
+    const template = await buildPlainTemplate();
+    const drafted: DraftParagraph[] = [
+      { role: 'body', text: 'first paragraph' },
+      { role: 'body', text: 'after the break', page_break_before: true },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    expect(
+      result.section_results.find((r) => r.section_id === 'sec_one')?.status.kind,
+    ).toBe('assembled');
+
+    const { dom, W_NS } = await loadDom(result.blob);
+    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
+    const before = paragraphs.find((p) =>
+      (p.textContent ?? '').includes('first paragraph'),
+    )!;
+    const after = paragraphs.find((p) =>
+      (p.textContent ?? '').includes('after the break'),
+    )!;
+    expect(
+      before.getElementsByTagNameNS(W_NS, 'pageBreakBefore').length,
+    ).toBe(0);
+    expect(
+      after.getElementsByTagNameNS(W_NS, 'pageBreakBefore').length,
+    ).toBe(1);
+  });
+});
+
+describe('assembleProjectDocx — real <w:tbl> from consecutive table_row drafts', () => {
+  async function buildTplWithSection(): Promise<TemplateRecord> {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t xml:space="preserve">Roles</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+      <w:r><w:t xml:space="preserve">placeholder</w:t></w:r>
+    </w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+  </w:body>
+</w:document>`;
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+  <w:style w:type="paragraph" w:styleId="BodyText"><w:name w:val="Body Text"/></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const ab = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(ab).set(u8);
+    const blob = new Blob([ab]);
+    const parsed = await parseDocx(blob, {
+      filename: 'tbl.docx',
+      docx_blob_id: 'tbl',
+    });
+    return {
+      id: 'tpl_tbl',
+      name: 'tbl',
+      filename: 'tbl.docx',
+      ingested_at: new Date().toISOString(),
+      docx_bytes: blob,
+      schema_json: {
+        ...parsed.schema,
+        sections: [
+          {
+            id: 'sec_one',
+            name: 'Roles',
+            order: 0,
+            required: true,
+            fill_region: {
+              kind: 'heading_bounded',
+              heading_text: 'Roles',
+              heading_style_id: 'Heading1',
+              body_style_id: 'Normal',
+              anchor_paragraph_index: 0,
+              end_anchor_paragraph_index: 1,
+              permitted_roles: ['heading', 'body', 'table_row'],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  async function loadDom(blob: Blob): Promise<{ dom: Document; W_NS: string }> {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(blob);
+    const xml = await zip.file('word/document.xml')!.async('string');
+    const dom = new DOMParser().parseFromString(xml, 'text/xml');
+    return { dom, W_NS: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main' };
+  }
+
+  it('collapses consecutive table_row paragraphs into one <w:tbl> with borders, header row, and per-row cells', async () => {
+    const template = await buildTplWithSection();
+    const drafted: DraftParagraph[] = [
+      { role: 'heading', text: 'Roles and Responsibilities', level: 0 },
+      { role: 'table_row', is_header: true, cells: ['Role', 'Responsibility'], text: '' },
+      { role: 'table_row', cells: ['Contracting Officer', 'Award and administer the contract.'], text: '' },
+      { role: 'table_row', cells: ['COR', 'Monitor performance.'], text: '' },
+      { role: 'body', text: 'Each role above is staffed prior to award.' },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    expect(
+      result.section_results.find((r) => r.section_id === 'sec_one')?.status.kind,
+    ).toBe('assembled');
+
+    const { dom, W_NS } = await loadDom(result.blob);
+    const tables = Array.from(dom.getElementsByTagNameNS(W_NS, 'tbl'));
+    expect(tables.length).toBe(1);
+    const tbl = tables[0]!;
+
+    // tblPr / tblBorders present
+    const tblPr = tbl.getElementsByTagNameNS(W_NS, 'tblPr')[0]!;
+    expect(tblPr.getElementsByTagNameNS(W_NS, 'tblBorders').length).toBe(1);
+
+    // tblGrid has 2 columns
+    const grid = tbl.getElementsByTagNameNS(W_NS, 'tblGrid')[0]!;
+    expect(grid.getElementsByTagNameNS(W_NS, 'gridCol').length).toBe(2);
+
+    // 3 rows
+    const rows = Array.from(tbl.getElementsByTagNameNS(W_NS, 'tr'));
+    expect(rows.length).toBe(3);
+
+    // Row 0 is header → has trPr/tblHeader
+    const trPr = rows[0]!.getElementsByTagNameNS(W_NS, 'trPr')[0];
+    expect(trPr).toBeTruthy();
+    expect(trPr!.getElementsByTagNameNS(W_NS, 'tblHeader').length).toBe(1);
+
+    // Header cells carry bold runs
+    const headerCells = Array.from(rows[0]!.getElementsByTagNameNS(W_NS, 'tc'));
+    expect(headerCells.length).toBe(2);
+    for (const tc of headerCells) {
+      const bs = tc.getElementsByTagNameNS(W_NS, 'b');
+      expect(bs.length).toBeGreaterThan(0);
+    }
+    expect(headerCells[0]!.textContent).toContain('Role');
+    expect(headerCells[1]!.textContent).toContain('Responsibility');
+
+    // Row 1 cell text
+    const row1Cells = Array.from(rows[1]!.getElementsByTagNameNS(W_NS, 'tc'));
+    expect(row1Cells[0]!.textContent).toContain('Contracting Officer');
+    expect(row1Cells[1]!.textContent).toContain('Award and administer the contract.');
+
+    // The body paragraph after the table is still present as <w:p>.
+    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
+    const trailing = paragraphs.find((p) =>
+      (p.textContent ?? '').includes('Each role above is staffed prior to award.'),
+    );
+    expect(trailing).toBeTruthy();
+  });
+
+  it('appends a trailing empty <w:p> when the section ends on a table (Word requires it)', async () => {
+    const template = await buildTplWithSection();
+    const drafted: DraftParagraph[] = [
+      { role: 'table_row', is_header: true, cells: ['A', 'B'], text: '' },
+      { role: 'table_row', cells: ['1', '2'], text: '' },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    const { dom, W_NS } = await loadDom(result.blob);
+    const tables = Array.from(dom.getElementsByTagNameNS(W_NS, 'tbl'));
+    expect(tables.length).toBe(1);
+    // The next sibling of the table (within w:body) is a <w:p>.
+    const tbl = tables[0]!;
+    let next = tbl.nextSibling;
+    while (next && next.nodeType !== 1) next = next.nextSibling;
+    expect(next).toBeTruthy();
+    expect((next as Element).localName).toBe('p');
+  });
+
+  it('short rows pad to the column count of the longest row', async () => {
+    const template = await buildTplWithSection();
+    const drafted: DraftParagraph[] = [
+      { role: 'table_row', cells: ['a', 'b', 'c'], text: '' },
+      { role: 'table_row', cells: ['x'], text: '' },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    const { dom, W_NS } = await loadDom(result.blob);
+    const tbl = dom.getElementsByTagNameNS(W_NS, 'tbl')[0]!;
+    const grid = tbl.getElementsByTagNameNS(W_NS, 'tblGrid')[0]!;
+    expect(grid.getElementsByTagNameNS(W_NS, 'gridCol').length).toBe(3);
+    const rows = Array.from(tbl.getElementsByTagNameNS(W_NS, 'tr'));
+    expect(rows[0]!.getElementsByTagNameNS(W_NS, 'tc').length).toBe(3);
+    expect(rows[1]!.getElementsByTagNameNS(W_NS, 'tc').length).toBe(3);
+  });
+});
+
+describe('assembleProjectDocx — bullet fallback when no list inventory exists', () => {
+  // A template with NO list paragraphs anywhere. The drafter still
+  // emits bullet roles. Without a fallback, those would render as
+  // plain prose. The fallback applies a manual indent + bullet glyph.
+
+  async function buildNoListTemplate(): Promise<TemplateRecord> {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:t xml:space="preserve">Section</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+      <w:r><w:t xml:space="preserve">prose only</w:t></w:r>
+    </w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+  </w:body>
+</w:document>`;
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const ab = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(ab).set(u8);
+    const blob = new Blob([ab]);
+    const parsed = await parseDocx(blob, {
+      filename: 'nolist.docx',
+      docx_blob_id: 'nl',
+    });
+    return {
+      id: 'tpl_nolist',
+      name: 'nolist',
+      filename: 'nolist.docx',
+      ingested_at: new Date().toISOString(),
+      docx_bytes: blob,
+      schema_json: {
+        ...parsed.schema,
+        sections: [
+          {
+            id: 'sec_one',
+            name: 'Section',
+            order: 0,
+            required: true,
+            fill_region: {
+              kind: 'heading_bounded',
+              heading_text: 'Section',
+              heading_style_id: 'Heading1',
+              body_style_id: 'Normal',
+              anchor_paragraph_index: 0,
+              end_anchor_paragraph_index: 1,
+              permitted_roles: ['heading', 'body', 'bullet'],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  async function loadDom(blob: Blob): Promise<{ dom: Document; W_NS: string }> {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(blob);
+    const xml = await zip.file('word/document.xml')!.async('string');
+    const dom = new DOMParser().parseFromString(xml, 'text/xml');
+    return { dom, W_NS: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main' };
+  }
+
+  it('falls back to manual indent + bullet glyph when no list inventory is available', async () => {
+    const template = await buildNoListTemplate();
+    const drafted: DraftParagraph[] = [
+      { role: 'bullet', text: 'top level item', level: 0 },
+      { role: 'bullet', text: 'nested item', level: 1 },
+    ];
+    const result = await assembleProjectDocx({
+      template,
+      draftedBySectionId: new Map([['sec_one', drafted]]),
+    });
+    expect(
+      result.section_results.find((r) => r.section_id === 'sec_one')?.status.kind,
+    ).toBe('assembled');
+
+    const { dom, W_NS } = await loadDom(result.blob);
+    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
+
+    const top = paragraphs.find((p) => (p.textContent ?? '').includes('top level item'))!;
+    const nested = paragraphs.find((p) => (p.textContent ?? '').includes('nested item'))!;
+
+    // numPr removed (no usable inventory binding).
+    expect(top.getElementsByTagNameNS(W_NS, 'numPr').length).toBe(0);
+    expect(nested.getElementsByTagNameNS(W_NS, 'numPr').length).toBe(0);
+
+    // Manual ind applied: level 0 → 360 twips, level 1 → 720 twips.
+    const topInd = top.getElementsByTagNameNS(W_NS, 'ind')[0]!;
+    expect(topInd.getAttributeNS(W_NS, 'left')).toBe('360');
+    const nestInd = nested.getElementsByTagNameNS(W_NS, 'ind')[0]!;
+    expect(nestInd.getAttributeNS(W_NS, 'left')).toBe('720');
+
+    // Bullet glyph prepended to the text.
+    expect(top.textContent).toContain('\u2022');
+    expect(top.textContent).toContain('top level item');
+    expect(nested.textContent).toContain('\u25E6');
+    expect(nested.textContent).toContain('nested item');
+  });
+});

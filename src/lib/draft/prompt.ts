@@ -86,7 +86,15 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
 
 {
   "paragraphs": [
-    { "role": "<role>", "text": "<paragraph text>", "level": <0..3, optional> }
+    {
+      "role": "<role>",
+      "text": "<paragraph text>",
+      "level": <0..3, optional>,
+      "runs": [ { "text": "...", "bold": true, "italic": false, "underline": false, "strike": false } ],   // optional, see INLINE FORMATTING below
+      "page_break_before": false,                                                                             // optional
+      "cells": ["c1","c2"],                                                                                   // table_row only
+      "is_header": false                                                                                      // table_row only
+    }
   ],
   "self_summary": "<one short sentence summarizing what you wrote, used to feed forward to dependent sections>"
 }
@@ -100,10 +108,48 @@ Available roles:
   - "caution"   — caution callout
   - "warning"   — warning callout
   - "definition" — term definition
-  - "table_row" — one row of a table; use the "cells" field instead of "text"
+  - "table_row" — one row of a table; use the "cells" field instead of "text". Consecutive table_row paragraphs are collapsed into a single real Word table at export time.
   - "quote"     — block quote
 
-Use the role that matches the writer's intent. Do NOT use markdown formatting (no **bold**, no _italic_, no - bullets) — those are role-encoded, not text-encoded.
+Use the role that matches the writer's intent. Do NOT use markdown formatting (no **bold**, no _italic_, no - bullets) — those are role-encoded or run-encoded, not text-encoded.
+
+INLINE FORMATTING — bold, italic, underline, strike:
+
+Most paragraphs should leave inline formatting alone — the template's run properties already produce the right look. When a paragraph needs MIXED formatting (a single bold term inside an otherwise normal sentence, an italicized standard reference, an underlined defined term), supply a "runs" array INSTEAD OF the "text" field. Each run is a contiguous span of text with optional toggles. The toggles layer onto whatever bold/italic/etc. the template's run style already had — so you only flip what you want to change.
+
+  Example — one bold term inside a body paragraph:
+    { "role": "body", "runs": [
+      { "text": "The contractor shall comply with " },
+      { "text": "FAR 52.204-21", "bold": true },
+      { "text": " for all CUI handling." }
+    ] }
+
+  Example — underlined defined term followed by its definition:
+    { "role": "definition", "runs": [
+      { "text": "Performance Work Statement", "underline": true },
+      { "text": ": A statement that describes the required results in clear, specific, measurable terms." }
+    ] }
+
+Use "text" (not "runs") for any paragraph that has uniform formatting — that's the vast majority. Only use "runs" when you genuinely need a formatting change inside one paragraph.
+
+PAGE BREAKS:
+
+Set "page_break_before": true on a paragraph to force Word to start that paragraph on a new page. Use this ONLY when the document structure clearly demands it — typically the first paragraph after a cover page, the start of a signature page, or the first paragraph of a major appendix. Do NOT scatter page breaks for visual padding; Word handles ordinary pagination.
+
+TABLES:
+
+Real tables are built by emitting CONSECUTIVE "table_row" paragraphs. Each row provides its column data in the "cells" array. The export pipeline collapses every run of consecutive table_row paragraphs into ONE real Word table with proper borders — column count is taken from the longest row.
+
+  - Mark the FIRST row of a table with "is_header": true. Header rows render bold and repeat across page breaks.
+  - Every row in the same table must have the same "cells" length when possible — short rows get padded with empty cells, long rows extend the column count for the whole table.
+  - To start a SECOND table in the same section, separate the two row groups with at least one non-table_row paragraph (a heading or a body intro line).
+
+  Example — a small responsibilities table:
+    { "role": "heading", "text": "Roles and Responsibilities", "level": 1 },
+    { "role": "table_row", "is_header": true, "cells": ["Role", "Responsibility"] },
+    { "role": "table_row", "cells": ["Contracting Officer (CO)", "Award and administer the contract."] },
+    { "role": "table_row", "cells": ["COR", "Monitor performance and validate deliverables."] },
+    { "role": "body", "text": "Each role above is staffed in writing prior to contract award." }
 
 LEVEL — optional nesting / indent depth. Default 0. The export pipeline maps it to OOXML formatting per role:
 

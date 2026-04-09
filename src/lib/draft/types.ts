@@ -14,11 +14,51 @@ export type ParagraphRole =
   | 'table_row'
   | 'quote';
 
+/**
+ * Inline run with optional character formatting. When a paragraph
+ * supplies `runs[]`, the assembler builds one <w:r> per run with the
+ * cloned source rPr augmented by these toggles. The plain `text`
+ * field is ignored in that case.
+ *
+ * Toggles are STRICTLY additive over the source rPr — passing
+ * `bold: false` removes any inherited bold; omitting the field leaves
+ * inherited bold alone. This matches OOXML's <w:b w:val="false"/>
+ * semantics, so the LLM can both add and clear formatting.
+ */
+export interface DraftRun {
+  text: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+}
+
 export interface DraftParagraph {
   role: ParagraphRole;
   text: string;
+  /**
+   * Optional inline runs. When supplied, `text` is IGNORED and the
+   * assembler builds one <w:r> per run with per-run bold/italic/
+   * underline/strike toggles layered onto the cloned source rPr.
+   * Use this whenever a paragraph needs mixed formatting.
+   */
+  runs?: DraftRun[];
   /** For table_row: cells indexed by column. Empty for non-table roles. */
   cells?: string[];
+  /**
+   * For table_row: marks this row as a header row. Header rows get
+   * a bold rPr applied to all cells and an OOXML <w:tblHeader/>
+   * row property so the row repeats across page breaks. Defaults
+   * to false.
+   */
+  is_header?: boolean;
+  /**
+   * When true, the assembler adds <w:pageBreakBefore/> to the
+   * paragraph's pPr. This forces Word to start a new page at this
+   * paragraph. Use sparingly — only when the section explicitly
+   * needs a hard page break (cover page, signature page, etc.).
+   */
+  page_break_before?: boolean;
   /**
    * Optional nesting / indent level. 0 (the default) means top-level
    * with no extra indent. Higher values mean deeper nesting; the
