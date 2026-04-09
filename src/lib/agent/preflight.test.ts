@@ -26,6 +26,10 @@ interface CapturedCall {
 }
 
 class MockLLMClient implements LLMClient {
+  // Mimic the Ask Sage capability surface so the model resolver picks
+  // its baked-in default instead of demanding an explicit Settings
+  // override the test runner doesn't have.
+  readonly capabilities = { fileUpload: true, dataset: true, liveSearch: true };
   public readonly calls: CapturedCall[] = [];
   constructor(private readonly fixedData: unknown) {}
 
@@ -465,7 +469,7 @@ describe('proposeSharedInputs', () => {
       },
     });
 
-    const result = await proposeSharedInputs(client, {
+    const { proposals: result } = await proposeSharedInputs(client, {
       project,
       shared_fields: fields,
       reference_files: [makeReferenceFile('quote_sheet.pdf')],
@@ -488,7 +492,7 @@ describe('proposeSharedInputs', () => {
         b: { value: '   ', source: 'inferred', confidence: 0.6 },
       },
     });
-    const result = await proposeSharedInputs(client, {
+    const { proposals: result } = await proposeSharedInputs(client, {
       project,
       shared_fields: fields,
       reference_files: [],
@@ -505,7 +509,7 @@ describe('proposeSharedInputs', () => {
         totally_invented_field: { value: 'Y', source: 'inferred', confidence: 1 },
       },
     });
-    const result = await proposeSharedInputs(client, {
+    const { proposals: result } = await proposeSharedInputs(client, {
       project,
       shared_fields: fields,
       reference_files: [],
@@ -521,7 +525,9 @@ describe('proposeSharedInputs', () => {
       shared_fields: [],
       reference_files: [],
     });
-    expect(result).toEqual({});
+    expect(result.proposals).toEqual({});
+    expect(result.tokens_in).toBe(0);
+    expect(result.tokens_out).toBe(0);
     expect(client.calls).toHaveLength(0);
   });
 });

@@ -74,10 +74,26 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
     expect(result.schema.style.voice).toBe('third_person');
     expect(result.schema.style.banned_phrases).toEqual(['utilize']);
     expect(result.schema.source.semantic_synthesizer).toBe(DEFAULT_SYNTHESIS_MODEL);
-    // Every section should now have intent populated
-    for (const section of result.schema.sections) {
+    // Every LLM-authored section should now have intent and target_words.
+    // document_part sections (page header / footer regions emitted by
+    // the parser) are preserved through the merge unchanged — the LLM
+    // never authors them, so they carry the parser-supplied intent and
+    // no target_words. Filter them out before checking the LLM-authored
+    // assertions.
+    const llmAuthored = result.schema.sections.filter(
+      (s) => s.fill_region.kind !== 'document_part',
+    );
+    expect(llmAuthored.length).toBeGreaterThan(0);
+    for (const section of llmAuthored) {
       expect(section.intent).toBeTruthy();
       expect(section.target_words).toEqual([100, 200]);
+    }
+    // document_part sections, if any, should still have a non-empty
+    // parser-supplied intent so the drafter knows what to do.
+    for (const section of result.schema.sections) {
+      if (section.fill_region.kind === 'document_part') {
+        expect(section.intent).toBeTruthy();
+      }
     }
     expect(result.usage).toBeTruthy();
     expect(result.prompt_sent.length).toBeGreaterThan(0);

@@ -41,6 +41,7 @@
 import type { LLMClient } from '../provider/types';
 import type { BodyFillRegion, TemplateSchema } from '../template/types';
 import type { DraftParagraph, PriorSectionSummary } from './types';
+import { type UsageByModel, emptyUsage, mergeUsage, recordUsage } from '../usage';
 
 // ─── Public types ────────────────────────────────────────────────
 
@@ -74,6 +75,8 @@ export interface CritiqueResult {
   issues: CritiqueIssue[];
   tokens_in: number;
   tokens_out: number;
+  /** Per-model usage breakdown. Always a single entry — the critic model. */
+  usage_by_model: UsageByModel;
   model: string;
   /** The prompt body that was sent to the critic (for diagnostics / audit). */
   prompt_sent: string;
@@ -465,11 +468,21 @@ export async function critiqueDraft(
   const usage =
     (raw.usage as { prompt_tokens?: number; completion_tokens?: number } | null | undefined) ?? {};
 
+  const tokens_in = usage.prompt_tokens ?? 0;
+  const tokens_out = usage.completion_tokens ?? 0;
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, model, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
+  });
+
   return {
     passed,
     issues,
-    tokens_in: usage.prompt_tokens ?? 0,
-    tokens_out: usage.completion_tokens ?? 0,
+    tokens_in,
+    tokens_out,
+    usage_by_model,
     model,
     prompt_sent: built.message,
     raw_output: data,
@@ -493,6 +506,8 @@ export interface CriticLoopArgs {
     tokens_in: number;
     tokens_out: number;
     model: string;
+    /** Optional: number of OpenRouter web-search results invoked by this draft call. */
+    web_search_results?: number;
   }>;
   template: TemplateSchema;
   section: BodyFillRegion;
@@ -540,6 +555,12 @@ export interface CriticLoopResult {
   /** Sum of tokens across every draft + critique call. */
   total_tokens_in: number;
   total_tokens_out: number;
+  /**
+   * Per-model usage across every draft + critique call in the loop.
+   * Drafts and critiques may run on different model ids when the
+   * Settings tab has a separate critic override; this records each.
+   */
+  usage_by_model: UsageByModel;
   /** Last drafting model used. */
   model: string;
 }
@@ -600,11 +621,17 @@ export async function runDraftWithCriticLoop(
   const iterations: CriticLoopIteration[] = [];
   let totalTokensIn = 0;
   let totalTokensOut = 0;
+  const usage_by_model: UsageByModel = emptyUsage();
 
   // ── Iteration 0: initial draft ──
   let lastDraft = await args.draftFn(null);
   totalTokensIn += lastDraft.tokens_in;
   totalTokensOut += lastDraft.tokens_out;
+  recordUsage(usage_by_model, lastDraft.model, {
+    tokens_in: lastDraft.tokens_in,
+    tokens_out: lastDraft.tokens_out,
+    web_search_results: lastDraft.web_search_results,
+  });
 
   // No-critic mode: single-pass, return immediately.
   if (maxIterations === 0) {
@@ -623,6 +650,7 @@ export async function runDraftWithCriticLoop(
       iterations,
       total_tokens_in: totalTokensIn,
       total_tokens_out: totalTokensOut,
+      usage_by_model,
       model: lastDraft.model,
     };
   }
@@ -659,6 +687,7 @@ export async function runDraftWithCriticLoop(
     });
     totalTokensIn += critique.tokens_in;
     totalTokensOut += critique.tokens_out;
+    mergeUsage(usage_by_model, critique.usage_by_model);
 
     if (critique.passed) {
       iterations.push({
@@ -698,6 +727,11 @@ export async function runDraftWithCriticLoop(
     lastDraft = await args.draftFn(notes);
     totalTokensIn += lastDraft.tokens_in;
     totalTokensOut += lastDraft.tokens_out;
+    recordUsage(usage_by_model, lastDraft.model, {
+      tokens_in: lastDraft.tokens_in,
+      tokens_out: lastDraft.tokens_out,
+      web_search_results: lastDraft.web_search_results,
+    });
   }
 
   return {
@@ -708,6 +742,7 @@ export async function runDraftWithCriticLoop(
     iterations,
     total_tokens_in: totalTokensIn,
     total_tokens_out: totalTokensOut,
+    usage_by_model,
     model: lastDraft.model,
   };
 }

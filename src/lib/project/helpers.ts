@@ -3,6 +3,7 @@
 
 import { db, type ProjectRecord, type TemplateRecord } from '../db/schema';
 import type { MetadataFillRegion } from '../template/types';
+import { loadSettings } from '../settings/store';
 
 export interface SharedInputField {
   /** Unique key across all selected templates (project_input_field) */
@@ -76,13 +77,27 @@ export async function createProject(input: {
   live_search?: 0 | 1 | 2;
 }): Promise<ProjectRecord> {
   const now = new Date().toISOString();
+  // Pre-populate shared_inputs from user-level defaults so the user
+  // doesn't have to retype the same office symbol / signature block
+  // / POC line on every new project. The user_defaults map keys are
+  // matched directly against shared input field keys; the metadata
+  // batch and per-section drafter pick them up like any other
+  // pre-filled value.
+  const settings = await loadSettings();
+  const userDefaults = settings.user_defaults?.shared_inputs ?? {};
+  const seededInputs: Record<string, string> = {};
+  for (const [k, v] of Object.entries(userDefaults)) {
+    if (typeof v === 'string' && v.trim().length > 0) {
+      seededInputs[k] = v;
+    }
+  }
   const record: ProjectRecord = {
     id: newProjectId(),
     name: input.name,
     description: input.description,
     template_ids: input.template_ids,
     reference_dataset_names: input.reference_dataset_names,
-    shared_inputs: {},
+    shared_inputs: seededInputs,
     model_overrides: {},
     live_search: input.live_search ?? 0,
     created_at: now,

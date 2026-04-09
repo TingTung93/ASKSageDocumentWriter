@@ -21,6 +21,10 @@ import { DEFAULT_DRAFTING_MODEL } from '../lib/draft/drafter';
 import { DEFAULT_DOCUMENT_EDIT_MODEL } from '../lib/document/edit';
 import { DEFAULT_EDIT_MODEL } from '../lib/edit/schema-edit';
 import { EmptyState } from '../components/EmptyState';
+import {
+  STAGE_REQUIREMENTS,
+  validateModelForStage,
+} from '../lib/provider/capabilities';
 
 interface StageMeta {
   stage: ModelStage;
@@ -75,6 +79,15 @@ export function Settings() {
   // since the free tier has aggressive rate limits.
   const [pricingFilter, setPricingFilter] = useState<PricingFilter>('all');
 
+  // Compatibility filter is session-only. ON by default — hides
+  // OpenRouter models whose advertised context window / modalities /
+  // supported parameters can't satisfy the stage requirements. Users
+  // who want to override (e.g. to try a model whose metadata is wrong)
+  // can flip this off. Has no effect on Ask Sage models because their
+  // ModelInfo.capabilities is undefined and the validator passes
+  // unknowns through.
+  const [compatibilityFilter, setCompatibilityFilter] = useState(true);
+
   // Surface pricing controls only when at least one model carries
   // pricing data — i.e. when connected via OpenRouter. Ask Sage's
   // /server/get-models doesn't return per-model pricing.
@@ -123,9 +136,17 @@ export function Settings() {
         />
       )}
 
+      {hasPricingData && (
+        <CompatibilityFilterControl
+          value={compatibilityFilter}
+          onChange={setCompatibilityFilter}
+        />
+      )}
+
       <ModelOverridesSection
         models={settings.models}
         availableModels={filteredModels}
+        compatibilityFilter={compatibilityFilter}
       />
 
       <h2>Critic loop (agentic drafting)</h2>
@@ -138,6 +159,17 @@ export function Settings() {
         and by manual <code>Draft sections</code> runs.
       </p>
       <CriticSettingsSection critic={settings.critic ?? null} />
+
+      <h2>User defaults</h2>
+      <p className="note">
+        Key/value pairs that get auto-populated into every NEW project's
+        shared inputs. Use this for facts that don't change between
+        documents — your office symbol, signature block, default POC line.
+        Keys should match the shared input field keys your templates emit
+        (e.g. <code>office_symbol</code>, <code>signature_block</code>,
+        <code>poc_line</code>). Existing projects are unchanged.
+      </p>
+      <UserDefaultsSection defaults={settings.user_defaults ?? { shared_inputs: {} }} />
 
       <h2>Cost projection</h2>
       <p className="note">
@@ -166,12 +198,115 @@ export function Settings() {
   );
 }
 
+function UserDefaultsSection({
+  defaults,
+}: {
+  defaults: { shared_inputs: Record<string, string> };
+}) {
+  // Local working copy. We commit to Dexie on Save so the user can
+  // edit multiple keys without each keystroke triggering a write.
+  const [rows, setRows] = useState(() =>
+    Object.entries(defaults.shared_inputs ?? {}).map(([key, value]) => ({ key, value })),
+  );
+  const [busy, setBusy] = useState(false);
+
+  // Re-sync from props on changes from outside (e.g. Reset).
+  useEffect(() => {
+    setRows(Object.entries(defaults.shared_inputs ?? {}).map(([key, value]) => ({ key, value })));
+  }, [defaults]);
+
+  function updateRow(idx: number, patch: Partial<{ key: string; value: string }>) {
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+
+  function addRow() {
+    setRows((prev) => [...prev, { key: '', value: '' }]);
+  }
+
+  function removeRow(idx: number) {
+    setRows((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function onSave() {
+    setBusy(true);
+    try {
+      // Normalize: drop blank-key rows, lowercase + snake_case keys,
+      // collapse duplicates (last writer wins).
+      const out: Record<string, string> = {};
+      for (const r of rows) {
+        const k = r.key.trim().toLowerCase().replace(/\s+/g, '_');
+        if (!k) continue;
+        out[k] = r.value;
+      }
+      await saveSettings({ user_defaults: { shared_inputs: out } });
+      toast.success(`Saved ${Object.keys(out).length} default${Object.keys(out).length === 1 ? '' : 's'}`);
+    } catch (err) {
+      toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      {rows.length === 0 && (
+        <p className="note" style={{ margin: 0 }}>
+          No user defaults set yet. Click <strong>Add row</strong> to add one.
+        </p>
+      )}
+      {rows.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          {rows.map((row, idx) => (
+            <div
+              key={idx}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+            >
+              <input
+                type="text"
+                value={row.key}
+                placeholder="key (e.g. office_symbol)"
+                onChange={(e) => updateRow(idx, { key: e.target.value })}
+                style={{ flex: '0 0 14rem', padding: '0.4rem 0.5rem', font: 'inherit' }}
+              />
+              <input
+                type="text"
+                value={row.value}
+                placeholder="value"
+                onChange={(e) => updateRow(idx, { value: e.target.value })}
+                style={{ flex: '1 1 auto', padding: '0.4rem 0.5rem', font: 'inherit' }}
+              />
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={() => removeRow(idx)}
+                title="Remove this row"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+        <button type="button" className="btn-secondary" onClick={addRow}>
+          Add row
+        </button>
+        <button type="button" className="btn-success" onClick={() => void onSave()} disabled={busy}>
+          {busy ? 'saving…' : 'Save user defaults'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ModelOverridesSection({
   models,
   availableModels,
+  compatibilityFilter,
 }: {
   models: ModelOverrides;
   availableModels: ModelInfo[];
+  compatibilityFilter: boolean;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -181,6 +316,7 @@ function ModelOverridesSection({
           meta={meta}
           current={models[meta.stage]}
           availableModels={availableModels}
+          compatibilityFilter={compatibilityFilter}
         />
       ))}
     </div>
@@ -191,10 +327,12 @@ function ModelOverrideRow({
   meta,
   current,
   availableModels,
+  compatibilityFilter,
 }: {
   meta: StageMeta;
   current: string | null;
   availableModels: ModelInfo[];
+  compatibilityFilter: boolean;
 }) {
   // Local input state so the user can type a free-form id even if it
   // isn't in the connected models list. Saves on blur or button click.
@@ -206,20 +344,40 @@ function ModelOverrideRow({
   }, [current]);
 
   // Build the dropdown option list. We always include the stage
-  // default and the currently-selected override (even if the pricing
-  // filter would otherwise hide it) so the row never silently drops
-  // an active selection.
-  const options = useMemo(() => {
+  // default and the currently-selected override (even if the
+  // pricing/compatibility filters would otherwise hide them) so the
+  // row never silently drops an active selection. The compatibility
+  // filter is applied per-stage because each stage has different
+  // context-window / modality requirements.
+  const { options, hiddenIncompatibleCount } = useMemo(() => {
     const byId = new Map<string, ModelInfo>();
-    for (const m of availableModels) byId.set(m.id, m);
+    let hidden = 0;
+    for (const m of availableModels) {
+      if (compatibilityFilter) {
+        const verdict = validateModelForStage(m, meta.stage);
+        if (!verdict.compatible) {
+          hidden += 1;
+          continue;
+        }
+      }
+      byId.set(m.id, m);
+    }
+    // Always pin the stage default and the active override, even if
+    // they'd otherwise be filtered out. Better to show a known
+    // selection than to drop it silently.
     if (!byId.has(meta.default)) {
       byId.set(meta.default, syntheticModelInfo(meta.default));
     }
     if (current && !byId.has(current)) {
       byId.set(current, syntheticModelInfo(current));
     }
-    return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
-  }, [availableModels, meta.default, current]);
+    return {
+      options: Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id)),
+      hiddenIncompatibleCount: hidden,
+    };
+  }, [availableModels, meta.default, meta.stage, current, compatibilityFilter]);
+
+  const stageReq = STAGE_REQUIREMENTS[meta.stage];
 
   async function commit(value: string) {
     setSaving(true);
@@ -252,6 +410,12 @@ function ModelOverrideRow({
       </div>
       <p className="note" style={{ marginTop: '0.25rem' }}>
         {meta.description}
+      </p>
+      <p className="note" style={{ marginTop: '0.25rem', fontSize: 11 }}>
+        Requires ≥ {formatTokenFloor(stageReq.min_context_length)} context, text in/out, temperature parameter.
+        {compatibilityFilter && hiddenIncompatibleCount > 0 && (
+          <> {hiddenIncompatibleCount.toLocaleString()} incompatible model{hiddenIncompatibleCount === 1 ? '' : 's'} hidden.</>
+        )}
       </p>
       <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
         <select
@@ -308,6 +472,42 @@ function formatModelOptionLabel(m: ModelInfo): string {
 
 function syntheticModelInfo(id: string): ModelInfo {
   return { id, name: id, object: 'model', owned_by: 'unknown', created: 'na' };
+}
+
+function formatTokenFloor(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M tokens`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K tokens`;
+  return `${n} tokens`;
+}
+
+function CompatibilityFilterControl({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="card" style={{ marginBottom: 'var(--space-3)' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
+        <input
+          type="checkbox"
+          checked={value}
+          onChange={(e) => onChange(e.target.checked)}
+          style={{ width: 'auto' }}
+        />
+        Hide models that can't run the selected stage
+      </label>
+      <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0 }}>
+        Filters each per-stage dropdown to OpenRouter models whose
+        advertised context window, modalities, and supported parameters
+        meet the stage's requirements. Models with no capability metadata
+        (e.g. all Ask Sage models) are always shown — the filter is a
+        guard rail, not a blocklist. Turn off if you want to try a model
+        whose advertised limits look wrong.
+      </p>
+    </div>
+  );
 }
 
 function PricingFilterControl({

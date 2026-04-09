@@ -100,6 +100,7 @@ interface MockResponse {
  * empties, throws so the test fails loudly instead of returning undefined.
  */
 class MockLLMClient implements LLMClient {
+  readonly capabilities = { fileUpload: false, dataset: false, liveSearch: false };
   public calls: QueryInput[] = [];
   private queue: MockResponse[] = [];
 

@@ -35,6 +35,7 @@ interface MockResponse {
 }
 
 class MockLLMClient implements LLMClient {
+  readonly capabilities = { fileUpload: false, dataset: false, liveSearch: false };
   public calls: QueryInput[] = [];
   private queue: MockResponse[] = [];
 

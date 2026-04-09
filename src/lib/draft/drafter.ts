@@ -3,7 +3,8 @@
 // output. Pure orchestration; the orchestrator (orchestrator.ts) walks
 // the section list in dependency order and calls this for each.
 
-import type { AskSageClient } from '../asksage/client';
+import type { LLMClient } from '../provider/types';
+import { resolveDraftingModel } from '../provider/resolve_model';
 import type { BodyFillRegion, TemplateSchema } from '../template/types';
 import { buildDraftingPrompt } from './prompt';
 import type {
@@ -12,6 +13,7 @@ import type {
   LLMDraftOutput,
   PriorSectionSummary,
 } from './types';
+import type { DraftingStrategy } from '../agent/section_mapping';
 
 export const DEFAULT_DRAFTING_MODEL = 'google-claude-46-sonnet';
 // Drafting must stick to retrieved + inlined content. The earlier 0.2
@@ -51,15 +53,21 @@ export interface DraftSectionArgs {
    * iterations from `formatRevisionNotes(critique.issues)`.
    */
   revision_notes_block?: string | null;
+  /**
+   * Reference→section mapper outputs forwarded to the prompt
+   * builder. See lib/draft/prompt.ts for how they're rendered.
+   */
+  drafting_strategy?: DraftingStrategy | null;
+  effective_word_target?: number | null;
   options?: DraftingOptions;
 }
 
 export async function draftSection(
-  client: AskSageClient,
+  client: LLMClient,
   args: DraftSectionArgs,
 ): Promise<DraftingResult> {
   const opts = args.options ?? {};
-  const model = opts.model ?? DEFAULT_DRAFTING_MODEL;
+  const model = await resolveDraftingModel(client, opts.model, 'drafting');
   const temperature = opts.temperature ?? DEFAULT_DRAFTING_TEMPERATURE;
 
   const prompt = buildDraftingPrompt({
@@ -72,18 +80,29 @@ export async function draftSection(
     references_block: args.references_block,
     template_example: args.template_example,
     revision_notes_block: args.revision_notes_block,
+    drafting_strategy: args.drafting_strategy,
+    effective_word_target: args.effective_word_target,
   });
 
-  const { data, raw } = await client.queryJson<LLMDraftOutput>({
+  // Build the query input. Ask Sage uses dataset/limit_references/live;
+  // OpenRouter ignores them but throws if model is missing. We branch
+  // on capabilities so the request body stays clean for each provider.
+  const queryInput: Parameters<typeof client.queryJson>[0] = {
     message: prompt.message,
     system_prompt: prompt.system_prompt,
     model,
-    dataset: opts.dataset ?? 'none',
-    limit_references: opts.limit_references ?? 6,
     temperature,
-    live: opts.live ?? 0,
     usage: true,
-  });
+  };
+  if (client.capabilities.dataset) {
+    queryInput.dataset = opts.dataset ?? 'none';
+    queryInput.limit_references = opts.limit_references ?? 6;
+  }
+  if (client.capabilities.liveSearch) {
+    queryInput.live = opts.live ?? 0;
+  }
+
+  const { data, raw } = await client.queryJson<LLMDraftOutput>(queryInput);
 
   // Defensive: the LLM may sometimes wrap paragraphs in odd shapes.
   // Normalize to an array of {role, text}.
@@ -103,6 +122,7 @@ export async function draftSection(
     model,
     tokens_in: usage.prompt_tokens ?? 0,
     tokens_out: usage.completion_tokens ?? 0,
+    web_search_results: raw.web_search_results,
   };
 }
 

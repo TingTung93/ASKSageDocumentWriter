@@ -98,6 +98,21 @@ export function extractSamples(
 function extractOne(section: BodyFillRegion, paragraphs: ParagraphInfo[]): SectionSample {
   const fr = section.fill_region;
 
+  // document_part sections carry their own captured text. Don't sample
+  // from the body — that would mislabel the page header as having body
+  // content from the document.
+  if (fr.kind === 'document_part') {
+    const text = fr.original_text_lines.join('\n');
+    return {
+      section_id: section.id,
+      heading: section.name,
+      sample_text: text.length <= SECTION_SAMPLE_CAP
+        ? text
+        : text.slice(0, SECTION_SAMPLE_CAP - 1).trimEnd() + '…',
+      paragraph_range: null,
+    };
+  }
+
   if (fr.kind === 'heading_bounded') {
     const start = Math.max(0, fr.anchor_paragraph_index + 1);
     const end = Math.min(paragraphs.length, fr.end_anchor_paragraph_index + 1);

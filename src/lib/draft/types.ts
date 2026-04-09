@@ -19,6 +19,30 @@ export interface DraftParagraph {
   text: string;
   /** For table_row: cells indexed by column. Empty for non-table roles. */
   cells?: string[];
+  /**
+   * Optional nesting / indent level. 0 (the default) means top-level
+   * with no extra indent. Higher values mean deeper nesting; the
+   * interpretation depends on the role:
+   *
+   *   - bullet / step: OOXML list nesting (`<w:ilvl w:val="N"/>`).
+   *     level 0 is the outer bullet, 1 is a sub-bullet, etc.
+   *
+   *   - body / note / caution / warning / definition / quote:
+   *     left-indent in 0.5"-per-level steps (`<w:ind w:left="720*N"/>`).
+   *     Use this for inset / quoted-style paragraphs that aren't
+   *     bullets.
+   *
+   *   - heading: heading hierarchy. level 0 → Heading1, level 1 →
+   *     Heading2, etc. Capped at the highest Heading style the
+   *     template defines.
+   *
+   *   - table_row: ignored.
+   *
+   * Drafters that don't care can omit the field entirely. The
+   * assembler clamps to a reasonable range (0..8) so a runaway
+   * level can't produce invalid OOXML.
+   */
+  level?: number;
 }
 
 export interface LLMDraftOutput {
@@ -63,4 +87,12 @@ export interface DraftingResult {
   model: string;
   tokens_in: number;
   tokens_out: number;
+  /**
+   * Number of OpenRouter web-search results requested by THIS call.
+   * Set when live > 0 and the active provider routed through the
+   * OpenRouter `web` plugin. Used by the cost rollup to add the
+   * platform's per-result surcharge on top of token cost. Always
+   * undefined for Ask Sage and for OpenRouter calls without live.
+   */
+  web_search_results?: number;
 }

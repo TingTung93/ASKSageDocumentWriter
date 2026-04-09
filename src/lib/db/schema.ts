@@ -73,6 +73,20 @@ export interface ProjectContextFile {
    * lib/project/chunk.ts.
    */
   chunks?: ReferenceChunk[];
+  /**
+   * Cached plaintext from a previous extraction, if any. Populated by
+   * the unified extraction helper (lib/draft/file_extract.ts). Two
+   * paths fill this:
+   *   1. Ask Sage path — text returned from /server/file is cached
+   *      here so subsequent runs can skip the upload round-trip.
+   *   2. Local path — when the active provider does not support
+   *      /server/file (OpenRouter), text comes from
+   *      lib/project/local_extract.ts.
+   * Always optional. When absent the orchestrator re-extracts.
+   */
+  extracted_text?: string;
+  /** ISO timestamp when extracted_text was last populated. */
+  extracted_at?: string;
   /** ISO timestamp when the file was attached */
   created_at: string;
 }
@@ -182,6 +196,26 @@ export interface DraftRecord {
   critic_converged?: boolean;
   /** Strictness used for this section's critic loop (for diagnostics). */
   critic_strictness?: import('../draft/critique').CritiqueStrictness;
+  /**
+   * Char count of the ATTACHED REFERENCES block that was inlined into
+   * the drafting prompt for this section. The legacy `references`
+   * field above is the dataset-RAG-only response from Ask Sage and is
+   * always empty under the inline-references architecture; this is
+   * the field the diagnostics panel actually wants to show.
+   */
+  references_inlined_chars?: number;
+  /** Number of chunks selected for the inlined references block. */
+  references_inlined_chunks?: number;
+  /**
+   * Chunk ids that the per-section selector pinned for THIS section
+   * (after applying the mapper's preferred ids and filling remaining
+   * slots by Jaccard score). Persisted so the side-by-side reference
+   * panel can render exactly which slices of which files contributed
+   * to each drafted section, instead of re-running the selector at
+   * view time. Stored as a flat string array; the file id is encoded
+   * in the chunk id prefix when needed.
+   */
+  references_inlined_chunk_ids?: string[];
 }
 
 export interface AuditRecord {

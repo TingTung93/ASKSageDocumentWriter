@@ -15,6 +15,14 @@ export interface ModelInfo {
    * Sage, whose health.mil tenant does not return per-model pricing.
    */
   pricing?: ModelPricing;
+  /**
+   * Provider-reported capability metadata. Populated by OpenRouter
+   * (`/v1/models` exposes context_length, architecture, and
+   * supported_parameters). Undefined for Ask Sage models — the
+   * health.mil `/server/get-models` endpoint does not return any of
+   * this. Consumers MUST treat undefined as "unknown, do not reject".
+   */
+  capabilities?: ModelCapabilities;
 }
 
 export interface ModelPricing {
@@ -24,6 +32,21 @@ export interface ModelPricing {
   completion_per_token: number;
   /** True when both prompt and completion costs are zero. */
   is_free: boolean;
+}
+
+export interface ModelCapabilities {
+  /** Maximum context window in tokens. */
+  context_length?: number;
+  /** Modalities the model accepts as input (e.g. ["text", "image"]). */
+  input_modalities?: string[];
+  /** Modalities the model produces as output (e.g. ["text"]). */
+  output_modalities?: string[];
+  /**
+   * OpenAI-style parameter names the model honors (e.g. "temperature",
+   * "tools", "response_format"). Used to confirm we can pass the knobs
+   * our pipeline relies on (currently just `temperature`).
+   */
+  supported_parameters?: string[];
 }
 
 export interface GetModelsResponse {
@@ -76,6 +99,16 @@ export interface QueryResponse {
   tool_calls?: unknown;
   tool_calls_unified?: unknown;
   tool_responses?: unknown;
+  /**
+   * Number of OpenRouter web-search results invoked by THIS call.
+   * Set by OpenRouterClient when the request body included the
+   * `plugins: [{ id: 'web', max_results }]` block. Always
+   * undefined for Ask Sage responses (the live-search field there
+   * doesn't translate into a discrete result count). Used by the
+   * cost rollup in lib/usage.ts to add the OpenRouter web plugin
+   * surcharge ($0.004 per result on Exa) on top of token cost.
+   */
+  web_search_results?: number;
 }
 
 export class AskSageError extends Error {

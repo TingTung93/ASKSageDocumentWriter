@@ -24,12 +24,30 @@ export function mergeSemanticIntoSchema(
   semantic: LLMSemanticOutput,
   opts: MergeOptions,
 ): TemplateSchema {
-  const sections =
+  // document_part sections (page header / page footer regions emitted
+  // by the parser) are NEVER authored by the LLM. The synthesis prompt
+  // doesn't include the header/footer XML, and the LLM has no way to
+  // produce a `kind: 'document_part'` descriptor anyway. Preserve them
+  // through the merge so they survive into the assembled docx.
+  const docPartSections = structural.sections.filter(
+    (s) => s.fill_region.kind === 'document_part',
+  );
+
+  const llmAuthored =
     semantic.sections.length > 0
       ? semantic.sections.map((llm, order) =>
           buildSectionFromLLM(llm, order, structural.formatting.named_styles),
         )
-      : structural.sections; // fallback: keep parser sections if LLM emitted none
+      : structural.sections.filter((s) => s.fill_region.kind !== 'document_part');
+
+  // Re-number document_part orders so they sort after the LLM body
+  // sections in the project view.
+  const renumberedDocParts = docPartSections.map((s, i) => ({
+    ...s,
+    order: llmAuthored.length + i,
+  }));
+
+  const sections = [...llmAuthored, ...renumberedDocParts];
 
   return {
     ...structural,

@@ -16,7 +16,12 @@
 //     model                       → model
 //     temperature                 → temperature
 //     dataset/limit_references    → IGNORED (Ask-Sage-only RAG knobs)
-//     live/persona                → IGNORED
+//     live: 0                     → no plugins
+//     live: 1                     → plugins: [{ id: 'web', max_results: 5 }]
+//     live: 2                     → plugins: [{ id: 'web', max_results: 10 }]
+//                                   (OpenRouter routes through Exa by default;
+//                                    see https://openrouter.ai/docs/features/web-search)
+//     persona                     → IGNORED
 //     usage                       → IGNORED — OpenRouter always returns usage
 //
 //   /v1/chat/completions response → QueryResponse
@@ -31,6 +36,7 @@
 
 import { AskSageError } from '../asksage/types';
 import type {
+  ModelCapabilities,
   ModelInfo,
   ModelPricing,
   QueryInput,
@@ -38,7 +44,7 @@ import type {
   QueryUsage,
 } from '../asksage/types';
 import { writeAuditEntry } from '../asksage/audit';
-import type { LLMClient } from './types';
+import type { LLMClient, ProviderCapabilities } from './types';
 
 const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
 
@@ -58,6 +64,19 @@ interface OpenRouterModelsResponse {
       request?: string;
       image?: string;
     };
+    /** Maximum context window in tokens. */
+    context_length?: number;
+    architecture?: {
+      modality?: string;
+      input_modalities?: string[];
+      output_modalities?: string[];
+      tokenizer?: string;
+    };
+    /**
+     * OpenAI-style parameter names this model honors. We use this to
+     * check that `temperature` is settable for queryJson calls.
+     */
+    supported_parameters?: string[];
   }>;
 }
 
@@ -82,7 +101,31 @@ interface OpenAIChatMessage {
   content: string;
 }
 
+/**
+ * OpenRouter web-search plugin configuration. Documented at
+ * https://openrouter.ai/docs/features/web-search. We only ever set
+ * `id` and `max_results`; the engine and search-prompt fields use
+ * OpenRouter defaults (Exa under the hood for most providers).
+ */
+interface OpenRouterWebPlugin {
+  id: 'web';
+  max_results?: number;
+}
+
 export class OpenRouterClient implements LLMClient {
+  /**
+   * OpenRouter has no /server/file extraction and no named-dataset
+   * RAG, but it DOES support web search via the `plugins` field on
+   * /chat/completions — many backends include Exa-powered search at
+   * no extra prompt-engineering cost. So liveSearch is a true
+   * capability here even though the other two are not.
+   */
+  readonly capabilities: ProviderCapabilities = {
+    fileUpload: false,
+    dataset: false,
+    liveSearch: true,
+  };
+
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = DEFAULT_BASE_URL,
@@ -220,6 +263,17 @@ export class OpenRouterClient implements LLMClient {
       throw new AskSageError(res.status, `OpenRouter POST ${url} returned non-JSON body`, text);
     }
     const mapped = mapOpenAIResponseToQueryResponse(parsed);
+    // Annotate the response with the requested web_search_results
+    // count when the request body included the web plugin. We use
+    // the upper bound (max_results from the request) rather than
+    // parsing the actual return count out of the response — the
+    // upper bound matches the budget the user opted into and is
+    // what gets billed in the worst case. Falls back to undefined
+    // when the plugin wasn't included so the cost rollup ignores it.
+    const webPlugin = body.plugins?.find((p) => p.id === 'web');
+    if (webPlugin) {
+      mapped.web_search_results = webPlugin.max_results ?? 0;
+    }
     void writeAuditEntry({
       endpoint: '/openrouter/chat/completions',
       model: input.model,
@@ -267,7 +321,35 @@ function mapModel(m: OpenRouterModelsResponse['data'][number]): ModelInfo {
   };
   const pricing = extractPricing(m);
   if (pricing) out.pricing = pricing;
+  const capabilities = extractCapabilities(m);
+  if (capabilities) out.capabilities = capabilities;
   return out;
+}
+
+/**
+ * Pull capability metadata from the OpenRouter `/v1/models` row. We
+ * only set fields the API actually returned — leaving the rest
+ * undefined so the validator can distinguish "missing" from "empty".
+ */
+function extractCapabilities(
+  m: OpenRouterModelsResponse['data'][number],
+): ModelCapabilities | null {
+  const out: ModelCapabilities = {};
+  if (typeof m.context_length === 'number' && m.context_length > 0) {
+    out.context_length = m.context_length;
+  }
+  const inMods = m.architecture?.input_modalities;
+  if (Array.isArray(inMods) && inMods.length > 0) {
+    out.input_modalities = inMods.slice();
+  }
+  const outMods = m.architecture?.output_modalities;
+  if (Array.isArray(outMods) && outMods.length > 0) {
+    out.output_modalities = outMods.slice();
+  }
+  if (Array.isArray(m.supported_parameters) && m.supported_parameters.length > 0) {
+    out.supported_parameters = m.supported_parameters.slice();
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -304,6 +386,7 @@ function mapQueryInputToOpenAI(input: QueryInput): {
   model: string;
   messages: OpenAIChatMessage[];
   temperature?: number;
+  plugins?: OpenRouterWebPlugin[];
 } {
   const messages: OpenAIChatMessage[] = [];
   if (input.system_prompt) {
@@ -327,11 +410,27 @@ function mapQueryInputToOpenAI(input: QueryInput): {
       'OpenRouter requires an explicit model id (e.g. "anthropic/claude-3.5-sonnet"). Set per-stage model overrides on the Settings tab.',
     );
   }
-  const out: { model: string; messages: OpenAIChatMessage[]; temperature?: number } = {
+  const out: {
+    model: string;
+    messages: OpenAIChatMessage[];
+    temperature?: number;
+    plugins?: OpenRouterWebPlugin[];
+  } = {
     model: input.model,
     messages,
   };
   if (typeof input.temperature === 'number') out.temperature = input.temperature;
+  // Web search: Ask Sage's `live` field (0/1/2) maps to OpenRouter's
+  // `plugins: [{ id: 'web' }]`. We use max_results to roughly mirror
+  // the Ask Sage modes — mode 1 is "give me web hits", mode 2 is
+  // "autonomous market research, more is better". Both modes route
+  // through whatever search engine OpenRouter has wired up for the
+  // chosen model (Exa for most).
+  if (input.live === 1) {
+    out.plugins = [{ id: 'web', max_results: 5 }];
+  } else if (input.live === 2) {
+    out.plugins = [{ id: 'web', max_results: 10 }];
+  }
   return out;
 }
 

@@ -80,7 +80,8 @@ describe('selectChunksForSection', () => {
       files: [file],
       extractedById: new Map([['f1', text]]),
       section: makeSection('scope', 'Scope of Work', 'Define the contractor responsibilities for periodic maintenance.'),
-      project_description: 'Equipment maintenance contract.',
+      template_example: 'The contractor shall provide periodic maintenance services for the equipment.',
+      size_class: 'body',
     });
     expect(selected.length).toBeGreaterThan(0);
     expect(selected[0]?.source_file).toBe('pws.txt');
@@ -105,7 +106,8 @@ describe('selectChunksForSection', () => {
       files: [file],
       extractedById: new Map(),
       section: makeSection('scope', '1. Scope', 'Define the scope of contractor responsibility for maintenance.'),
-      project_description: 'Maintenance contract for laboratory equipment.',
+      template_example: 'The contractor shall be responsible for the scope of maintenance work.',
+      size_class: 'body',
     });
     // The Scope chunk should score higher than Period of Performance.
     expect(selected[0]?.chunk_id).toBe('c1');
@@ -122,7 +124,7 @@ describe('selectChunksForSection', () => {
       files: [file],
       extractedById: new Map(),
       section: makeSection('s', 'Section', 'something'),
-      project_description: 'a project',
+      size_class: 'body',
       budget_chars: 60_000,
     });
     // Two of three chunks would exceed the budget — only one should fit
@@ -139,11 +141,35 @@ describe('selectChunksForSection', () => {
       files: [file],
       extractedById: new Map(),
       section: makeSection('s', 'Section', 'a section'),
-      project_description: 'a project',
+      size_class: 'body',
       budget_chars: 10_000,
     });
     expect(selected.length).toBe(1);
     expect(selected[0]?.chunk_id).toBe('big');
+  });
+
+  it('caps chunks for short sections at the size-class chunk count', () => {
+    // Build five chunks that all match the section query so all five
+    // would be eligible by score; the `short` size class should still
+    // cap at 2 chunks.
+    const chunks: ReferenceChunk[] = [];
+    for (let i = 0; i < 5; i++) {
+      chunks.push({
+        id: `c${i}`,
+        title: `Maintenance plan part ${i}`,
+        summary: 'Defines maintenance procedures for the equipment.',
+        text: `Maintenance procedure ${i}: perform inspections.`,
+      });
+    }
+    const file = makeFile('f1', 'plan.docx', chunks);
+    const selected = selectChunksForSection({
+      files: [file],
+      extractedById: new Map(),
+      section: makeSection('m', 'Maintenance', 'Describe maintenance procedures.'),
+      template_example: 'Maintenance procedures are performed monthly.',
+      size_class: 'short',
+    });
+    expect(selected.length).toBeLessThanOrEqual(2);
   });
 
   it('handles zero files cleanly', () => {
@@ -151,7 +177,7 @@ describe('selectChunksForSection', () => {
       files: [],
       extractedById: new Map(),
       section: makeSection('s', 'Section'),
-      project_description: 'a project',
+      size_class: 'body',
     });
     expect(selected).toEqual([]);
   });

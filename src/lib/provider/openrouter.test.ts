@@ -106,6 +106,52 @@ describe('OpenRouterClient', () => {
     expect(models[0]?.pricing?.prompt_per_token).toBe(0);
   });
 
+  it('getModels() extracts capability metadata (context_length, modalities, supported_parameters)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: 'anthropic/claude-3.5-sonnet',
+              name: 'Claude 3.5 Sonnet',
+              context_length: 200000,
+              architecture: {
+                modality: 'text+image->text',
+                input_modalities: ['text', 'image'],
+                output_modalities: ['text'],
+                tokenizer: 'Claude',
+              },
+              supported_parameters: ['temperature', 'top_p', 'tools', 'response_format'],
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const models = await client.getModels();
+    expect(models[0]?.capabilities).toEqual({
+      context_length: 200000,
+      input_modalities: ['text', 'image'],
+      output_modalities: ['text'],
+      supported_parameters: ['temperature', 'top_p', 'tools', 'response_format'],
+    });
+  });
+
+  it('getModels() leaves capabilities undefined when the row has no capability fields', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [{ id: 'foo/bar', name: 'Bar' }],
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const models = await client.getModels();
+    expect(models[0]?.capabilities).toBeUndefined();
+  });
+
   it('getModels() flags `:free` suffix ids as free even without explicit pricing', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

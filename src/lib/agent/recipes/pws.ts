@@ -17,13 +17,47 @@ import type { Recipe, RecipeStage, RecipeStageResult } from '../recipe';
 import { runReadinessCheck, suggestTemplate, proposeSharedInputs } from '../preflight';
 import { deriveSharedInputFields } from '../../project/helpers';
 import { semanticChunkText } from '../../project/chunk';
-import { getContextItems } from '../../project/context';
+import { getContextItems, renderNotesBlock } from '../../project/context';
 import { draftProject } from '../../draft/orchestrator';
+import { runMetadataBatch } from '../../draft/metadata_batch';
 import { runCrossSectionReview, type DraftedSectionInput } from '../../draft/cross_section';
 import { assembleProjectDocx } from '../../export/assemble';
 import { blobToFile, extractedTextFromRet } from '../../asksage/extract';
+import { extractFileLocally, cacheExtractedText } from '../../project/local_extract';
+import { type UsageByModel, mergeUsage } from '../../usage';
+import {
+  mapReferencesToSections,
+  type SectionMapping,
+} from '../section_mapping';
+import {
+  scanDraftForPlaceholders,
+  type PlaceholderOccurrence,
+} from '../../draft/placeholders';
 import type { ProjectContextFile, TemplateRecord, DraftRecord } from '../../db/schema';
 import { db } from '../../db/schema';
+
+/** Stable id used by downstream stages to look up the mapping in ctx.state. */
+const MAP_STAGE_ID = 'map-references-to-sections';
+
+interface MapStageOutput {
+  mappings: SectionMapping[];
+  skipped: boolean;
+}
+
+/**
+ * Pull the mapping list out of the recipe runner's state snapshot.
+ * Returns undefined when the mapping stage hasn't run yet (resume
+ * before the stage), failed, or returned a non-array shape — every
+ * downstream consumer is required to fall back gracefully in that
+ * case.
+ */
+function readMappingsFromState(state: Record<string, unknown>): SectionMapping[] | undefined {
+  const out = state[MAP_STAGE_ID];
+  if (!out || typeof out !== 'object') return undefined;
+  const mappings = (out as MapStageOutput).mappings;
+  if (!Array.isArray(mappings)) return undefined;
+  return mappings;
+}
 
 // ─── Stage implementations ───────────────────────────────────────
 
@@ -47,23 +81,35 @@ const preflightStage: RecipeStage = {
       const reference_files = items.filter(
         (i): i is ProjectContextFile => i.kind === 'file',
       );
+      const notes_block = renderNotesBlock(items);
       const report = await runReadinessCheck(ctx.client, {
         project: ctx.project,
         templates: ctx.templates,
         reference_files,
+        notes_block,
       });
-      if (!report.ready_to_draft) {
+      // Pause ONLY for truly blocking conditions: missing REQUIRED
+      // shared inputs (deterministic, computed by the helper) or a
+      // vague subject the model can't draft from. Action-list errors
+      // (e.g. "no contracting officer name") used to block here too,
+      // but the user's preference is to draft with [INSERT: ...]
+      // placeholders rather than gate the run on every advisory the
+      // LLM flagged. The downstream drafter and the metadata batch
+      // both honor the placeholder convention so the user gets a
+      // complete document with obvious gaps to fill in.
+      const blocking =
+        report.missing_shared_inputs.length > 0 || report.vague_subject;
+      if (blocking) {
         return {
           kind: 'needs_intervention',
           reason:
             report.missing_shared_inputs.length > 0
               ? `Missing required inputs: ${report.missing_shared_inputs.join(', ')}`
-              : report.vague_subject
-                ? 'Project subject is too vague to draft from.'
-                : 'Pre-flight found blocking issues.',
+              : 'Project subject is too vague to draft from.',
           output: report,
           tokens_in: report.tokens_in,
           tokens_out: report.tokens_out,
+          usage_by_model: report.usage_by_model,
         };
       }
       return {
@@ -71,6 +117,7 @@ const preflightStage: RecipeStage = {
         output: report,
         tokens_in: report.tokens_in,
         tokens_out: report.tokens_out,
+        usage_by_model: report.usage_by_model,
       };
     } catch (err) {
       return {
@@ -119,6 +166,9 @@ const templateSelectionStage: RecipeStage = {
         kind: 'needs_intervention',
         reason: `Confirm template selection: ${suggestion.template_name}`,
         output: suggestion,
+        tokens_in: suggestion.tokens_in,
+        tokens_out: suggestion.tokens_out,
+        usage_by_model: suggestion.usage_by_model,
       };
     } catch (err) {
       return {
@@ -151,10 +201,12 @@ const autoFillSharedInputsStage: RecipeStage = {
       const reference_files = items.filter(
         (i): i is ProjectContextFile => i.kind === 'file',
       );
-      const proposals = await proposeSharedInputs(ctx.client, {
+      const notes_block = renderNotesBlock(items);
+      const { proposals, tokens_in, tokens_out, usage_by_model } = await proposeSharedInputs(ctx.client, {
         project: ctx.project,
         shared_fields,
         reference_files,
+        notes_block,
       });
       // Apply every proposal whose field is currently empty. We do
       // NOT overwrite user-provided values.
@@ -191,7 +243,13 @@ const autoFillSharedInputsStage: RecipeStage = {
         ctx.project.shared_inputs = updated_shared_inputs;
         ctx.project.shared_inputs_meta = updated_meta;
       }
-      return { kind: 'ok', output: { applied, proposals } };
+      return {
+        kind: 'ok',
+        output: { applied, proposals },
+        tokens_in,
+        tokens_out,
+        usage_by_model,
+      };
     } catch (err) {
       return {
         kind: 'failed',
@@ -220,18 +278,54 @@ const extractAndChunkReferencesStage: RecipeStage = {
       const items = getContextItems(ctx.project);
       const files = items.filter((i): i is ProjectContextFile => i.kind === 'file');
       const chunked: Array<{ file_id: string; filename: string; chunk_count: number }> = [];
+      let stageTokensIn = 0;
+      let stageTokensOut = 0;
+      const stageUsage: UsageByModel = {};
       for (const file of files) {
         if (file.chunks && file.chunks.length > 0) continue;
-        // Extract text via /server/file and chunk it.
-        const fileObj = blobToFile(file.bytes, file.filename, file.mime_type);
-        const upload = await ctx.client.uploadFile(fileObj);
-        const text = extractedTextFromRet(upload.ret);
+        // Extract text using whichever path the active client supports.
+        // Cache hits short-circuit both paths so re-runs are cheap.
+        let text = file.extracted_text ?? '';
+        if (!text || text.length === 0) {
+          if (ctx.client.capabilities.fileUpload) {
+            try {
+              const fileObj = blobToFile(file.bytes, file.filename, file.mime_type);
+              const upload = await (ctx.client as unknown as {
+                uploadFile(f: File): Promise<{ ret: string | Record<string, unknown> }>;
+              }).uploadFile(fileObj);
+              text = extractedTextFromRet(upload.ret);
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[pws.extract-and-chunk] /server/file failed for ${file.filename}:`,
+                err,
+              );
+              continue;
+            }
+          } else {
+            const local = await extractFileLocally(file);
+            if (!local.text) {
+              // eslint-disable-next-line no-console
+              console.info(
+                `[pws.extract-and-chunk] local extract skipped ${file.filename}: ${local.error ?? 'no text'}`,
+              );
+              continue;
+            }
+            text = local.text;
+          }
+          if (text && text.length > 0) {
+            await cacheExtractedText(ctx.project, file.id, text);
+          }
+        }
         if (!text || text.length === 0) continue;
-        const chunks = await semanticChunkText(ctx.client, text, {
+        const result = await semanticChunkText(ctx.client, text, {
           sourceLabel: file.filename,
         });
-        file.chunks = chunks;
-        chunked.push({ file_id: file.id, filename: file.filename, chunk_count: chunks.length });
+        file.chunks = result.chunks;
+        stageTokensIn += result.tokens_in;
+        stageTokensOut += result.tokens_out;
+        mergeUsage(stageUsage, result.usage_by_model);
+        chunked.push({ file_id: file.id, filename: file.filename, chunk_count: result.chunks.length });
       }
       if (chunked.length > 0) {
         // Persist the mutated context items back to the project.
@@ -242,7 +336,125 @@ const extractAndChunkReferencesStage: RecipeStage = {
         };
         await db.projects.put(patched);
       }
-      return { kind: 'ok', output: { chunked } };
+      return {
+        kind: 'ok',
+        output: { chunked },
+        tokens_in: stageTokensIn,
+        tokens_out: stageTokensOut,
+        usage_by_model: stageUsage,
+      };
+    } catch (err) {
+      return {
+        kind: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+/**
+ * Stage 4a — map reference chunks to template sections. ONE LLM call
+ * (chunk titles + summaries only, never bodies) that decides per
+ * section which chunks belong to it, how much output content the
+ * section should produce after absorbing those chunks, and which
+ * drafting strategy the per-section drafter should use. The output
+ * lands in ctx.state[MAP_STAGE_ID] for the metadata batch and the
+ * per-section drafter to consume.
+ *
+ * This is the stage that fixes the bare-bones-template + content-
+ * rich-source case (DHA-policy template absorbing a MAMC policy):
+ * a section whose template example is 40 words but whose mapped
+ * source content is 1800 words gets promoted from inline_metadata
+ * into long, with the matched chunks pinned as preferred selections.
+ *
+ * Skips cleanly with status='ok' and zero tokens when no reference
+ * files are attached or none have been chunked yet — downstream
+ * stages then fall back to template-only sizing (the legacy path).
+ */
+const mapReferencesStage: RecipeStage = {
+  id: MAP_STAGE_ID,
+  name: 'Map references to sections',
+  description: 'One-shot alignment between template sections and reference chunks; drives per-section sizing, chunk selection, and drafting strategy downstream.',
+  required: false,
+  intervention_point: false,
+  async run(ctx): Promise<RecipeStageResult> {
+    try {
+      const items = getContextItems(ctx.project);
+      const reference_files = items.filter(
+        (i): i is ProjectContextFile => i.kind === 'file',
+      );
+      const result = await mapReferencesToSections(ctx.client, {
+        project: ctx.project,
+        templates: ctx.templates,
+        reference_files,
+      });
+      // Even when skipped (no chunks), we still return the synthetic
+      // mappings so downstream lookups don't have to special-case
+      // their absence.
+      const output: MapStageOutput = {
+        mappings: result.mappings,
+        skipped: result.skipped,
+      };
+      return {
+        kind: 'ok',
+        output,
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        usage_by_model: result.usage_by_model,
+      };
+    } catch (err) {
+      return {
+        kind: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+/**
+ * Stage 4b — metadata batch. Drafts every inline_metadata-class section
+ * across every selected template in ONE LLM call instead of running
+ * each through the per-section drafting loop. This is what stops the
+ * recipe from sending a 28k-token reference doc to a 7-word
+ * "Memorandum For" line.
+ *
+ * Runs after auto-fill so the metadata fields can use the just-filled
+ * shared inputs as their primary source. Runs even if reference
+ * chunking failed — metadata fields rarely need reference text and
+ * the batch only sends chunk titles + summaries (not bodies) anyway.
+ */
+const metadataBatchStage: RecipeStage = {
+  id: 'draft-metadata-fields',
+  name: 'Draft metadata fields',
+  description: 'One-shot fill for short fields (title, addressee, date, signature blocks) so the per-section loop only runs on real prose.',
+  required: true,
+  intervention_point: false,
+  async run(ctx): Promise<RecipeStageResult> {
+    try {
+      const items = getContextItems(ctx.project);
+      const reference_files = items.filter(
+        (i): i is ProjectContextFile => i.kind === 'file',
+      );
+      const notes_block = renderNotesBlock(items);
+      const result = await runMetadataBatch(ctx.client, {
+        project: ctx.project,
+        templates: ctx.templates,
+        reference_files,
+        notes_block,
+        section_mappings: readMappingsFromState(ctx.state),
+      });
+      return {
+        kind: 'ok',
+        output: {
+          filled: result.filled,
+          skipped: result.skipped,
+          errored: result.errored,
+          model: result.model,
+        },
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        usage_by_model: result.usage_by_model,
+      };
     } catch (err) {
       return {
         kind: 'failed',
@@ -260,28 +472,126 @@ const extractAndChunkReferencesStage: RecipeStage = {
 const draftSectionsStage: RecipeStage = {
   id: 'draft-sections',
   name: 'Draft sections',
-  description: 'Draft every section of every selected template via the orchestrator.',
+  description: 'Draft every prose section via the per-section orchestrator (inline_metadata fields are skipped — they were filled by the metadata batch stage).',
   required: true,
   intervention_point: false,
   async run(ctx): Promise<RecipeStageResult> {
     try {
-      let sections_drafted = 0;
-      let sections_errored = 0;
-      await draftProject(ctx.client, {
+      const result = await draftProject(ctx.client, {
         project: ctx.project,
         templates: ctx.templates,
-        callbacks: {
-          onSectionComplete: () => {
-            sections_drafted += 1;
-          },
-          onSectionError: () => {
-            sections_errored += 1;
-          },
-        },
+        section_mappings: readMappingsFromState(ctx.state),
       });
       return {
         kind: 'ok',
-        output: { sections_drafted, sections_errored },
+        output: {
+          sections_drafted: result.sections_drafted,
+          sections_errored: result.sections_errored,
+        },
+        tokens_in: result.tokens_in,
+        tokens_out: result.tokens_out,
+        usage_by_model: result.usage_by_model,
+      };
+    } catch (err) {
+      return {
+        kind: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+/**
+ * Stage 5b — fill placeholders. Scans every ready draft for the
+ * project, looking for [INSERT: ...] placeholders the per-section
+ * drafter or the metadata batch left in place because the LLM had
+ * no way to ground a fact in the available context. When any are
+ * found, returns `needs_intervention` and surfaces them to the UI;
+ * the user fills them in (in natural language), the UI mutates the
+ * drafts directly in Dexie, and the recipe resumes from the next
+ * stage. When the user clicks "skip" the placeholders are left in
+ * place — the assembled DOCX still gets exported with literal
+ * "[INSERT: ...]" markers the user can find-and-replace later.
+ *
+ * On resume, the runner re-executes this stage. The re-scan picks
+ * up the user's edits — if every placeholder is now resolved, the
+ * stage returns `ok`. If a few are still present (e.g. user clicked
+ * skip-all), the stage still returns `ok` so the recipe doesn't
+ * loop forever — the unresolved count is reported in the output for
+ * the run history.
+ */
+export const FILL_PLACEHOLDERS_STAGE_ID = 'fill-placeholders';
+
+interface FillPlaceholdersStageOutput {
+  total_placeholders: number;
+  occurrences: Array<
+    PlaceholderOccurrence & {
+      draft_id: string;
+      template_id: string;
+      template_name: string;
+      section_id: string;
+      section_name: string;
+    }
+  >;
+}
+
+const fillPlaceholdersStage: RecipeStage = {
+  id: FILL_PLACEHOLDERS_STAGE_ID,
+  name: 'Fill placeholders',
+  description:
+    'Surface any [INSERT: ...] placeholders the drafter left in for the user to fill in before assembly.',
+  required: false,
+  intervention_point: true,
+  async run(ctx): Promise<RecipeStageResult> {
+    try {
+      const allDrafts = await db.drafts
+        .where('project_id')
+        .equals(ctx.project.id)
+        .toArray();
+      const readyDrafts = allDrafts.filter((d) => d.status === 'ready');
+
+      // Index template + section names so the UI can render labels
+      // without re-querying.
+      const templateNamesById = new Map<string, string>();
+      const sectionNamesById = new Map<string, string>();
+      for (const t of ctx.templates) {
+        templateNamesById.set(t.id, t.name);
+        for (const s of t.schema_json.sections) {
+          sectionNamesById.set(`${t.id}::${s.id}`, s.name);
+        }
+      }
+
+      const occurrences: FillPlaceholdersStageOutput['occurrences'] = [];
+      for (const draft of readyDrafts) {
+        const found = scanDraftForPlaceholders(draft.paragraphs);
+        if (found.length === 0) continue;
+        const templateName = templateNamesById.get(draft.template_id) ?? draft.template_id;
+        const sectionName =
+          sectionNamesById.get(`${draft.template_id}::${draft.section_id}`) ?? draft.section_id;
+        for (const o of found) {
+          occurrences.push({
+            ...o,
+            draft_id: draft.id,
+            template_id: draft.template_id,
+            template_name: templateName,
+            section_id: draft.section_id,
+            section_name: sectionName,
+          });
+        }
+      }
+
+      const output: FillPlaceholdersStageOutput = {
+        total_placeholders: occurrences.length,
+        occurrences,
+      };
+
+      if (occurrences.length === 0) {
+        return { kind: 'ok', output };
+      }
+      return {
+        kind: 'needs_intervention',
+        reason: `${occurrences.length} placeholder${occurrences.length === 1 ? '' : 's'} need values before assembly.`,
+        output,
       };
     } catch (err) {
       return {
@@ -342,6 +652,7 @@ const crossSectionReviewStage: RecipeStage = {
         output: result,
         tokens_in: result.tokens_in,
         tokens_out: result.tokens_out,
+        usage_by_model: result.usage_by_model,
       };
     } catch (err) {
       return {
@@ -423,12 +734,21 @@ const assembleDocxStage: RecipeStage = {
 // ─── Recipe definition ───────────────────────────────────────────
 
 export const PWS_RECIPE: Recipe = {
+  // The id stays 'pws' for backwards compatibility with persisted
+  // recipe_runs rows that reference it; the recipe is actually
+  // subject-agnostic. The display name is generic and the runner
+  // overrides it per-project at run time (see runRecipe display_name).
   id: 'pws',
-  name: 'Build a PWS',
+  name: 'Auto-draft document',
   description:
-    'Pre-flight the project, auto-fill shared inputs, chunk references, draft every section, cross-section review, and assemble a finished DOCX.',
-  applies_to: ['pws', 'performance_work_statement', 'sow'],
-  required_provider: 'asksage',
+    'Pre-flight the project, auto-fill shared inputs, chunk references, one-shot the metadata fields, draft every prose section, cross-section review, and assemble a finished DOCX.',
+  applies_to: ['pws', 'performance_work_statement', 'sow', 'mfr', 'mou', 'memo', 'policy', 'sop'],
+  // Recipe runs on either provider. Stages branch internally on
+  // client.capabilities — Ask Sage uses /server/file, OpenRouter uses
+  // the in-browser DOCX/text extractor and inlines the result the
+  // same way. PDFs and other formats degrade to filename-only context
+  // on OpenRouter (the user can convert to DOCX if needed).
+  required_provider: 'any',
   estimated_tokens_in: 250_000,
   estimated_tokens_out: 60_000,
   stages: [
@@ -436,7 +756,10 @@ export const PWS_RECIPE: Recipe = {
     templateSelectionStage,
     autoFillSharedInputsStage,
     extractAndChunkReferencesStage,
+    mapReferencesStage,
+    metadataBatchStage,
     draftSectionsStage,
+    fillPlaceholdersStage,
     crossSectionReviewStage,
     assembleDocxStage,
   ],

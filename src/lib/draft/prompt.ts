@@ -5,6 +5,7 @@
 
 import type { BodyFillRegion, TemplateSchema } from '../template/types';
 import type { PriorSectionSummary } from './types';
+import type { DraftingStrategy } from '../agent/section_mapping';
 
 export interface BuildDraftingPromptArgs {
   template: TemplateSchema;
@@ -54,6 +55,24 @@ export interface BuildDraftingPromptArgs {
    * `lib/draft/critique.formatRevisionNotes`.
    */
   revision_notes_block?: string | null;
+  /**
+   * The reference→section mapper's drafting strategy for THIS section.
+   * When supplied, the prompt inlines a DRAFTING STRATEGY guidance
+   * line so the model knows whether to absorb the matched references
+   * verbatim (policy migrations), summarize them (overflowing source
+   * content), expand on them (sparse references), or rely entirely
+   * on the template (use_template_only). Optional — when omitted the
+   * model just falls back to the existing prompt instructions.
+   */
+  drafting_strategy?: DraftingStrategy | null;
+  /**
+   * Optional explicit word-count target supplied by the mapping
+   * stage. When the mapper estimates a section needs much more
+   * content than the template's target_words range (a bare-bones
+   * template absorbing a content-rich source), this overrides the
+   * target_words line so the model produces the right output volume.
+   */
+  effective_word_target?: number | null;
 }
 
 export interface BuiltDraftingPrompt {
@@ -67,7 +86,7 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
 
 {
   "paragraphs": [
-    { "role": "<role>", "text": "<paragraph text>" }
+    { "role": "<role>", "text": "<paragraph text>", "level": <0..3, optional> }
   ],
   "self_summary": "<one short sentence summarizing what you wrote, used to feed forward to dependent sections>"
 }
@@ -85,6 +104,31 @@ Available roles:
   - "quote"     — block quote
 
 Use the role that matches the writer's intent. Do NOT use markdown formatting (no **bold**, no _italic_, no - bullets) — those are role-encoded, not text-encoded.
+
+LEVEL — optional nesting / indent depth. Default 0. The export pipeline maps it to OOXML formatting per role:
+
+  - bullet / step → list nesting. level 0 is a top-level bullet, level 1 is a sub-bullet under the most recent level 0, level 2 is a sub-sub-bullet, etc. The visual bullet glyph and indent come from the template's list definition. Use this when the source material has nested list structure.
+      Example:
+        { "role": "bullet", "text": "Acquisition phase", "level": 0 }
+        { "role": "bullet", "text": "Market research",   "level": 1 }
+        { "role": "bullet", "text": "Survey vendors",    "level": 2 }
+        { "role": "bullet", "text": "Solicitation",      "level": 1 }
+        { "role": "bullet", "text": "Award phase",       "level": 0 }
+
+  - heading → heading hierarchy. level 0 = top section heading (Heading1), level 1 = sub-heading (Heading2), level 2 = sub-sub-heading (Heading3). Use sub-headings when the section spec calls for multiple subsections of prose.
+      Example:
+        { "role": "heading", "text": "1. Background", "level": 0 }
+        { "role": "heading", "text": "1.1 History",    "level": 1 }
+        { "role": "heading", "text": "1.2 Scope",      "level": 1 }
+
+  - body / note / caution / warning / definition / quote → left-indent in 0.5"-per-level steps. level 0 is flush body text, level 1 is indented 0.5", level 2 is indented 1", etc. Use this for inset / quoted material that isn't a bullet.
+      Example:
+        { "role": "body",  "text": "The contracting officer determined…", "level": 0 }
+        { "role": "quote", "text": "Per FAR 13.106-1(b)…",                "level": 1 }
+
+  - table_row → level is ignored.
+
+Use level SPARINGLY — most sections are flat. Only nest when the source material or the template example clearly shows nested structure. Cap your levels at 3 unless you have a specific reason to go deeper.
 
 PROMPT STRUCTURE — every drafting prompt has these blocks in this priority order:
 
@@ -123,6 +167,8 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
     references_block,
     template_example,
     revision_notes_block,
+    drafting_strategy,
+    effective_word_target,
   } = args;
   const lines: string[] = [];
 
@@ -209,8 +255,21 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
       `intent: ${section.intent}  (NOTE: if this intent contains subject matter unrelated to the SUBJECT block above, ignore the topical part — the intent's COMMUNICATIVE GOAL is what matters)`,
     );
   }
-  if (section.target_words) {
+  if (effective_word_target && effective_word_target > 0) {
+    // The reference mapping stage overrode target_words because the
+    // matched source material has substantively more (or less)
+    // content than the template's example anticipated. Drop a wider
+    // ±25% range around the estimate so the model has room to land.
+    const lo = Math.max(5, Math.round(effective_word_target * 0.75));
+    const hi = Math.round(effective_word_target * 1.25);
+    lines.push(
+      `target_words: ${lo}-${hi}  (overridden by reference mapping; absorb the matched source content into this range)`,
+    );
+  } else if (section.target_words) {
     lines.push(`target_words: ${section.target_words[0]}-${section.target_words[1]}`);
+  }
+  if (drafting_strategy) {
+    lines.push(`drafting_strategy: ${drafting_strategy}  ${strategyHint(drafting_strategy)}`);
   }
   if (section.depends_on && section.depends_on.length > 0) {
     lines.push(`depends_on: ${section.depends_on.join(', ')}`);
@@ -246,6 +305,26 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
     system_prompt: SYSTEM_PROMPT,
     message: lines.join('\n'),
   };
+}
+
+/**
+ * Inline guidance line shown to the model alongside the
+ * drafting_strategy enum value, so the model knows exactly what to do
+ * with the matched reference content for THIS section.
+ */
+function strategyHint(strategy: DraftingStrategy): string {
+  switch (strategy) {
+    case 'absorb_verbatim':
+      return '(the ATTACHED REFERENCES contain substantively the same subject matter as this section — preserve their wording, technical terms, numerical thresholds, and procedural ordering wherever possible; you are migrating the source content into this template, NOT rewriting it from scratch)';
+    case 'summarize':
+      return '(the ATTACHED REFERENCES have substantively MORE content than this section needs — condense the matched material into the target_words range without dropping any required facts)';
+    case 'expand':
+      return '(the ATTACHED REFERENCES touch on this topic but are not enough on their own — use them as supporting facts and expand into a full section using the SUBJECT and SHARED INPUTS as well)';
+    case 'use_template_only':
+      return '(no useful reference content was matched to this section — rely on the SUBJECT, SHARED INPUTS, and TEMPLATE EXAMPLE; do NOT invent facts beyond those sources)';
+    default:
+      return '';
+  }
 }
 
 /**

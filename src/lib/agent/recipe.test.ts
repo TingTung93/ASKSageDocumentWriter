@@ -71,8 +71,12 @@ beforeEach(() => {
 // ─── Mock Ask Sage client ────────────────────────────────────────
 
 class MockAskSageClient {
+  readonly capabilities = { fileUpload: true, dataset: true, liveSearch: true };
   async uploadFile(): Promise<unknown> {
     return { ret: [] };
+  }
+  async getModels(): Promise<unknown[]> {
+    return [];
   }
   async query(): Promise<unknown> {
     return {};
@@ -84,6 +88,10 @@ class MockAskSageClient {
 
 // Bare client that lacks `uploadFile` — used to exercise the provider lock.
 class MockOpenRouterClient {
+  readonly capabilities = { fileUpload: false, dataset: false, liveSearch: false };
+  async getModels(): Promise<unknown[]> {
+    return [];
+  }
   async query(): Promise<unknown> {
     return {};
   }

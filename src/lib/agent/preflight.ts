@@ -38,7 +38,9 @@ import type { LLMClient } from '../provider/types';
 import type { ProjectRecord, TemplateRecord, ProjectContextFile } from '../db/schema';
 import type { SharedInputField } from '../project/helpers';
 import { deriveSharedInputFields } from '../project/helpers';
-import { AskSageClient } from '../asksage/client';
+import { extractFileLocally } from '../project/local_extract';
+import { resolveDraftingModel } from '../provider/resolve_model';
+import { type UsageByModel, recordUsage } from '../usage';
 import { blobToFile, extractedTextFromRet } from '../asksage/extract';
 
 // ─── Public types ────────────────────────────────────────────────────
@@ -76,6 +78,8 @@ export interface ReadinessReport {
   actions: ReadinessAction[];
   tokens_in: number;
   tokens_out: number;
+  /** Per-model usage breakdown for the readiness call. Single entry. */
+  usage_by_model: UsageByModel;
   model: string;
   raw_output: unknown;
 }
@@ -84,6 +88,17 @@ export interface ReadinessCheckArgs {
   project: ProjectRecord;
   templates: TemplateRecord[];
   reference_files: ProjectContextFile[];
+  /**
+   * Pre-rendered PROJECT NOTES block from
+   * lib/project/context.renderNotesBlock. Notes are user-authored
+   * chat-style guidance attached to the project. They count as
+   * substantive context — many short documents (a memo, a transfer
+   * action) have ALL their content in the description + notes and
+   * never need attached files. Pass null when the project has no
+   * notes; when null AND reference_files is empty the readiness check
+   * will treat the project as relying solely on the project subject.
+   */
+  notes_block?: string | null;
   model?: string;
 }
 
@@ -92,6 +107,10 @@ export interface TemplateSuggestion {
   template_name: string;
   confidence: number;
   reasoning: string;
+  /** Per-model usage breakdown for the suggestion call. */
+  usage_by_model?: UsageByModel;
+  tokens_in?: number;
+  tokens_out?: number;
 }
 
 export interface ProposedSharedInput {
@@ -168,7 +187,7 @@ GUIDANCE per field:
 
 - subject_warnings: be SPECIFIC. "Missing the equipment make/model" — not "needs more detail". "Does not state the period of performance" — not "vague timeframe". Each warning is one line, actionable, no apology language. Empty array if vague_subject is false.
 
-- coverage: for EVERY template in the input, produce one entry. Bucket each section_id into exactly one of covered / thin / no_coverage based on whether the attached reference files appear to contain source material the drafter could pull from for that section. The reference block below contains the actual extracted text of each file (or a leading excerpt for very long files), or chunk titles+summaries when the file has been semantically chunked — read the content carefully and judge coverage on substance, not on filename. A "Definitions" or "Signature Block" section with no reference material is usually fine and should be marked covered. A "Performance Requirements" section with no relevant references is no_coverage.
+- coverage: for EVERY template in the input, produce one entry. Bucket each section_id into exactly one of covered / thin / no_coverage based on whether the source material the user has provided — the PROJECT SUBJECT, the PROJECT NOTES (when present), and the ATTACHED REFERENCE FILES (when present) — gives the drafter enough to write that section. ALL THREE are valid sources; a project that supplies only a subject + notes (no files) is a fully legitimate input pattern and many short documents (memos, transfer actions, simple letters) are drafted that way. The reference block below contains the actual extracted text of each attached file. The notes block contains user-authored guidance verbatim. Read both carefully and judge coverage on substance, not on filename. A "Definitions" or "Signature Block" section with no source material is usually fine and should be marked covered. A "Performance Requirements" section with no relevant content from any source is no_coverage.
 
 - actions: mixed advisories. Severities:
     "error"   — drafting will probably fail or produce a useless document
@@ -205,7 +224,7 @@ GUIDANCE:
 
 Return STRICT JSON. No markdown, no commentary.`;
 
-const PROPOSE_INPUTS_SYSTEM_PROMPT = `You are auto-filling fielded metadata for a government document by extracting values from a project subject and a set of attached reference files. The user has a set of REQUESTED FIELDS (e.g. document_number, contracting_officer_name, period_of_performance, cui_banner). For each field, find the best-supported value from the source material and report a confidence score and provenance. SKIP fields you cannot ground in the source material — do not guess.
+const PROPOSE_INPUTS_SYSTEM_PROMPT = `You are auto-filling fielded metadata for a government document by extracting values from the user's source material. The user has a set of REQUESTED FIELDS (e.g. document_number, contracting_officer_name, period_of_performance, cui_banner). For each field, find the best-supported value from any of: the PROJECT SUBJECT, the PROJECT NOTES (when present), or the ATTACHED REFERENCE FILES (when present). Notes are user-authored chat-style guidance and frequently contain the strongest evidence for short metadata fields like addressee, date, or office symbol. Report a confidence score and provenance. SKIP fields you cannot ground — do not guess.
 
 You always respond with STRICT JSON only. No markdown code fences, no prose, no explanation. The JSON must parse on the first attempt with JSON.parse().
 
@@ -241,7 +260,8 @@ Return STRICT JSON. No markdown, no commentary.`;
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = 'google-claude-46-sonnet';
+// Default model id resolution lives in lib/provider/resolve_model.ts
+// so the chain works for both Ask Sage and OpenRouter; see notes there.
 
 /** Per-file extracted-text cap when inlining into the preflight prompt. */
 const PREFLIGHT_FILE_CAP_CHARS = 12_000;
@@ -327,12 +347,14 @@ function buildReferenceCorpus(
 }
 
 /**
- * Upload + extract every reference file via /server/file ONCE so the
- * preflight prompt can see actual file content (not just filenames).
- * Mirrors the same pattern used by lib/draft/orchestrator and
- * lib/document/edit. Failures are non-fatal — the file falls back to
- * the metadata-only stub and the preflight prompt warns the model not
- * to gate drafting on those.
+ * Pull reference text for every file ONCE so the preflight prompt can
+ * judge coverage on substance, not just filenames. Picks the
+ * extraction path based on the active client's capabilities:
+ *   - fileUpload: true  → /server/file (Ask Sage)
+ *   - fileUpload: false → in-browser DOCX/text extractor
+ * Cache hits via ProjectContextFile.extracted_text short-circuit both
+ * paths. All failures are non-fatal — the file just falls back to a
+ * filename-only stub in the preflight corpus.
  */
 async function extractReferencesForPreflight(
   client: LLMClient,
@@ -340,25 +362,39 @@ async function extractReferencesForPreflight(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (files.length === 0) return out;
-  // /server/file is Ask-Sage-only. On OpenRouter we skip extraction
-  // entirely; the preflight prompt still tells the model that missing
-  // text is not a blocker, so it should not over-flag.
-  if (!(client instanceof AskSageClient)) {
-    return out;
-  }
   for (const f of files) {
-    try {
-      const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
-      const upload = await client.uploadFile(fileObj);
-      const text = extractedTextFromRet(upload.ret);
-      if (text && text.trim().length > 0) {
-        out.set(f.id, text);
+    if (f.extracted_text && f.extracted_text.trim().length > 0) {
+      out.set(f.id, f.extracted_text);
+      continue;
+    }
+    if (client.capabilities.fileUpload) {
+      try {
+        const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
+        const upload = await (client as unknown as {
+          uploadFile(file: File): Promise<{ ret: string | Record<string, unknown> }>;
+        }).uploadFile(fileObj);
+        const text = extractedTextFromRet(upload.ret);
+        if (text && text.trim().length > 0) {
+          out.set(f.id, text);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[preflight] /server/file failed for ${f.filename}; falling back to metadata-only stub:`,
+          err,
+        );
       }
-    } catch (err) {
+      continue;
+    }
+    // OpenRouter (and any future non-extracting provider) — try a
+    // local browser-side extraction. extractFileLocally never throws.
+    const local = await extractFileLocally(f);
+    if (local.text && local.text.trim().length > 0) {
+      out.set(f.id, local.text);
+    } else if (local.error) {
       // eslint-disable-next-line no-console
-      console.warn(
-        `[preflight] failed to extract ${f.filename}; falling back to metadata-only stub:`,
-        err,
+      console.info(
+        `[preflight] local extract skipped ${f.filename}: ${local.error}`,
       );
     }
   }
@@ -390,7 +426,7 @@ export async function runReadinessCheck(
   client: LLMClient,
   args: ReadinessCheckArgs,
 ): Promise<ReadinessReport> {
-  const model = args.model ?? DEFAULT_MODEL;
+  const model = await resolveDraftingModel(client, args.model, 'drafting');
 
   // Pre-flight pre-flight: extract reference file text once so the
   // LLM can judge coverage on actual content, not on filenames.
@@ -401,6 +437,15 @@ export async function runReadinessCheck(
   messageLines.push(args.project.description?.trim() || '(empty)');
   messageLines.push(`=== END PROJECT SUBJECT ===`);
   messageLines.push('');
+  // Notes are inlined BEFORE the file block so the LLM treats them as
+  // first-class context. Many short documents (memos, transfer
+  // actions) carry their entire substance in the notes — without this
+  // the readiness check would (correctly, given missing input)
+  // escalate "no reference files" to an error and block the run.
+  if (args.notes_block && args.notes_block.trim().length > 0) {
+    messageLines.push(args.notes_block);
+    messageLines.push('');
+  }
   messageLines.push(`=== SELECTED TEMPLATES (${args.templates.length}) ===`);
   if (args.templates.length === 0) {
     messageLines.push('(no templates selected)');
@@ -478,6 +523,15 @@ export async function runReadinessCheck(
   const ready_to_draft =
     missing_shared_inputs.length === 0 && !vague_subject && !hasError;
 
+  const tokens_in = raw.usage?.prompt_tokens ?? 0;
+  const tokens_out = raw.usage?.completion_tokens ?? 0;
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, model, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
+  });
+
   return {
     ready_to_draft,
     missing_shared_inputs,
@@ -485,8 +539,9 @@ export async function runReadinessCheck(
     subject_warnings,
     coverage,
     actions,
-    tokens_in: raw.usage?.prompt_tokens ?? 0,
-    tokens_out: raw.usage?.completion_tokens ?? 0,
+    tokens_in,
+    tokens_out,
+    usage_by_model,
     model,
     raw_output: data,
   };
@@ -504,7 +559,7 @@ export async function suggestTemplate(
   },
 ): Promise<TemplateSuggestion | null> {
   if (args.templates.length === 0) return null;
-  const model = args.model ?? DEFAULT_MODEL;
+  const model = await resolveDraftingModel(client, args.model, 'drafting');
 
   const messageLines: string[] = [];
   messageLines.push(`=== PROJECT SUBJECT ===`);
@@ -529,13 +584,22 @@ export async function suggestTemplate(
     `Pick the single best-matching template for this project. Return STRICT JSON per the OUTPUT SCHEMA in your system prompt.`,
   );
 
-  const { data } = await client.queryJson<TemplateSuggestionLLMResponse>({
+  const { data, raw } = await client.queryJson<TemplateSuggestionLLMResponse>({
     message: messageLines.join('\n'),
     model,
     system_prompt: TEMPLATE_SUGGEST_SYSTEM_PROMPT,
     temperature: 0,
     limit_references: 0,
     usage: true,
+  });
+
+  const tokens_in = raw.usage?.prompt_tokens ?? 0;
+  const tokens_out = raw.usage?.completion_tokens ?? 0;
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, model, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
   });
 
   const picked = args.templates.find((t) => t.id === data.template_id);
@@ -548,6 +612,9 @@ export async function suggestTemplate(
       template_name: fallback.name,
       confidence: 0,
       reasoning: 'Model returned an unrecognized template id; defaulting to first.',
+      usage_by_model,
+      tokens_in,
+      tokens_out,
     };
   }
   const rawConf = typeof data.confidence === 'number' ? data.confidence : 0;
@@ -557,10 +624,21 @@ export async function suggestTemplate(
     template_name: picked.name,
     confidence,
     reasoning: data.reasoning?.trim() || '(no reasoning provided)',
+    usage_by_model,
+    tokens_in,
+    tokens_out,
   };
 }
 
 // ─── proposeSharedInputs ─────────────────────────────────────────────
+
+export interface ProposeSharedInputsResult {
+  proposals: Record<string, ProposedSharedInput>;
+  tokens_in: number;
+  tokens_out: number;
+  /** Per-model usage breakdown for the proposal call. Single entry. */
+  usage_by_model: UsageByModel;
+}
 
 export async function proposeSharedInputs(
   client: LLMClient,
@@ -568,11 +646,17 @@ export async function proposeSharedInputs(
     project: ProjectRecord;
     shared_fields: SharedInputField[];
     reference_files: ProjectContextFile[];
+    /** Pre-rendered PROJECT NOTES block; the user's chat-style guidance
+     *  is often the strongest source for short metadata fields like
+     *  addressee, date, document number. See ReadinessCheckArgs.notes_block. */
+    notes_block?: string | null;
     model?: string;
   },
-): Promise<Record<string, ProposedSharedInput>> {
-  if (args.shared_fields.length === 0) return {};
-  const model = args.model ?? DEFAULT_MODEL;
+): Promise<ProposeSharedInputsResult> {
+  if (args.shared_fields.length === 0) {
+    return { proposals: {}, tokens_in: 0, tokens_out: 0, usage_by_model: {} };
+  }
+  const model = await resolveDraftingModel(client, args.model, 'drafting');
 
   // Same pre-flight pre-flight: extract file text so the model can
   // actually find values to propose.
@@ -592,6 +676,14 @@ export async function proposeSharedInputs(
   messageLines.push(args.project.description?.trim() || '(empty)');
   messageLines.push(`=== END PROJECT SUBJECT ===`);
   messageLines.push('');
+  // Inline notes BEFORE the file block — for short metadata fields
+  // (addressee, date, document number) the user's notes are usually
+  // the strongest source. Skipping notes here was making auto-fill
+  // hallucinate or omit values that were sitting right in the notes.
+  if (args.notes_block && args.notes_block.trim().length > 0) {
+    messageLines.push(args.notes_block);
+    messageLines.push('');
+  }
   messageLines.push(`=== ATTACHED REFERENCE FILES (${args.reference_files.length}) ===`);
   messageLines.push(buildReferenceCorpus(args.reference_files, extractedById));
   messageLines.push(`=== END ATTACHED REFERENCE FILES ===`);
@@ -600,7 +692,7 @@ export async function proposeSharedInputs(
     `For each requested field, find the best-supported value from the source material. SKIP fields with no evidence. Return STRICT JSON per the OUTPUT SCHEMA in your system prompt.`,
   );
 
-  const { data } = await client.queryJson<ProposedSharedInputsLLMResponse>({
+  const { data, raw } = await client.queryJson<ProposedSharedInputsLLMResponse>({
     message: messageLines.join('\n'),
     model,
     system_prompt: PROPOSE_INPUTS_SYSTEM_PROMPT,
@@ -610,17 +702,31 @@ export async function proposeSharedInputs(
   });
 
   const requestedKeys = new Set(args.shared_fields.map((f) => f.key));
-  const out: Record<string, ProposedSharedInput> = {};
-  for (const [key, raw] of Object.entries(data.proposals ?? {})) {
+  const proposals: Record<string, ProposedSharedInput> = {};
+  for (const [key, rawProp] of Object.entries(data.proposals ?? {})) {
     if (!requestedKeys.has(key)) continue; // ignore hallucinated keys
-    if (!raw || typeof raw.value !== 'string' || raw.value.trim().length === 0) continue;
-    const conf = typeof raw.confidence === 'number' ? raw.confidence : 0;
-    out[key] = {
-      value: raw.value,
-      source: raw.source ?? 'inferred',
-      source_label: raw.source_label,
+    if (!rawProp || typeof rawProp.value !== 'string' || rawProp.value.trim().length === 0) continue;
+    const conf = typeof rawProp.confidence === 'number' ? rawProp.confidence : 0;
+    proposals[key] = {
+      value: rawProp.value,
+      source: rawProp.source ?? 'inferred',
+      source_label: rawProp.source_label,
       confidence: Math.max(0, Math.min(1, conf)),
     };
   }
-  return out;
+  const usage = (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
+  const tokens_in = usage.prompt_tokens ?? 0;
+  const tokens_out = usage.completion_tokens ?? 0;
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, model, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
+  });
+  return {
+    proposals,
+    tokens_in,
+    tokens_out,
+    usage_by_model,
+  };
 }

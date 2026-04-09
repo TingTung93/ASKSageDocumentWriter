@@ -43,6 +43,8 @@
 import type { LLMClient } from '../provider/types';
 import type { BodyFillRegion, TemplateSchema } from '../template/types';
 import type { DraftParagraph } from './types';
+import { type UsageByModel, recordUsage } from '../usage';
+import { resolveDraftingModel } from '../provider/resolve_model';
 
 // ─── Public types ────────────────────────────────────────────────
 
@@ -73,6 +75,8 @@ export interface CrossSectionResult {
   issues: CrossSectionIssue[];
   tokens_in: number;
   tokens_out: number;
+  /** Per-model usage breakdown. Always a single entry. */
+  usage_by_model: UsageByModel;
   model: string;
   /** Prompt sent (for diagnostics + audit). */
   prompt_sent: string;
@@ -355,32 +359,56 @@ export async function runCrossSectionReview(
   args: CrossSectionArgs,
 ): Promise<CrossSectionResult> {
   const built = buildCrossSectionPrompt(args);
-  const model = args.model ?? DEFAULT_CROSS_SECTION_MODEL;
+  // Route through the model resolver so the cross-section pass uses
+  // the same provider-aware id selection as the per-section drafter.
+  // The legacy hardcoded DEFAULT_CROSS_SECTION_MODEL was an Ask Sage
+  // id and crashed every OpenRouter run with a 400 "not a valid model
+  // ID" — see #28.
+  const model = await resolveDraftingModel(args.client, args.model, 'drafting');
 
   const knownSectionIds = new Set<string>();
   for (const s of args.sections) knownSectionIds.add(s.section.id);
 
-  const { data, raw } = await args.client.queryJson<unknown>({
+  // Strip Ask-Sage-only knobs when the provider doesn't honor them.
+  // OpenRouter would silently drop these but a clean request body
+  // makes audit logs easier to read.
+  const queryInput: Parameters<typeof args.client.queryJson>[0] = {
     message: built.message,
     system_prompt: built.system_prompt,
     model,
-    dataset: 'none',
-    limit_references: 0,
     temperature: DEFAULT_CROSS_SECTION_TEMPERATURE,
-    live: 0,
     usage: true,
-  });
+  };
+  if (args.client.capabilities.dataset) {
+    queryInput.dataset = 'none';
+    queryInput.limit_references = 0;
+  }
+  if (args.client.capabilities.liveSearch) {
+    queryInput.live = 0;
+  }
+
+  const { data, raw } = await args.client.queryJson<unknown>(queryInput);
 
   const issues = normalizeIssues(data, knownSectionIds);
   const passed = decidePassed(issues);
   const usage =
     (raw.usage as { prompt_tokens?: number; completion_tokens?: number } | null | undefined) ?? {};
 
+  const tokens_in = usage.prompt_tokens ?? 0;
+  const tokens_out = usage.completion_tokens ?? 0;
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, model, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
+  });
+
   return {
     passed,
     issues,
-    tokens_in: usage.prompt_tokens ?? 0,
-    tokens_out: usage.completion_tokens ?? 0,
+    tokens_in,
+    tokens_out,
+    usage_by_model,
     model,
     prompt_sent: built.message,
     raw_output: data,

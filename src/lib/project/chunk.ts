@@ -26,6 +26,8 @@
 import type { LLMClient } from '../provider/types';
 import type { BodyFillRegion } from '../template/types';
 import type { ProjectContextFile, ReferenceChunk } from '../db/schema';
+import type { SectionSizeClass } from '../draft/section_size';
+import { type UsageByModel, recordUsage } from '../usage';
 
 /** Default per-chunk size in characters for naive chunking. */
 export const NAIVE_CHUNK_SIZE_CHARS = 5_000;
@@ -33,11 +35,32 @@ export const NAIVE_CHUNK_SIZE_CHARS = 5_000;
 export const NAIVE_CHUNK_OVERLAP_CHARS = 400;
 
 /**
- * Default per-section reference budget in characters. ~120k chars ≈
- * ~30k tokens, which fits comfortably in any modern model's context
- * alongside the rest of the drafting prompt. Tunable per call.
+ * Per-section reference budget by size class. Replaces the old flat
+ * 120k-char budget that effectively passed every chunk to every
+ * section regardless of how much output was actually expected — the
+ * regression that burned a month's tokens drafting a 7-word
+ * "Memorandum For" line. Each tuple is [max chars, max chunks]; the
+ * greedy selector enforces both caps.
  */
-export const DEFAULT_SECTION_REF_BUDGET_CHARS = 120_000;
+export const SECTION_REF_BUDGETS: Record<
+  SectionSizeClass,
+  { maxChars: number; maxChunks: number }
+> = {
+  // inline_metadata sections never reach selectChunksForSection — they go
+  // through the metadata batch drafter — but we still expose a budget for
+  // completeness in case a caller needs it.
+  inline_metadata: { maxChars: 1_500, maxChunks: 1 },
+  short: { maxChars: 4_000, maxChunks: 2 },
+  body: { maxChars: 15_000, maxChunks: 6 },
+  long: { maxChars: 30_000, maxChunks: 12 },
+};
+
+/**
+ * Legacy default kept for callers that haven't been updated to pass a
+ * size class. Matches the old `body` budget so legacy behavior is the
+ * standard prose path, not the runaway 120k cap.
+ */
+export const DEFAULT_SECTION_REF_BUDGET_CHARS = SECTION_REF_BUDGETS.body.maxChars;
 
 // ─── Naive chunking ──────────────────────────────────────────────
 
@@ -133,19 +156,31 @@ interface SemanticChunkOutput {
   }>;
 }
 
+export interface SemanticChunkResult {
+  chunks: ReferenceChunk[];
+  tokens_in: number;
+  tokens_out: number;
+  /** Per-model usage breakdown. Single entry — the chunker model. */
+  usage_by_model: UsageByModel;
+  /** Model id used for the chunking call. */
+  model: string;
+}
+
 /**
  * Run an LLM pass to chunk an extracted reference document. Returns
- * an array of {id, title, summary, text} entries ready to store on
- * the project context file. Throws on a network or parse failure
- * (the caller renders the error as a toast — no automatic fallback).
+ * the chunks plus token usage so the recipe runner can roll the cost
+ * into its per-stage totals (this used to be invisible, which made the
+ * recipe history report ~0 tokens for documents that were actually
+ * burning thousands on chunking). Throws on parse failure (the caller
+ * renders the error as a toast — no automatic fallback).
  */
 export async function semanticChunkText(
   client: LLMClient,
   text: string,
   opts: { model?: string; sourceLabel?: string } = {},
-): Promise<ReferenceChunk[]> {
+): Promise<SemanticChunkResult> {
   const message = `Reference document${opts.sourceLabel ? ` (${opts.sourceLabel})` : ''}:\n\n${text}\n\nNow split this into semantically coherent chunks per the system prompt. Return STRICT JSON.`;
-  const { data } = await client.queryJson<SemanticChunkOutput>({
+  const { data, raw } = await client.queryJson<SemanticChunkOutput>({
     message,
     system_prompt: SEMANTIC_CHUNK_SYSTEM_PROMPT,
     model: opts.model,
@@ -171,7 +206,27 @@ export async function semanticChunkText(
       'LLM returned no usable chunks. Check the audit log for the raw response — the model may have rejected the document or returned an empty array.',
     );
   }
-  return out;
+  const usage = (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
+  const tokens_in = usage.prompt_tokens ?? 0;
+  const tokens_out = usage.completion_tokens ?? 0;
+  // semanticChunkText accepts an optional `opts.model`; when omitted
+  // the LLMClient picks its provider default. We don't have a way to
+  // know which id the client actually sent (it isn't echoed in the
+  // response), so attribute under the explicit override or 'unknown'.
+  const recordedModel = opts.model ?? 'unknown';
+  const usage_by_model: UsageByModel = {};
+  recordUsage(usage_by_model, recordedModel, {
+    tokens_in,
+    tokens_out,
+    web_search_results: raw.web_search_results,
+  });
+  return {
+    chunks: out,
+    tokens_in,
+    tokens_out,
+    usage_by_model,
+    model: recordedModel,
+  };
 }
 
 // ─── Per-section selection ───────────────────────────────────────
@@ -193,17 +248,24 @@ export interface SelectedChunk {
  *
  * Strategy:
  *   1. Build a query string from section.name + section.intent +
- *      project_description (the things the drafter cares about for
- *      this section).
+ *      template_example. We deliberately do NOT mix in
+ *      project_description here — every section in a project would
+ *      otherwise pull the same project-subject-flavored chunks
+ *      regardless of what that specific section is actually about,
+ *      defeating per-section relevance. The project subject still
+ *      reaches the LLM via the SUBJECT block of the drafting prompt.
  *   2. For each chunk in each file, score relevance via token-overlap
  *      between the query and the chunk's title+summary (or, for
  *      naive chunks without summaries, against the chunk's own text).
- *   3. Sort chunks across all files by descending score.
- *   4. Greedy-select until the per-section character budget is hit.
+ *   3. Sort chunks across all files by descending score, drop chunks
+ *      with score == 0 (unless that would leave the section with no
+ *      chunks at all — always keep at least the highest scorer).
+ *   4. Greedy-select until either the char budget OR the chunk-count
+ *      cap is hit. Both caps come from SECTION_REF_BUDGETS keyed by
+ *      the section's size_class so a 7-word "Memorandum For" line
+ *      doesn't drag in a 28k-token reference doc.
  *
- * Returns chunks in score-descending order. The caller can then
- * render them in any order it likes (we render in source-document
- * order to preserve continuity).
+ * Returns chunks in source-document order so the prompt reads naturally.
  */
 export function selectChunksForSection(args: {
   files: ProjectContextFile[];
@@ -214,16 +276,47 @@ export function selectChunksForSection(args: {
    */
   extractedById: Map<string, string>;
   section: BodyFillRegion;
-  project_description: string;
+  /**
+   * Sliced template example for this section (the actual paragraphs
+   * the section occupies in the source DOCX). The strongest signal
+   * for what the section is "about" — used as the primary scoring
+   * query so chunks match the section's content rather than the
+   * project's overall subject.
+   */
+  template_example?: string | null;
+  /**
+   * Size bucket for this section. Determines both the char budget
+   * and the chunk-count cap. Required so callers explicitly pick a
+   * tier instead of falling into the runaway 120k default.
+   */
+  size_class: SectionSizeClass;
+  /** Optional override for the char budget (defaults to size_class). */
   budget_chars?: number;
+  /** Optional override for the chunk-count cap (defaults to size_class). */
+  max_chunks?: number;
+  /**
+   * Chunk ids the upstream mapper says belong to this section. They
+   * bypass the relevance score floor and are always included first
+   * (in source-document order), up to the char budget. Remaining
+   * slots — both chunk count AND char budget — are then filled by
+   * scored chunks. The mapper's matches are trusted because it had
+   * the full chunk title+summary set in front of it; the Jaccard
+   * heuristic is the fallback when the mapper had nothing useful to
+   * say (no references, or use_template_only).
+   */
+  preferred_chunk_ids?: string[];
 }): SelectedChunk[] {
-  const budget = args.budget_chars ?? DEFAULT_SECTION_REF_BUDGET_CHARS;
+  const tier = SECTION_REF_BUDGETS[args.size_class];
+  const budget = args.budget_chars ?? tier.maxChars;
+  const maxChunks = args.max_chunks ?? tier.maxChunks;
+  const preferred = new Set(args.preferred_chunk_ids ?? []);
 
-  // 1. Build the query
+  // 1. Build the query — section name + intent + template example.
+  // Project description is intentionally excluded; see the docstring.
   const queryParts = [
     args.section.name,
     args.section.intent ?? '',
-    args.project_description,
+    args.template_example ?? '',
   ];
   const queryTokens = tokenize(queryParts.join(' '));
 
@@ -274,20 +367,51 @@ export function selectChunksForSection(args: {
     return a.chunkOrder - b.chunkOrder;
   });
 
-  // 4. Greedy-select until budget is hit. Always include the
-  //    highest-scoring chunk even if it alone exceeds the budget —
-  //    truncating the budget to one big chunk is better than
-  //    selecting nothing.
+  // 4. Greedy-select. First seat every preferred chunk (the upstream
+  //    mapper said these belong to this section regardless of what
+  //    the local Jaccard heuristic thinks). Then fill remaining slots
+  //    by score, dropping score==0 chunks unless we'd otherwise have
+  //    nothing at all. Both the char budget AND the chunk-count cap
+  //    apply across preferred + scored fills — preferred chunks
+  //    cannot blow the bucket on their own, but they DO bypass the
+  //    score floor.
   const selected: SelectedChunk[] = [];
+  const seenIds = new Set<string>();
   let used = 0;
-  for (const s of scored) {
-    if (selected.length === 0) {
+
+  if (preferred.size > 0) {
+    // Iterate `scored` so preferred chunks come out in source-document
+    // order (the secondary sort) once score ties are broken — keeps
+    // the rendered references block reading naturally.
+    for (const s of scored) {
+      if (!preferred.has(s.chunk_id)) continue;
+      if (selected.length >= maxChunks) break;
+      // Always include the FIRST preferred chunk even if it alone
+      // exceeds the budget — same one-big-chunk-beats-zero rule that
+      // applies to the score-based seed below.
+      if (selected.length > 0 && used + s.text.length > budget) continue;
       selected.push(s);
+      seenIds.add(s.chunk_id);
+      used += s.text.length;
+    }
+  }
+
+  for (const s of scored) {
+    if (seenIds.has(s.chunk_id)) continue;
+    if (selected.length === 0) {
+      // Always seed with the top scorer regardless of score, so the
+      // section never receives an empty references block when we have
+      // any chunks at all and no preferred matches.
+      selected.push(s);
+      seenIds.add(s.chunk_id);
       used += s.text.length;
       continue;
     }
+    if (s.score <= 0) continue;
+    if (selected.length >= maxChunks) break;
     if (used + s.text.length > budget) continue;
     selected.push(s);
+    seenIds.add(s.chunk_id);
     used += s.text.length;
   }
 

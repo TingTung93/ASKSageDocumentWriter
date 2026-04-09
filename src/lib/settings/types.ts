@@ -70,6 +70,31 @@ export interface CostAssumptions {
   usd_per_1k_out: number;
 }
 
+/**
+ * Per-user defaults that get auto-populated into new projects'
+ * shared inputs. Most DHA contracting officers have a stable
+ * signature block, office symbol, and POC across every memo /
+ * packet they draft. Storing these once at the app level means the
+ * metadata batch doesn't have to extract them from notes every
+ * time. The keys here are matched to the `key` of any
+ * `SharedInputField` that derives from the selected templates,
+ * case-insensitive — a template field named "office_symbol" will
+ * pick up the value stored under `office_symbol` here.
+ */
+export interface UserDefaults {
+  /**
+   * Free-form key/value map. Keys are normalized snake_case
+   * (office_symbol, signature_block, poc_line, etc). Values are
+   * stored verbatim — the metadata batch and the per-section
+   * drafter handle final formatting.
+   */
+  shared_inputs: Record<string, string>;
+}
+
+export const DEFAULT_USER_DEFAULTS: UserDefaults = {
+  shared_inputs: {},
+};
+
 export interface AppSettings {
   /** Singleton id, always 'app' */
   id: 'app';
@@ -77,6 +102,8 @@ export interface AppSettings {
   cost: CostAssumptions;
   /** Critic loop configuration. Optional for migration compatibility. */
   critic?: CriticSettings;
+  /** User-level defaults that auto-populate new projects. */
+  user_defaults?: UserDefaults;
   updated_at: string;
 }
 
@@ -112,5 +139,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   models: DEFAULT_MODEL_OVERRIDES,
   cost: DEFAULT_COST_ASSUMPTIONS,
   critic: DEFAULT_CRITIC_SETTINGS,
+  user_defaults: DEFAULT_USER_DEFAULTS,
   updated_at: new Date(0).toISOString(),
 };

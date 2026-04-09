@@ -10,6 +10,7 @@ import JSZip from 'jszip';
 import {
   PARSER_VERSION,
   SCHEMA_VERSION,
+  type BodyFillRegion,
   type FormattingHalf,
   type HeaderFooterPart,
   type NamedStyle,
@@ -138,6 +139,23 @@ export async function parseDocx(
     footers,
   };
 
+  // Parse the contents of every header and footer part BEFORE
+  // building the schema so we can append document_part fill regions
+  // to schema.sections. The DOCX may have several of each (default /
+  // first / even). Each part is a self-contained XML document rooted
+  // at <w:hdr> or <w:ftr>.
+  const header_parts = await loadPartContents(zip, headers.map((h) => h.part));
+  const footer_parts = await loadPartContents(zip, footers.map((f) => f.part));
+  for (const hp of header_parts) resolveInheritedFormatting(hp.paragraphs, styles.named_styles);
+  for (const fp of footer_parts) resolveInheritedFormatting(fp.paragraphs, styles.named_styles);
+
+  // Synthesize a fill region per non-empty header/footer part. These
+  // are pre-formed by the parser; synthesis preserves them and the
+  // assembler routes them to the right XML file in the zip. Empty
+  // parts (no text in any paragraph) are skipped — drafting an empty
+  // header would just churn LLM tokens producing the same nothing.
+  const docPartSections = buildDocumentPartSections(header_parts, footer_parts, fillRegions.body.length);
+
   const schema: TemplateSchema = {
     $schema: SCHEMA_VERSION,
     id: opts.id ?? cryptoRandomId(),
@@ -152,7 +170,7 @@ export async function parseDocx(
     },
     formatting,
     metadata_fill_regions: fillRegions.metadata,
-    sections: fillRegions.body,
+    sections: [...fillRegions.body, ...docPartSections],
     style: {
       voice: null,
       tense: null,
@@ -161,14 +179,6 @@ export async function parseDocx(
       banned_phrases: [],
     },
   };
-
-  // Parse the contents of every header and footer part. The DOCX may
-  // have several of each (default / first / even). Each part is a
-  // self-contained XML document rooted at <w:hdr> or <w:ftr>.
-  const header_parts = await loadPartContents(zip, headers.map((h) => h.part));
-  const footer_parts = await loadPartContents(zip, footers.map((f) => f.part));
-  for (const hp of header_parts) resolveInheritedFormatting(hp.paragraphs, styles.named_styles);
-  for (const fp of footer_parts) resolveInheritedFormatting(fp.paragraphs, styles.named_styles);
 
   return {
     schema,
@@ -287,6 +297,71 @@ function parseXml(xml: string): Document {
     throw new Error(`XML parse error: ${errs[0]!.textContent ?? 'unknown'}`);
   }
   return dom;
+}
+
+/**
+ * Build a fill region per non-empty header/footer part. The region's
+ * intent is pre-populated with a clear instruction so the drafter can
+ * regenerate the part without going through the synthesizer (which
+ * doesn't author document_part regions). The original text lines are
+ * passed through to the descriptor and used by template_slice as the
+ * "TEMPLATE EXAMPLE" block — the model sees exactly what it's
+ * replacing.
+ *
+ * `existingSectionCount` is used to seed the `order` field so the new
+ * regions sort AFTER body sections in the project view.
+ */
+function buildDocumentPartSections(
+  header_parts: PartContent[],
+  footer_parts: PartContent[],
+  existingSectionCount: number,
+): BodyFillRegion[] {
+  const out: BodyFillRegion[] = [];
+  let order = existingSectionCount;
+
+  for (const part of header_parts) {
+    const lines = part.paragraphs.map((p) => p.text.trim()).filter((t) => t.length > 0);
+    if (lines.length === 0) continue;
+    out.push(makeDocPartSection(part, 'header', lines, order));
+    order += 1;
+  }
+  for (const part of footer_parts) {
+    const lines = part.paragraphs.map((p) => p.text.trim()).filter((t) => t.length > 0);
+    if (lines.length === 0) continue;
+    out.push(makeDocPartSection(part, 'footer', lines, order));
+    order += 1;
+  }
+  return out;
+}
+
+function makeDocPartSection(
+  part: PartContent,
+  placement: 'header' | 'footer',
+  lines: string[],
+  order: number,
+): BodyFillRegion {
+  const friendlyPlacement = placement === 'header' ? 'Page Header' : 'Page Footer';
+  return {
+    id: `${placement}_${part.label}`,
+    name: `${friendlyPlacement} (${part.label})`,
+    order,
+    required: false,
+    fill_region: {
+      kind: 'document_part',
+      part_path: part.part,
+      placement,
+      original_text_lines: lines,
+      permitted_roles: ['body', 'heading'],
+    },
+    intent:
+      `Regenerate the page ${placement} content for this template. ` +
+      `Preserve any organizational identifiers (DEPARTMENT OF THE ARMY, ` +
+      `command names, addresses) and CUI markings exactly as they appear ` +
+      `in the original. Replace placeholder text (bracketed fields, ` +
+      `[UNIT NAME], [ADDRESS], etc.) with the appropriate values from ` +
+      `the project inputs. Do NOT add commentary — emit only the ` +
+      `paragraphs that should appear in the page ${placement}.`,
+  };
 }
 
 function listHeaderFooterParts(zip: JSZip, kind: 'header' | 'footer'): HeaderFooterPart[] {

@@ -43,9 +43,10 @@
 //     throws from a stage are caught by the runner and converted to
 //     `failed` so a buggy stage can't leave a run half-written.
 
-import type { AskSageClient } from '../asksage/client';
+import type { LLMClient } from '../provider/types';
 import type { ProjectRecord, TemplateRecord } from '../db/schema';
 import { db } from '../db/schema';
+import { type UsageByModel, emptyUsage, mergeUsage } from '../usage';
 
 // ─── Public types ────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ export interface RecipeStage {
 }
 
 export interface RecipeRunContext {
-  client: AskSageClient;
+  client: LLMClient;
   project: ProjectRecord;
   templates: TemplateRecord[];
   /** Snapshot of state from prior stages, keyed by stage id. */
@@ -102,15 +103,30 @@ export interface RecipeRunContext {
 }
 
 export type RecipeStageResult =
-  | { kind: 'ok'; output: unknown; tokens_in?: number; tokens_out?: number }
+  | {
+      kind: 'ok';
+      output: unknown;
+      tokens_in?: number;
+      tokens_out?: number;
+      /** Per-model usage breakdown for THIS stage. Optional for stages
+       *  that don't make LLM calls (e.g. assemble-docx). */
+      usage_by_model?: UsageByModel;
+    }
   | {
       kind: 'needs_intervention';
       reason: string;
       output: unknown;
       tokens_in?: number;
       tokens_out?: number;
+      usage_by_model?: UsageByModel;
     }
-  | { kind: 'failed'; error: string; tokens_in?: number; tokens_out?: number };
+  | {
+      kind: 'failed';
+      error: string;
+      tokens_in?: number;
+      tokens_out?: number;
+      usage_by_model?: UsageByModel;
+    };
 
 export interface RecipeRunCallbacks {
   onStageStart?: (stage: RecipeStage, index: number, total: number) => void;
@@ -140,6 +156,15 @@ export interface RecipeRun {
   /** Total tokens consumed across all stages. */
   total_tokens_in: number;
   total_tokens_out: number;
+  /**
+   * Per-model usage breakdown across every LLM call in the run.
+   * Used by the cost rollup in lib/usage.computeRunCost so the UI
+   * can apply each model's pricing instead of assuming everything
+   * ran on the drafting model. Optional on disk so old persisted
+   * runs deserialize without a migration; the runner treats absence
+   * as `{}` and the UI hides the per-model panel.
+   */
+  usage_by_model?: UsageByModel;
 }
 
 export interface RecipeStageState {
@@ -159,6 +184,8 @@ export interface RecipeStageState {
   /** Tokens consumed in this stage. */
   tokens_in?: number;
   tokens_out?: number;
+  /** Per-model usage breakdown for this stage. */
+  usage_by_model?: UsageByModel;
 }
 
 // ─── Dexie persistence shim ──────────────────────────────────────
@@ -198,31 +225,30 @@ async function persistRun(run: RecipeRun): Promise<void> {
 
 // ─── Provider lock ───────────────────────────────────────────────
 //
-// AskSageClient has Ask-Sage-only methods (`uploadFile`, `train`,
-// `getDatasets`). We duck-type the lock check via the presence of
-// `uploadFile`; a future openrouter-only recipe would check for a
-// different marker. For now the only non-'any' lock value we ship
-// is 'asksage', so this is a single cheap guard.
+// Recipes declare a `required_provider` so a CUI-bound recipe can
+// refuse to run on a non-CUI client. We branch on the client's
+// declared `capabilities` instead of `instanceof` checks: an
+// AskSageClient advertises fileUpload + dataset + liveSearch; an
+// OpenRouterClient advertises none. The capability surface is more
+// honest than the class identity (a future provider could implement
+// /server/file without being AskSageClient).
 
 function clientSatisfiesProvider(
-  client: unknown,
+  client: LLMClient,
   required: Recipe['required_provider'],
 ): boolean {
   if (required === 'any') return true;
+  // Ask-Sage-locked recipes need the full feature set: server-side
+  // file extraction AND dataset RAG. A recipe that only needs one of
+  // these should declare 'any' and branch internally on capabilities.
   if (required === 'asksage') {
-    return (
-      !!client &&
-      typeof (client as { uploadFile?: unknown }).uploadFile === 'function'
-    );
+    return client.capabilities.fileUpload && client.capabilities.dataset;
   }
   if (required === 'openrouter') {
-    // We don't currently model an openrouter-specific marker; treat a
-    // client WITHOUT `uploadFile` as "probably openrouter". This is a
-    // placeholder — tighten once a recipe actually pins to openrouter.
-    return !(
-      !!client &&
-      typeof (client as { uploadFile?: unknown }).uploadFile === 'function'
-    );
+    // Openrouter-locked recipe: refuse anything that exposes Ask-Sage-
+    // only features. Currently no shipped recipe pins to openrouter;
+    // this branch exists so the lock surface stays symmetric.
+    return !client.capabilities.fileUpload && !client.capabilities.dataset;
   }
   return false;
 }
@@ -257,7 +283,7 @@ function collectStateSnapshot(run: RecipeRun): Record<string, unknown> {
 // intervention.
 
 async function walkStages(args: {
-  client: AskSageClient;
+  client: LLMClient;
   project: ProjectRecord;
   templates: TemplateRecord[];
   stages: RecipeStage[];
@@ -305,6 +331,14 @@ async function walkStages(args: {
     if (typeof result.tokens_out === 'number') {
       state.tokens_out = result.tokens_out;
       run.total_tokens_out += result.tokens_out;
+    }
+    // Roll up per-model breakdown. Stages that didn't report one
+    // (e.g. assemble-docx, or a failure before any LLM call) leave
+    // the run total untouched.
+    if (result.usage_by_model) {
+      state.usage_by_model = result.usage_by_model;
+      if (!run.usage_by_model) run.usage_by_model = emptyUsage();
+      mergeUsage(run.usage_by_model, result.usage_by_model);
     }
 
     state.completed_at = new Date().toISOString();
@@ -358,13 +392,20 @@ async function walkStages(args: {
  * user confirms.
  */
 export async function runRecipe(args: {
-  client: AskSageClient;
+  client: LLMClient;
   project: ProjectRecord;
   templates: TemplateRecord[];
   recipe: Recipe;
+  /**
+   * Optional display name override for THIS run. Stored on
+   * recipe_runs.recipe_name so the run history reflects what the
+   * project actually is, not the generic recipe label. Callers
+   * typically pass `Auto-draft · ${project.name}`.
+   */
+  display_name?: string;
   callbacks?: RecipeRunCallbacks;
 }): Promise<RecipeRun> {
-  const { client, project, templates, recipe, callbacks } = args;
+  const { client, project, templates, recipe, display_name, callbacks } = args;
 
   if (!clientSatisfiesProvider(client, recipe.required_provider)) {
     throw new Error(
@@ -377,12 +418,13 @@ export async function runRecipe(args: {
     id: makeRunId(project.id, recipe.id, started_at),
     project_id: project.id,
     recipe_id: recipe.id,
-    recipe_name: recipe.name,
+    recipe_name: display_name?.trim() || recipe.name,
     started_at,
     status: 'running',
     stage_states: initStageStates(recipe.stages),
     total_tokens_in: 0,
     total_tokens_out: 0,
+    usage_by_model: emptyUsage(),
   };
 
   return walkStages({
@@ -427,7 +469,7 @@ export function __clearRecipeRegistry(): void {
 }
 
 export async function resumeRecipeRun(args: {
-  client: AskSageClient;
+  client: LLMClient;
   project: ProjectRecord;
   templates: TemplateRecord[];
   run_id: string;
@@ -497,6 +539,97 @@ export async function resumeRecipeRun(args: {
     templates,
     stages: recipe.stages,
     startIndex: resumeIndex,
+    run: existing,
+    callbacks,
+  });
+}
+
+// ─── Public API: retryRecipeRun ──────────────────────────────────
+
+/**
+ * Retry a failed recipe run starting from the failed stage. Resets
+ * the failed stage's state to pending and walks forward from there.
+ *
+ * Use case: a transient stage failure (cross-section review hit a
+ * model id that didn't exist on the active provider, the network
+ * blipped during chunking) shouldn't force the user to re-run from
+ * preflight and burn the tokens of every prior stage. The earlier
+ * stages stay in their `completed` state with their persisted
+ * outputs intact; only the failed stage and anything downstream is
+ * re-executed.
+ *
+ * Distinct from resumeRecipeRun, which only handles paused (needs-
+ * intervention) runs and refuses to touch terminal `failed` runs.
+ */
+export async function retryRecipeRun(args: {
+  client: LLMClient;
+  project: ProjectRecord;
+  templates: TemplateRecord[];
+  run_id: string;
+  callbacks?: RecipeRunCallbacks;
+}): Promise<RecipeRun> {
+  const { client, project, templates, run_id, callbacks } = args;
+
+  const existing = await loadRecipeRun(run_id);
+  if (!existing) {
+    throw new Error(`retryRecipeRun: no run found with id ${run_id}`);
+  }
+  if (existing.status === 'cancelled') {
+    throw new Error(`retryRecipeRun: run ${run_id} was cancelled and cannot retry`);
+  }
+
+  const recipe = RECIPE_REGISTRY.get(existing.recipe_id);
+  if (!recipe) {
+    throw new Error(
+      `retryRecipeRun: recipe "${existing.recipe_id}" is not registered. Call registerRecipe() before retrying.`,
+    );
+  }
+
+  // Find the failed stage. If none is failed, fall back to the first
+  // non-completed stage (e.g. a run that errored mid-walk and never
+  // got the failed stage marked).
+  let retryIndex = -1;
+  for (let i = 0; i < recipe.stages.length; i++) {
+    const s = recipe.stages[i]!;
+    const st = existing.stage_states[s.id];
+    if (st?.status === 'failed') {
+      retryIndex = i;
+      break;
+    }
+  }
+  if (retryIndex === -1) {
+    for (let i = 0; i < recipe.stages.length; i++) {
+      const s = recipe.stages[i]!;
+      const st = existing.stage_states[s.id];
+      if (!st || st.status !== 'completed') {
+        retryIndex = i;
+        break;
+      }
+    }
+  }
+  if (retryIndex === -1 || retryIndex >= recipe.stages.length) {
+    throw new Error(
+      `retryRecipeRun: no failed or pending stage found in run ${run_id} — nothing to retry.`,
+    );
+  }
+
+  // Reset the failed stage AND any downstream stages back to pending
+  // so the walker re-executes them with fresh state. Earlier stages
+  // (that completed successfully) keep their outputs.
+  for (let i = retryIndex; i < recipe.stages.length; i++) {
+    const s = recipe.stages[i]!;
+    existing.stage_states[s.id] = { status: 'pending' };
+  }
+  existing.status = 'running';
+  existing.completed_at = undefined;
+  await persistRun(existing);
+
+  return walkStages({
+    client,
+    project,
+    templates,
+    stages: recipe.stages,
+    startIndex: retryIndex,
     run: existing,
     callbacks,
   });

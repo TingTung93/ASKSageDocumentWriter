@@ -4,7 +4,9 @@
 // dependency is ready. Persists each drafted section to Dexie as it
 // completes so a refresh mid-run doesn't lose work.
 
-import type { AskSageClient } from '../asksage/client';
+import type { LLMClient } from '../provider/types';
+import { type UsageByModel, emptyUsage, mergeUsage } from '../usage';
+import { extractReferencesForRun } from './file_extract';
 import {
   db,
   type DraftRecord,
@@ -21,7 +23,13 @@ import {
   selectChunksForSection,
 } from '../project/chunk';
 import { extractParagraphs, type ParagraphInfo } from '../template/parser';
-import { blobToFile, extractedTextFromRet } from '../asksage/extract';
+import { sliceTemplateExampleForSection } from './template_slice';
+import { classifySectionSize } from './section_size';
+import {
+  indexMappings,
+  lookupMapping,
+  type SectionMapping,
+} from '../agent/section_mapping';
 import { runDraftWithCriticLoop } from './critique';
 import {
   runCrossSectionReview,
@@ -54,6 +62,34 @@ export interface DraftProjectArgs {
   templates: TemplateRecord[];
   options?: DraftingOptions;
   callbacks?: DraftProjectCallbacks;
+  /**
+   * Reference→section mappings produced by the recipe's
+   * map-references-to-sections stage. When supplied, the orchestrator:
+   *   - looks up each section's mapping to pick preferred chunks
+   *   - uses the mapping's estimated_content_words to size the section
+   *     (so a content-rich source can override a bare-bones template)
+   *   - passes the drafting_strategy through to the prompt builder
+   * When omitted, the orchestrator falls back to template-only sizing
+   * and lets the Jaccard heuristic pick chunks (the legacy path).
+   */
+  section_mappings?: SectionMapping[];
+}
+
+export interface DraftProjectResult {
+  /** Sections that completed (status='ready') in the per-section loop. */
+  sections_drafted: number;
+  /** Sections that errored or were skipped (e.g. inline_metadata). */
+  sections_errored: number;
+  /** Aggregate token usage across every per-section call in this run. */
+  tokens_in: number;
+  tokens_out: number;
+  /**
+   * Per-model usage breakdown for the whole drafting pass — includes
+   * the per-section drafter, every critic-loop iteration (which may
+   * use a different model than the drafter via settings.critic.critic_model),
+   * and the optional cross-section review pass at the end.
+   */
+  usage_by_model: UsageByModel;
 }
 
 /**
@@ -91,35 +127,50 @@ function draftId(projectId: string, templateId: string, sectionId: string): stri
 }
 
 export async function draftProject(
-  client: AskSageClient,
+  client: LLMClient,
   args: DraftProjectArgs,
-): Promise<void> {
-  const { project, templates, options, callbacks } = args;
+): Promise<DraftProjectResult> {
+  const { project, templates, options, callbacks, section_mappings } = args;
+  // Per-run aggregates that get returned to the recipe runner so it
+  // can report accurate token totals in the run history. The legacy
+  // void return type silently dropped these and made the recipe
+  // history report ~0 tokens for runs that actually consumed tens of
+  // thousands.
+  let runTokensIn = 0;
+  let runTokensOut = 0;
+  let sectionsDrafted = 0;
+  let sectionsErrored = 0;
+  // Per-model usage rolled up across every drafter + critic + cross-
+  // section call in this run. The critic loop tracks its own
+  // per-model breakdown internally (drafts vs critiques may run on
+  // different models); we just merge each loop's result into the
+  // run total here.
+  const usage_by_model: UsageByModel = emptyUsage();
+
+  // Index the mappings by (template_id, section_id) for O(1) lookup
+  // inside the per-section loop. When no mapping was supplied this is
+  // an empty index — every lookup returns undefined and downstream
+  // code falls back to template-only behavior.
+  const mappingIndex = section_mappings ? indexMappings(section_mappings) : undefined;
 
   // ─── Pre-flight 1: extract attached reference files ──────────────
-  // Each file goes to /server/file ONCE per run; the extracted text
-  // is cached in memory and reused for every per-section call. This
-  // is the inline-references path — the model literally sees the file
-  // contents instead of relying on opaque RAG retrieval.
+  // Routes through extractReferencesForRun, which picks the right
+  // extraction path based on client.capabilities.fileUpload:
+  //   - Ask Sage  → /server/file (server-side; supports PDF/RTF/etc.)
+  //   - OpenRouter → in-browser DOCX + plain-text extractor
+  // Either way the result is cached on the file record so re-runs are
+  // a no-op. Files we can't extract degrade to filename-only context
+  // (the per-section prompt still has SUBJECT + SHARED INPUTS to work
+  // from); the run is never aborted by an extraction failure.
   const items = getContextItems(project);
   const files = items.filter((i): i is ProjectContextFile => i.kind === 'file');
-  const extractedById = new Map<string, string>();
-  for (const f of files) {
-    callbacks?.onReferenceExtractStart?.(f);
-    try {
-      const fileObj = blobToFile(f.bytes, f.filename, f.mime_type);
-      const upload = await client.uploadFile(fileObj);
-      const text = extractedTextFromRet(upload.ret);
-      extractedById.set(f.id, text);
-      callbacks?.onReferenceExtractDone?.(f, text.length);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.error(`[draftProject] failed to extract ${f.filename}:`, err);
-      callbacks?.onReferenceExtractDone?.(f, 0, msg);
-      // Don't bail the whole run; the section just won't see this file.
-    }
-  }
+  const { extractedById } = await extractReferencesForRun({
+    client,
+    project,
+    files,
+    onStart: (f) => callbacks?.onReferenceExtractStart?.(f),
+    onDone: (f, chars, err) => callbacks?.onReferenceExtractDone?.(f, chars, err),
+  });
 
   // Notes are global to the run (cheap, high-signal).
   const notesBlock = renderNotesBlock(items);
@@ -166,10 +217,38 @@ export async function draftProject(
     const summariesById = new Map<string, PriorSectionSummary>();
 
     for (const section of ordered) {
+      const id = draftId(project.id, template.id, section.id);
+
+      // Slice the template example and look up the mapping FIRST so
+      // we can classify size before touching Dexie. The order matters:
+      // if we wrote a 'drafting' stub up here and THEN classified, we
+      // would clobber whatever the metadata batch already persisted
+      // for this section (a ready row OR a more diagnostic error).
+      const templateExample = sliceTemplateExampleForSection(templateParagraphs, section);
+      const mapping = lookupMapping(mappingIndex, template.id, section.id);
+      const sizeClass = classifySectionSize({
+        section,
+        template_example: templateExample,
+        mapping,
+      });
+
+      // inline_metadata sections are owned by the metadata batch
+      // stage, which runs BEFORE this loop. We never want to draft
+      // them here — but we also must not write ANY DB row for them,
+      // since that would overwrite the batch's output. Just skip the
+      // iteration entirely. If the metadata batch never ran (e.g. a
+      // resume after a partial failure), the section's row will be
+      // missing and the assembly stage will mark it skipped — which
+      // is the correct degraded behavior for a stage that didn't run.
+      if (sizeClass === 'inline_metadata') {
+        sectionsErrored += 0; // intentional no-op for clarity
+        continue;
+      }
+
       callbacks?.onSectionStart?.(template, section);
 
-      // Mark pending in DB
-      const id = draftId(project.id, template.id, section.id);
+      // Mark pending in DB. Only after we've decided this section is
+      // actually going to be drafted by the per-section path.
       const pendingRecord: DraftRecord = {
         id,
         project_id: project.id,
@@ -205,26 +284,22 @@ export async function draftProject(
       const resolvedDataset =
         options?.dataset ?? project.reference_dataset_names[0] ?? 'none';
 
-      // Slice the template's actual paragraphs for THIS section using
-      // the parser-recorded anchor range. This is the TEMPLATE EXAMPLE
-      // block — gives the model structural anchoring without baking in
-      // the template's example subject matter.
-      const templateExample = sliceTemplateExample(templateParagraphs, section);
-
-      // Build the per-section ATTACHED REFERENCES block. We score every
-      // chunk in every reference file against this section's intent +
-      // name + project subject, then greedy-select the top-N up to a
-      // per-section character budget. Files that haven't been
-      // semantically chunked are naive-chunked on the fly. This is
-      // what makes a 60-page reference doc usable: each section sees
-      // only the most relevant slices, not the whole thing.
+      // Build the per-section ATTACHED REFERENCES block. The mapper's
+      // matched chunks (when present) get seated FIRST regardless of
+      // their Jaccard score; remaining slots are filled by the local
+      // heuristic. Size class controls both char budget and chunk count.
       const selectedChunks = selectChunksForSection({
         files,
         extractedById,
         section,
-        project_description: project.description,
+        template_example: templateExample,
+        size_class: sizeClass,
+        preferred_chunk_ids: mapping?.matched_chunk_ids,
       });
       const referencesBlock = renderSelectedChunks(selectedChunks, totalChunkCount);
+      const referencesInlinedChars = referencesBlock?.length ?? 0;
+      const referencesInlinedChunks = selectedChunks.length;
+      const referencesInlinedChunkIds = selectedChunks.map((c) => c.chunk_id);
 
       try {
         // Phase 3: wrap the section call in the critic loop. The
@@ -241,6 +316,8 @@ export async function draftProject(
           notes_block: notesBlock,
           references_block: referencesBlock,
           template_example: templateExample,
+          drafting_strategy: mapping?.drafting_strategy ?? null,
+          effective_word_target: mapping?.estimated_content_words ?? null,
           options: {
             ...options,
             dataset: resolvedDataset,
@@ -297,8 +374,15 @@ export async function draftProject(
           critic_iterations: loopResult.iterations,
           critic_converged: loopResult.converged,
           critic_strictness: criticEnabled ? criticStrictness : undefined,
+          references_inlined_chars: referencesInlinedChars,
+          references_inlined_chunks: referencesInlinedChunks,
+          references_inlined_chunk_ids: referencesInlinedChunkIds,
         };
         await db.drafts.put(ready);
+        runTokensIn += loopResult.total_tokens_in;
+        runTokensOut += loopResult.total_tokens_out;
+        mergeUsage(usage_by_model, loopResult.usage_by_model);
+        sectionsDrafted += 1;
 
         // Stash for the post-loop cross-section review pass.
         draftedSectionInputs.push({
@@ -317,6 +401,7 @@ export async function draftProject(
           error: message,
         };
         await db.drafts.put(errorRecord);
+        sectionsErrored += 1;
         callbacks?.onSectionError?.(
           template,
           section,
@@ -342,6 +427,9 @@ export async function draftProject(
         templates: templates.map((t) => t.schema_json),
         sections: draftedSectionInputs,
       });
+      runTokensIn += xResult.tokens_in ?? 0;
+      runTokensOut += xResult.tokens_out ?? 0;
+      mergeUsage(usage_by_model, xResult.usage_by_model);
       callbacks?.onCrossSectionComplete?.(xResult);
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -351,48 +439,19 @@ export async function draftProject(
   }
 
   callbacks?.onProjectComplete?.();
+
+  return {
+    sections_drafted: sectionsDrafted,
+    sections_errored: sectionsErrored,
+    tokens_in: runTokensIn,
+    tokens_out: runTokensOut,
+    usage_by_model,
+  };
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────
-
-/** Per-section template example cap. ~6k chars ≈ ~1500 tokens. */
-const TEMPLATE_EXAMPLE_CAP_CHARS = 6000;
 
 // blobToFile + extractedTextFromRet were moved to lib/asksage/extract
 // so the document cleanup pipeline can share them without depending
-// on the drafting orchestrator.
-
-/**
- * Slice the parsed template paragraphs for a single section using its
- * fill_region anchors. Returns the trimmed text joined with newlines,
- * or null if we can't determine the anchor range. Caps at
- * TEMPLATE_EXAMPLE_CAP_CHARS so a huge section doesn't blow the prompt.
- */
-function sliceTemplateExample(
-  paragraphs: ParagraphInfo[],
-  section: BodyFillRegion,
-): string | null {
-  if (paragraphs.length === 0) return null;
-  const fr = section.fill_region;
-  if (fr.kind !== 'heading_bounded') {
-    // content_control / bookmark / placeholder regions don't carry
-    // paragraph anchors. We could widen to a heuristic but for v1
-    // we just skip these — the section spec still has its name and
-    // intent so the model isn't flying blind.
-    return null;
-  }
-  // Anchor is the heading paragraph itself; body content starts the
-  // paragraph after.
-  const start = Math.max(0, fr.anchor_paragraph_index + 1);
-  const end = Math.min(paragraphs.length - 1, fr.end_anchor_paragraph_index);
-  if (end < start) return null;
-  const slice = paragraphs.slice(start, end + 1);
-  const text = slice
-    .map((p) => p.text.trim())
-    .filter((t) => t.length > 0)
-    .join('\n');
-  if (text.length === 0) return null;
-  if (text.length <= TEMPLATE_EXAMPLE_CAP_CHARS) return text;
-  return text.slice(0, TEMPLATE_EXAMPLE_CAP_CHARS - 1).trimEnd() + '…';
-}
+// on the drafting orchestrator. The section-level template example
+// slice helper moved to ./template_slice so the metadata batch
+// drafter can share it.
 

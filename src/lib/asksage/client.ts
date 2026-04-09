@@ -20,6 +20,7 @@ import {
   type VerifyDatasetResult,
 } from './types';
 import { writeAuditEntry } from './audit';
+import type { LLMClient, ProviderCapabilities } from '../provider/types';
 
 /**
  * Default fetch wrapper. We DO NOT pass `fetch` directly because the
@@ -48,7 +49,19 @@ const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init
  * train, train-with-file, file) all live on /server/*, so anything we
  * need is reachable.
  */
-export class AskSageClient {
+export class AskSageClient implements LLMClient {
+  /**
+   * Ask Sage on the health.mil tenant supports the full feature set —
+   * /server/file extraction, named-dataset RAG, and the `live` web
+   * search parameter. Callers gate optional Ask-Sage-only behavior on
+   * these flags rather than `instanceof AskSageClient`.
+   */
+  readonly capabilities: ProviderCapabilities = {
+    fileUpload: true,
+    dataset: true,
+    liveSearch: true,
+  };
+
   constructor(
     private readonly baseUrl: string,
     private readonly apiKey: string,

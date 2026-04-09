@@ -121,6 +121,12 @@ interface MockResponse {
  * Test cases push responses in the order they expect calls.
  */
 class MockLLMClient implements LLMClient {
+  // Advertise the Ask Sage capability surface so the resolver picks
+  // its baked-in default model and the cross-section call still
+  // sends dataset/limit_references/live (the test below verifies they
+  // are zeroed). OpenRouter behavior — where these knobs are absent —
+  // is exercised in the integration tests in cross_section_provider.test.ts.
+  readonly capabilities = { fileUpload: true, dataset: true, liveSearch: true };
   public calls: QueryInput[] = [];
   private queue: MockResponse[] = [];
 

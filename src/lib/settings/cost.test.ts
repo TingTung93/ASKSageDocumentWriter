@@ -74,9 +74,14 @@ describe('cost projection', () => {
     expect(formatTokens(2_500_000)).toBe('2.5M');
   });
 
-  it('formats USD respecting zero and tiny amounts', () => {
+  it('formats USD respecting zero, sub-cent, and dollar amounts', () => {
+    // Sub-cent precision matters for OpenRouter per-call costs
+    // (often in the tenths-of-a-cent range). Anything below $0.0001
+    // collapses to a sentinel; everything else shows enough digits
+    // to actually be useful.
     expect(formatUsd(0)).toBe('$0');
-    expect(formatUsd(0.003)).toBe('<$0.01');
+    expect(formatUsd(0.00005)).toBe('<$0.0001');
+    expect(formatUsd(0.003)).toBe('$0.0030');
     expect(formatUsd(1.234)).toBe('$1.23');
   });
 });
