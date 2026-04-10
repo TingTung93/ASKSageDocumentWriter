@@ -49,6 +49,10 @@ const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init
  * train, train-with-file, file) all live on /server/*, so anything we
  * need is reachable.
  */
+/** Default timeout for API calls (5 minutes). Long enough for large
+ *  synthesis / drafting calls; short enough to surface silent hangs. */
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
 export class AskSageClient implements LLMClient {
   /**
    * Ask Sage on the health.mil tenant supports the full feature set —
@@ -66,6 +70,7 @@ export class AskSageClient implements LLMClient {
     private readonly baseUrl: string,
     private readonly apiKey: string,
     private readonly fetchImpl: typeof fetch = defaultFetch,
+    private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ) {
     if (!baseUrl) throw new Error('AskSageClient: baseUrl is required');
     if (!apiKey) throw new Error('AskSageClient: apiKey is required');
@@ -118,16 +123,20 @@ export class AskSageClient implements LLMClient {
         'x-access-tokens': this.apiKey,
       };
       if (hasBody) headers['Content-Type'] = 'application/json';
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
       res = await this.fetchImpl(url, {
         method,
         mode: 'cors',
         headers,
         body: hasBody ? reqBodyStr : undefined,
+        signal: ac.signal,
       });
+      clearTimeout(timer);
     } catch (err) {
-      // Network-level failure (CORS, DNS, offline, etc.). The browser
-      // hides the real cause behind a generic "Failed to fetch". Capture
-      // everything we have so the UI can surface it without DevTools.
+      // Network-level failure (CORS, DNS, offline, timeout, etc.). The
+      // browser hides the real cause behind a generic "Failed to fetch".
+      // AbortError means our timeout fired.
       const name = err instanceof Error ? err.name : 'UnknownError';
       const message = err instanceof Error ? err.message : String(err);
       const errorMsg =
@@ -240,6 +249,8 @@ export class AskSageClient implements LLMClient {
 
     let res: Response;
     try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
       res = await this.fetchImpl(url, {
         method: 'POST',
         mode: 'cors',
@@ -248,7 +259,9 @@ export class AskSageClient implements LLMClient {
           'x-access-tokens': this.apiKey,
         },
         body: form,
+        signal: ac.signal,
       });
+      clearTimeout(timer);
     } catch (err) {
       const ms = Date.now() - startedAt;
       const message = err instanceof Error ? err.message : String(err);

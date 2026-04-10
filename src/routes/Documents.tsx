@@ -37,6 +37,8 @@ import { estimateDocumentCleanup, formatTokens, formatUsd } from '../lib/setting
 import { DEFAULT_COST_ASSUMPTIONS, type CostAssumptions } from '../lib/settings/types';
 import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
+import { ProgressBar } from '../components/ProgressBar';
+import { DocxSkeleton } from '../components/DocxSkeleton';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
@@ -772,6 +774,13 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
             'Request cleanup edits'
           )}
         </button>
+        {running && chunkProgress && (
+          <ProgressBar
+            done={chunkProgress.done}
+            total={chunkProgress.total}
+            label={`Cleaning chunk ${chunkProgress.done} of ${chunkProgress.total}`}
+          />
+        )}
       </form>
       {requestError && <div className="error">Request failed: {requestError}</div>}
 
@@ -1705,7 +1714,7 @@ function VisualPreview({ doc }: { doc: DocumentRecord }) {
 
   return (
     <div>
-      {rendering && <p className="note">Rendering with docx-preview…</p>}
+      {rendering && <DocxSkeleton />}
       {error && (
         <div className="error">
           Visual render failed: {error}

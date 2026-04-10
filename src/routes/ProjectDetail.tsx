@@ -55,6 +55,7 @@ import {
 import { DEFAULT_COST_ASSUMPTIONS } from '../lib/settings/types';
 import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
+import { ProgressBar } from '../components/ProgressBar';
 import { buildProjectBundle } from '../lib/share/bundle';
 import { downloadBundle, bundleFilename } from '../lib/share/download';
 import {
@@ -686,9 +687,11 @@ export function ProjectDetail() {
         flat-JSON dump for downstream tooling.
       </p>
       {progress && (
-        <p className="note">
-          Progress: {progress.done} / {progress.total} sections
-        </p>
+        <ProgressBar
+          done={progress.done}
+          total={progress.total}
+          label={`Drafting section ${progress.done} of ${progress.total}`}
+        />
       )}
       {draftError && <div className="error">{draftError}</div>}
 

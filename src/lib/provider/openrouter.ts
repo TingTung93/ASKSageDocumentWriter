@@ -50,6 +50,9 @@ const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init
 
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
+/** Default timeout for API calls (5 minutes). */
+const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+
 // OpenRouter `/v1/models` shape (subset we use). Pricing fields are
 // stringified USD per token; `"0"` for free models.
 interface OpenRouterModelsResponse {
@@ -139,6 +142,7 @@ export class OpenRouterClient implements LLMClient {
     private readonly attribution: { referer?: string; title?: string } = {
       title: 'ASKSageDocumentWriter',
     },
+    private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ) {
     if (!apiKey) throw new Error('OpenRouterClient: apiKey is required');
   }
@@ -163,7 +167,10 @@ export class OpenRouterClient implements LLMClient {
     const startedAt = Date.now();
     let res: Response;
     try {
-      res = await this.fetchImpl(url, { method: 'GET', headers: this.buildHeaders(false) });
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+      res = await this.fetchImpl(url, { method: 'GET', headers: this.buildHeaders(false), signal: ac.signal });
+      clearTimeout(timer);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorMsg = `Network error calling GET ${url}: ${message}`;
@@ -217,11 +224,15 @@ export class OpenRouterClient implements LLMClient {
     const reqBodyStr = JSON.stringify(body);
     let res: Response;
     try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
       res = await this.fetchImpl(url, {
         method: 'POST',
         headers: this.buildHeaders(true),
         body: reqBodyStr,
+        signal: ac.signal,
       });
+      clearTimeout(timer);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const errorMsg =

@@ -66,6 +66,28 @@ export function SelectionPopover(props: SelectionPopoverProps): JSX.Element {
     return () => document.removeEventListener('mousedown', onDocMouseDown);
   }, [onCancel, loading]);
 
+  // Focus trap — keep Tab cycling within the popover while it's open.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    function onKeyDownTrap(e: globalThis.KeyboardEvent) {
+      if (e.key !== 'Tab') return;
+      const focusable = container!.querySelectorAll<HTMLElement>(
+        'input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    }
+    document.addEventListener('keydown', onKeyDownTrap);
+    return () => document.removeEventListener('keydown', onKeyDownTrap);
+  }, [loading]);
+
   function tryCommit(instruction: string) {
     const trimmed = instruction.trim();
     if (trimmed.length === 0 || loading) return;

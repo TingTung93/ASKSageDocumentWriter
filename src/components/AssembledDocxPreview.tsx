@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { renderAsync as renderDocxAsync } from 'docx-preview';
+import { DocxSkeleton } from './DocxSkeleton';
 
 interface AssembledDocxPreviewProps {
   blob: Blob | null;
@@ -61,7 +62,7 @@ export function AssembledDocxPreview({ blob, cacheKey }: AssembledDocxPreviewPro
 
   return (
     <div>
-      {rendering && <p className="note">Rendering with docx-preview…</p>}
+      {rendering && <DocxSkeleton />}
       {error && (
         <div className="error">
           Visual render failed: {error}

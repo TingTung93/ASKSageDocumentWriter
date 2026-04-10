@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { renderAsync as renderDocxAsync } from 'docx-preview';
+import { DocxSkeleton } from './DocxSkeleton';
 import type { DocumentRecord } from '../lib/db/schema';
 import type { StoredEdit, DocumentEditOp } from '../lib/document/types';
 import { applyDocumentEdits } from '../lib/document/writer';
@@ -205,7 +206,7 @@ export function DocxDiffPreview({
 
   return (
     <div>
-      {rendering && <p className="note">Rendering with docx-preview…</p>}
+      {rendering && <DocxSkeleton />}
       {error && (
         <div className="error">
           Visual render failed: {error}

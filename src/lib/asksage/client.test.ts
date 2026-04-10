@@ -93,7 +93,7 @@ describe('AskSageClient', () => {
     await client.getModels();
     const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
     const keys = Object.keys(opts).sort();
-    expect(keys).toEqual(['body', 'headers', 'method', 'mode'].sort());
+    expect(keys).toEqual(['body', 'headers', 'method', 'mode', 'signal'].sort());
     expect(opts.mode).toBe('cors');
     expect(opts.method).toBe('POST');
     // These MUST NOT be set:

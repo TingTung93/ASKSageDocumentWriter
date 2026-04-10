@@ -705,45 +705,53 @@ function CostAssumptionsSection({ cost }: { cost: CostAssumptions }) {
         label="Drafting tokens-in per section"
         field="drafting_tokens_in_per_section"
         value={cost.drafting_tokens_in_per_section}
+        hint="Average input tokens per section drafting call (prompt + context + references)."
       />
       <CostField
         label="Drafting tokens-out per section"
         field="drafting_tokens_out_per_section"
         value={cost.drafting_tokens_out_per_section}
+        hint="Average output tokens the model generates per section."
       />
       <CostField
         label="Characters per token"
         field="chars_per_token"
         value={cost.chars_per_token}
         step={0.1}
+        hint="Rough char-to-token ratio for estimating token counts from text length. ~4 for English."
       />
       <CostField
         label="Cleanup system prompt overhead (tokens)"
         field="cleanup_system_prompt_tokens"
         value={cost.cleanup_system_prompt_tokens}
+        hint="Fixed token cost of the system prompt sent with each cleanup chunk."
       />
       <CostField
         label="Cleanup framing tokens per paragraph"
         field="cleanup_paragraph_overhead_tokens"
         value={cost.cleanup_paragraph_overhead_tokens}
+        hint="Per-paragraph overhead (index labels, formatting) added to each cleanup chunk."
       />
       <CostField
         label="Cleanup output ratio (out / in)"
         field="cleanup_output_ratio"
         value={cost.cleanup_output_ratio}
         step={0.05}
+        hint="Expected ratio of output tokens to input tokens for cleanup. Lower = fewer edits proposed."
       />
       <CostField
         label="USD per 1k input tokens"
         field="usd_per_1k_in"
         value={cost.usd_per_1k_in}
         step={0.01}
+        hint="Fallback input token price when the model has no per-token pricing data (e.g. Ask Sage)."
       />
       <CostField
         label="USD per 1k output tokens"
         field="usd_per_1k_out"
         value={cost.usd_per_1k_out}
         step={0.01}
+        hint="Fallback output token price when the model has no per-token pricing data."
       />
     </div>
   );
@@ -754,11 +762,13 @@ function CostField({
   field,
   value,
   step,
+  hint,
 }: {
   label: string;
   field: keyof CostAssumptions;
   value: number;
   step?: number;
+  hint?: string;
 }) {
   const [draft, setDraft] = useState(String(value));
 
@@ -794,6 +804,11 @@ function CostField({
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => void commit()}
       />
+      {hint && (
+        <span style={{ fontSize: 11, color: 'var(--color-text-subtle)', lineHeight: 1.4 }}>
+          {hint}
+        </span>
+      )}
     </label>
   );
 }
