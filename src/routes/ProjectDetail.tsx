@@ -68,6 +68,9 @@ import {
   type RecipeStage,
 } from '../lib/agent/recipe';
 import { PWS_RECIPE } from '../lib/agent/recipes/pws';
+import { FREEFORM_RECIPE } from '../lib/agent/recipes/freeform';
+import { getFreeformStyle } from '../lib/freeform/styles';
+import { assembleFreeformDocx } from '../lib/freeform/assemble';
 import {
   assembleProjectFromDrafts,
   downloadBlob,
@@ -230,6 +233,8 @@ export function ProjectDetail() {
 
   // ─── Agentic recipe entry points ─────────────────────────────────
 
+  const isFreeform = (project?.mode ?? 'template') === 'freeform';
+
   async function onRunRecipe() {
     if (!project) return;
     if (!apiKey) {
@@ -241,18 +246,17 @@ export function ProjectDetail() {
     setRecipeStageMessage(null);
     try {
       const client = createLLMClient({ provider, baseUrl, apiKey });
-      // Filter the library down to ONLY the templates the user has
-      // attached to this project. The legacy code passed
-      // allTemplates, which dragged every template in the user's
-      // library through preflight, mapping, and drafting — preflight
-      // would then (correctly) flag the irrelevant ones as warnings,
-      // metadata batch and the per-section drafter would burn tokens
-      // on sections nobody asked for. project.template_ids is the
-      // user's source of truth.
-      const projectTemplates = (allTemplates ?? []).filter((t) =>
-        project.template_ids.includes(t.id),
-      );
-      if (projectTemplates.length === 0) {
+
+      // Pick the right recipe based on project mode
+      const recipe = isFreeform ? FREEFORM_RECIPE : PWS_RECIPE;
+
+      // Template-mode: filter library to project's templates
+      const projectTemplatesForRecipe = isFreeform
+        ? []
+        : (allTemplates ?? []).filter((t) =>
+            project.template_ids.includes(t.id),
+          );
+      if (!isFreeform && projectTemplatesForRecipe.length === 0) {
         toast.error('No templates attached to this project. Add a template first.');
         setRecipeRunning(false);
         return;
@@ -260,8 +264,8 @@ export function ProjectDetail() {
       const run = await runRecipe({
         client,
         project,
-        templates: projectTemplates,
-        recipe: PWS_RECIPE,
+        templates: projectTemplatesForRecipe,
+        recipe,
         display_name: `Auto-draft · ${project.name || 'Untitled project'}`,
         callbacks: {
           onStageStart: (stage: RecipeStage, index, total) => {
@@ -539,30 +543,43 @@ export function ProjectDetail() {
         </div>
       )}
 
-      <ProjectTemplatesEditor
-        project={project}
-        allTemplates={allTemplates}
-        currentlySelected={projectTemplates}
-      />
-
-      <h2>Shared inputs ({sharedFields.length})</h2>
-      {sharedFields.length === 0 && (
-        <p className="note">
-          No shared document fields detected across the selected templates. Drafting will proceed
-          using only the project description and reference datasets as source material.
-        </p>
-      )}
-      <div>
-        {sharedFields.map((f) => (
-          <SharedInputControl
-            key={f.key}
-            field={f}
-            value={project.shared_inputs[f.key] ?? ''}
-            meta={project.shared_inputs_meta?.[f.key]}
-            onChange={(v) => onSharedInputChange(f.key, v)}
+      {!isFreeform && (
+        <>
+          <ProjectTemplatesEditor
+            project={project}
+            allTemplates={allTemplates}
+            currentlySelected={projectTemplates}
           />
-        ))}
-      </div>
+
+          <h2>Shared inputs ({sharedFields.length})</h2>
+          {sharedFields.length === 0 && (
+            <p className="note">
+              No shared document fields detected across the selected templates. Drafting will proceed
+              using only the project description and reference datasets as source material.
+            </p>
+          )}
+          <div>
+            {sharedFields.map((f) => (
+              <SharedInputControl
+                key={f.key}
+                field={f}
+                value={project.shared_inputs[f.key] ?? ''}
+                meta={project.shared_inputs_meta?.[f.key]}
+                onChange={(v) => onSharedInputChange(f.key, v)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      {isFreeform && project.freeform_style && (
+        <div className="panel" style={{ marginBottom: 'var(--space-3)' }}>
+          <strong>Document style:</strong> {getFreeformStyle(project.freeform_style)?.name ?? project.freeform_style}
+          <span className="note" style={{ marginLeft: '0.5rem' }}>
+            ({getFreeformStyle(project.freeform_style)?.typical_pages ?? '?'} pages typical)
+          </span>
+        </div>
+      )}
 
       <ProjectContextSection project={project} />
 
@@ -652,13 +669,21 @@ export function ProjectDetail() {
           type="button"
           onClick={() => void onRunRecipe()}
           disabled={recipeRunning || drafting || !apiKey}
-          title="Run the full auto-draft workflow: gap analysis, drafting with quality review, content review, and final document assembly"
+          title={isFreeform
+            ? 'Generate the complete document from your description and reference material'
+            : 'Run the full auto-draft workflow: gap analysis, drafting with quality review, content review, and final document assembly'}
         >
-          {recipeRunning ? <Spinner light label={recipeStageMessage ?? 'Running auto-draft…'} /> : '🤖 Auto-draft this project'}
+          {recipeRunning
+            ? <Spinner light label={recipeStageMessage ?? 'Running auto-draft…'} />
+            : isFreeform
+              ? '🤖 Generate document'
+              : '🤖 Auto-draft this project'}
         </button>
-        <button type="button" className="btn-secondary" onClick={onStartDrafting} disabled={drafting || recipeRunning || !apiKey}>
-          {drafting ? <Spinner light label="Drafting…" /> : 'Draft sections (manual)'}
-        </button>
+        {!isFreeform && (
+          <button type="button" className="btn-secondary" onClick={onStartDrafting} disabled={drafting || recipeRunning || !apiKey}>
+            {drafting ? <Spinner light label="Drafting…" /> : 'Draft sections (manual)'}
+          </button>
+        )}
         <button type="button" className="btn-secondary" onClick={() => void onShare(false)}>
           Share project (templates only)
         </button>
@@ -719,24 +744,222 @@ export function ProjectDetail() {
         />
       )}
 
-      {(drafts ?? []).some((d) => d.status === 'ready') && (
-        <AssembledOutputPanel
-          project={project}
-          templates={projectTemplates}
+      {/* ── Freeform draft workspace ──────────────────────────────── */}
+      {isFreeform && (
+        <FreeformDraftPanel project={project} />
+      )}
+
+      {/* ── Template draft workspace ──────────────────────────────── */}
+      {!isFreeform && (
+        <>
+          {(drafts ?? []).some((d) => d.status === 'ready') && (
+            <AssembledOutputPanel
+              project={project}
+              templates={projectTemplates}
+            />
+          )}
+
+          <h2>Sections</h2>
+          {projectTemplates.map((tpl) => (
+            <TemplateDraftedSections
+              key={tpl.id}
+              template={tpl}
+              drafts={draftsBySectionKey}
+              project={project}
+            />
+          ))}
+        </>
+      )}
+    </main>
+  );
+}
+
+/**
+ * Panel for viewing, exporting, and re-generating freeform drafts.
+ * Shown only for projects with mode === 'freeform'.
+ */
+function FreeformDraftPanel({ project }: { project: ProjectRecord }) {
+  const [exporting, setExporting] = useState(false);
+  const styleName = project.freeform_style
+    ? getFreeformStyle(project.freeform_style)?.name ?? project.freeform_style
+    : 'Unknown style';
+
+  const hasDraft = project.freeform_draft && project.freeform_draft.length > 0;
+  const sources = project.freeform_draft_sources ?? [];
+  const webSources = sources.filter((s) => s.url);
+  const fileSources = sources.filter((s) => s.source_type === 'attached_file');
+  const otherSources = sources.filter((s) => !s.url && s.source_type !== 'attached_file');
+
+  async function onExportDocx() {
+    if (!project.freeform_draft) return;
+    setExporting(true);
+    try {
+      const result = await assembleFreeformDocx(project.freeform_draft);
+      const safeName = project.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+      const filename = `${safeName}.docx`;
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast.success(`Exported ${filename}`);
+    } catch (err) {
+      toast.error(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <section style={{ marginTop: 'var(--space-4)' }}>
+      <h2>Document — {styleName}</h2>
+
+      {!hasDraft && (
+        <EmptyState
+          icon="📄"
+          title="No draft yet"
+          body={<>Click <strong>"Generate document"</strong> above to create your {styleName}. The AI will use your project description, attached files, datasets, and web search results to write the complete document.</>}
         />
       )}
 
-      <h2>Sections</h2>
-      {projectTemplates.map((tpl) => (
-        <TemplateDraftedSections
-          key={tpl.id}
-          template={tpl}
-          drafts={draftsBySectionKey}
-          project={project}
-        />
-      ))}
-    </main>
+      {hasDraft && (
+        <>
+          <div className="btn-row" style={{ marginBottom: 'var(--space-3)' }}>
+            <button
+              type="button"
+              onClick={onExportDocx}
+              disabled={exporting}
+            >
+              {exporting ? 'Exporting…' : 'Download as Word (.docx)'}
+            </button>
+          </div>
+
+          {/* Draft metadata */}
+          <p className="note">
+            Generated {project.freeform_draft_generated_at
+              ? new Date(project.freeform_draft_generated_at).toLocaleString()
+              : '(unknown date)'}
+            {project.freeform_draft_model && ` · model: ${project.freeform_draft_model}`}
+            {(project.freeform_draft_tokens_in || project.freeform_draft_tokens_out) && (
+              <> · {((project.freeform_draft_tokens_in ?? 0) + (project.freeform_draft_tokens_out ?? 0)).toLocaleString()} units used</>
+            )}
+            {' · '}{project.freeform_draft!.length} paragraphs
+          </p>
+
+          {/* Sources panel */}
+          {sources.length > 0 && (
+            <details style={{ marginTop: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
+                Sources and references ({sources.length})
+              </summary>
+              <div style={{ marginTop: 'var(--space-2)', fontSize: 13 }}>
+                {webSources.length > 0 && (
+                  <>
+                    <strong>Web sources:</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {webSources.map((s, i) => (
+                        <li key={i} style={{ marginBottom: '0.25rem' }}>
+                          <a href={s.url} target="_blank" rel="noopener noreferrer">{s.url}</a>
+                          {s.title !== s.url && <span className="note" style={{ marginLeft: '0.4rem' }}>({s.title})</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {fileSources.length > 0 && (
+                  <>
+                    <strong>Attached files:</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {fileSources.map((s, i) => (
+                        <li key={i}>{s.title}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {otherSources.length > 0 && (
+                  <>
+                    <strong>Other references:</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {otherSources.map((s, i) => (
+                        <li key={i}>{s.title}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+
+              {project.freeform_draft_raw_references && (
+                <details style={{ marginTop: '0.5rem' }}>
+                  <summary className="note" style={{ cursor: 'pointer' }}>
+                    Raw reference data from Ask Sage
+                  </summary>
+                  <pre style={{
+                    background: '#f4f4f4',
+                    padding: '0.5rem',
+                    fontSize: 11,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: 300,
+                    overflow: 'auto',
+                    marginTop: '0.3rem',
+                  }}>
+                    {project.freeform_draft_raw_references}
+                  </pre>
+                </details>
+              )}
+            </details>
+          )}
+
+          {/* Document preview */}
+          <div
+            style={{
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+              background: '#fff',
+              padding: 'var(--space-4)',
+              maxHeight: 600,
+              overflow: 'auto',
+              fontSize: 13,
+              lineHeight: 1.65,
+            }}
+          >
+            {project.freeform_draft!.map((p, i) => (
+              <FreeformParagraph key={i} paragraph={p} />
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
+}
+
+function FreeformParagraph({ paragraph: p }: { paragraph: import('../lib/draft/types').DraftParagraph }) {
+  const level = p.level ?? 0;
+  switch (p.role) {
+    case 'heading': {
+      const Tag = (`h${Math.min(level + 2, 5)}`) as 'h2' | 'h3' | 'h4' | 'h5';
+      return <Tag style={{ marginTop: level === 0 ? '1.2rem' : '0.8rem' }}>{p.text}</Tag>;
+    }
+    case 'bullet':
+      return <li style={{ marginLeft: `${level * 1.2}rem`, listStyleType: level === 0 ? 'disc' : 'circle' }}>{p.text}</li>;
+    case 'step':
+      return <li style={{ marginLeft: `${level * 1.2}rem`, listStyleType: 'decimal' }}>{p.text}</li>;
+    case 'quote':
+      return <blockquote style={{ borderLeft: '3px solid #ccc', paddingLeft: '0.75rem', color: '#555', fontStyle: 'italic', margin: '0.5rem 0' }}>{p.text}</blockquote>;
+    case 'note':
+      return <p style={{ background: '#f0f4ff', padding: '0.4rem 0.6rem', borderRadius: 4, fontSize: 12 }}><strong>NOTE:</strong> {p.text}</p>;
+    case 'caution':
+      return <p style={{ background: '#fff8e0', padding: '0.4rem 0.6rem', borderRadius: 4, fontSize: 12 }}><strong>CAUTION:</strong> {p.text}</p>;
+    case 'warning':
+      return <p style={{ background: '#fee', padding: '0.4rem 0.6rem', borderRadius: 4, fontSize: 12 }}><strong>WARNING:</strong> {p.text}</p>;
+    case 'table_row':
+      return null; // Tables would need a table wrapper; skip for preview
+    default:
+      return <p style={{ margin: '0.4rem 0', marginLeft: level > 0 ? `${level * 1.2}rem` : undefined }}>{p.text}</p>;
+  }
 }
 
 /**
