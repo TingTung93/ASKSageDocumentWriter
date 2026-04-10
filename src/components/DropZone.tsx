@@ -93,9 +93,12 @@ export function DropZone({
         transition: 'background 0.1s, border-color 0.1s',
       }}
     >
-      <div style={{ fontWeight: 600, fontSize: 13, color: '#333' }}>{label}</div>
+      <div style={{ fontSize: 24, marginBottom: '0.3rem', opacity: 0.5 }} aria-hidden="true">
+        {dragging ? '📥' : '📂'}
+      </div>
+      <div style={{ fontWeight: 600, fontSize: 14, color: '#333' }}>{label}</div>
       {hint && (
-        <div className="note" style={{ marginTop: '0.25rem' }}>
+        <div className="note" style={{ marginTop: '0.35rem', fontSize: 12.5 }}>
           {hint}
         </div>
       )}

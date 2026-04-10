@@ -32,8 +32,8 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <main>
-          <h1 style={{ color: '#b00' }}>Render error</h1>
-          <p>The React tree crashed. Details below and in the debug panel.</p>
+          <h1 style={{ color: '#b00' }}>Something went wrong</h1>
+          <p>The application encountered an error. Details below and in the debug panel.</p>
           <pre
             style={{
               background: '#fee',
@@ -47,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
             {this.state.error.name}: {this.state.error.message}
             {'\n\n'}
             {this.state.error.stack}
-            {this.state.info?.componentStack && '\n\nComponent stack:' + this.state.info.componentStack}
+            {this.state.info?.componentStack && '\n\nError trace:' + this.state.info.componentStack}
           </pre>
         </main>
       );

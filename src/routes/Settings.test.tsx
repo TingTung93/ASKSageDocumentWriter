@@ -72,19 +72,19 @@ describe('Settings route', () => {
 
   it('renders model overrides section', () => {
     renderSettings();
-    expect(screen.getByRole('heading', { name: /model overrides/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /AI model preferences/i })).toBeInTheDocument();
   });
 
   it('renders cost projection section with help hints', () => {
     renderSettings();
     expect(screen.getByRole('heading', { name: /cost projection/i })).toBeInTheDocument();
     // Check that at least one hint is rendered
-    expect(screen.getByText(/Average input tokens per section/i)).toBeInTheDocument();
+    expect(screen.getByText(/Average input sent to the AI per section/i)).toBeInTheDocument();
   });
 
   it('renders critic settings section', () => {
     renderSettings();
-    expect(screen.getByRole('heading', { name: /critic loop/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /quality review loop/i })).toBeInTheDocument();
   });
 
   it('renders reset button', () => {

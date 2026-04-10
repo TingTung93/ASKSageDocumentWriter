@@ -28,6 +28,6 @@ try {
   // Render a minimal fallback so the debug panel still has somewhere to live.
   document.body.insertAdjacentHTML(
     'beforeend',
-    '<pre style="color:#b00;padding:1rem;font-family:monospace">init crash — see debug panel below</pre>',
+    '<pre style="color:#b00;padding:1rem;font-family:monospace">Startup error — see debug panel below</pre>',
   );
 }

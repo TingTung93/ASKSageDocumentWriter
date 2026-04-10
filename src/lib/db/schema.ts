@@ -107,11 +107,40 @@ export interface ReferenceChunk {
   text: string;
 }
 
+/** Project mode: template-driven (classic) or freeform (style-based). */
+export type ProjectMode = 'template' | 'freeform';
+
 export interface ProjectRecord {
   id: string;
   name: string;
   /** Free-form description of the project's intent (user input) */
   description: string;
+  /**
+   * Project mode. 'template' is the classic PWS flow (pick DOCX
+   * templates, draft per-section). 'freeform' lets the user pick a
+   * document style (white paper, exsum, memo, etc.) and the AI
+   * synthesizes context into one cohesive document. Defaults to
+   * 'template' for legacy rows that don't have this field.
+   */
+  mode?: ProjectMode;
+  /**
+   * Freeform document style id (e.g. 'exsum', 'white_paper').
+   * Only meaningful when mode === 'freeform'. References a style
+   * definition in lib/freeform/styles.ts.
+   */
+  freeform_style?: string;
+  /**
+   * The complete drafted document for freeform projects, stored as
+   * DraftParagraph[]. Only populated after a freeform drafting run.
+   */
+  freeform_draft?: DraftParagraph[];
+  /** Model used for the most recent freeform draft */
+  freeform_draft_model?: string;
+  /** Tokens used by the most recent freeform draft */
+  freeform_draft_tokens_in?: number;
+  freeform_draft_tokens_out?: number;
+  /** ISO timestamp of the most recent freeform draft */
+  freeform_draft_generated_at?: string;
   /** TemplateRecord ids included in this project */
   template_ids: string[];
   /** Ask Sage dataset names to use for RAG context during drafting */
@@ -348,6 +377,19 @@ class DocWriterDb extends Dexie {
     // multiple runs of the same recipe on the same project coexist
     // (one record per run, useful for diagnostics history).
     this.version(7).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+      recipe_runs: 'id, project_id, recipe_id, started_at, status',
+    });
+    // v8 adds freeform project support: mode, freeform_style, and
+    // freeform_draft fields on ProjectRecord. No index changes needed —
+    // these are optional inline fields on existing project rows.
+    // Legacy rows default to mode='template'.
+    this.version(8).stores({
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',
       drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',

@@ -63,10 +63,9 @@ export function AuditLog() {
     <main>
       <h1>Audit log</h1>
       <p className="note">
-        Every <code>/server/*</code> call this app makes is recorded here:
-        endpoint, model, prompt and response excerpts, token usage, and
-        timing. The audit table lives entirely in IndexedDB on this
-        machine — nothing is sent off-device.
+        Every AI request this app makes is recorded here: the request type,
+        model used, what was sent and received, usage, and timing. This
+        log is stored entirely on your computer — nothing is sent elsewhere.
       </p>
 
       <h2>Totals (last {records?.length ?? 0} calls)</h2>
@@ -74,16 +73,16 @@ export function AuditLog() {
         <Stat label="Calls" value={totals.calls.toLocaleString()} />
         <Stat label="OK" value={totals.ok.toLocaleString()} variant="success" />
         <Stat label="Errors" value={totals.errors.toLocaleString()} variant="danger" />
-        <Stat label="Tokens in" value={totals.tokens_in.toLocaleString()} />
-        <Stat label="Tokens out" value={totals.tokens_out.toLocaleString()} />
-        <Stat label="Total tokens" value={(totals.tokens_in + totals.tokens_out).toLocaleString()} />
+        <Stat label="Input sent" value={totals.tokens_in.toLocaleString()} />
+        <Stat label="Output received" value={totals.tokens_out.toLocaleString()} />
+        <Stat label="Total usage" value={(totals.tokens_in + totals.tokens_out).toLocaleString()} />
       </div>
 
       <h2>Filter</h2>
       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '1rem' }}>
         <input
           type="text"
-          placeholder="Search endpoint, model, prompt, response, error…"
+          placeholder="Search request type, model, prompt, response, error…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ flex: 1, minWidth: 280 }}
@@ -102,7 +101,7 @@ export function AuditLog() {
           onChange={(e) => setEndpointFilter(e.target.value)}
           style={{ padding: '0.5rem', font: 'inherit' }}
         >
-          <option value="all">All endpoints</option>
+          <option value="all">All request types</option>
           {endpoints.map((ep) => (
             <option key={ep} value={ep}>
               {ep}
@@ -117,9 +116,9 @@ export function AuditLog() {
       <h2>Calls ({filtered.length})</h2>
       {(!records || records.length === 0) && (
         <p className="note">
-          No calls recorded yet. Make any Ask Sage request from another tab —
-          synthesis, drafting, document cleanup, dataset verify — and it will
-          show up here.
+          No requests recorded yet. Use any feature from another tab —
+          template analysis, drafting, document cleanup, dataset verification
+          — and it will show up here.
         </p>
       )}
       <ul style={{ listStyle: 'none', padding: 0 }}>
@@ -178,7 +177,7 @@ function AuditRow({ record }: { record: AuditRecord }) {
         <span className="muted">· {record.ms}ms</span>
         {(record.tokens_in || record.tokens_out) && (
           <span className="muted">
-            · {record.tokens_in ?? 0}+{record.tokens_out ?? 0} tokens
+            · {record.tokens_in ?? 0}+{record.tokens_out ?? 0} units
           </span>
         )}
         {record.error && (

@@ -13,11 +13,13 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastContainer } from './components/ToastContainer';
 import { registerRecipe } from './lib/agent/recipe';
 import { PWS_RECIPE } from './lib/agent/recipes/pws';
+import { FREEFORM_RECIPE } from './lib/agent/recipes/freeform';
 
 // Register agentic recipes at module load. resumeRecipeRun() looks
 // recipes up by id, so they must be registered before the user can
 // resume a paused run after a page reload.
 registerRecipe(PWS_RECIPE);
+registerRecipe(FREEFORM_RECIPE);
 
 // HashRouter (not BrowserRouter) so the built app works from file://,
 // from an internal share, or from any static server without rewrite rules.

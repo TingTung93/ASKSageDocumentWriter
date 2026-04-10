@@ -114,19 +114,18 @@ export function Documents() {
 
   return (
     <main>
-      <h1>Documents — inline cleanup</h1>
+      <h1>Documents — review &amp; polish</h1>
       <p>
-        Upload a finished DOCX you've already drafted, run it through an LLM
-        cleanup pass for grammar / language / correctness, review the proposed
-        edits paragraph by paragraph, then export a new DOCX with the accepted
-        edits applied. The original file is never overwritten — every export
-        produces a fresh copy.
+        Have a document that's already written but needs a final review?
+        Upload it here. The AI will check grammar, language, and clarity,
+        then suggest edits you can accept or reject one by one. When you're
+        done, export a clean copy. Your original file is never changed.
       </p>
-      <p className="note">
-        This is the right tool when you have a complete document and just want
-        it polished. For drafting from scratch from a template, use{' '}
-        <Link to="/projects">Projects</Link>.
-      </p>
+      <div className="callout-blue callout" style={{ marginBottom: 'var(--space-3)' }}>
+        <strong>Tip:</strong> This page is for polishing existing documents.
+        If you need to draft a new document from a template, go to{' '}
+        <Link to="/projects">Projects</Link> instead.
+      </div>
 
       <DropZone
         accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -144,8 +143,9 @@ export function Documents() {
       )}
       {(!documents || documents.length === 0) && (
         <EmptyState
+          icon="📝"
           title="No documents yet"
-          body="Drop a DOCX above to begin a cleanup pass."
+          body="To get started, drag a Word (.docx) file into the box above, or click the box to browse for one on your computer. The AI will review it and suggest edits you can accept or reject."
         />
       )}
       {documents && documents.length > 0 && filtered.length === 0 && (
@@ -171,7 +171,7 @@ export function Documents() {
             <strong>{d.name}</strong>
             <span className="note" style={{ marginLeft: 'auto' }}>
               {d.paragraph_count} paragraphs · {d.edits.length} edit{d.edits.length === 1 ? '' : 's'} ·
-              {' '}{(d.total_tokens_in + d.total_tokens_out).toLocaleString()} tokens used
+              {' '}{(d.total_tokens_in + d.total_tokens_out).toLocaleString()} AI units used
             </span>
             <button
               type="button"
@@ -394,7 +394,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         toast.info('No edits proposed — document looks clean.');
       } else {
         toast.success(
-          `${newEdits.length} edit${newEdits.length === 1 ? '' : 's'} proposed (${result.tokens_in.toLocaleString()}+${result.tokens_out.toLocaleString()} tokens)`,
+          `${newEdits.length} edit${newEdits.length === 1 ? '' : 's'} proposed`,
         );
       }
     } catch (err) {
@@ -462,7 +462,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       return;
     }
     if (scopedSelection.length === 0) {
-      toast.error('No paragraph indices in the selection.');
+      toast.error('No paragraph numbers in the selection.');
       return;
     }
     setScopedRunning(true);
@@ -508,10 +508,10 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       };
       await db.documents.put(updated);
       if (newEdits.length === 0) {
-        toast.info('Scoped edit returned no changes — region looks clean.');
+        toast.info('No changes needed — that section looks clean.');
       } else {
         toast.success(
-          `Scoped edit produced ${newEdits.length} proposed edit${newEdits.length === 1 ? '' : 's'}`,
+          `${newEdits.length} edit${newEdits.length === 1 ? '' : 's'} proposed for selected paragraphs`,
         );
       }
       setScopedPopoverOpen(false);
@@ -519,7 +519,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       setScopedRangeText('');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`Scoped edit failed: ${message}`);
+      toast.error(`Targeted edit failed: ${message}`);
     } finally {
       setScopedRunning(false);
     }
@@ -553,7 +553,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   function onOpenScopedPopover() {
     const indices = parseRangeInput(scopedRangeText);
     if (indices.length === 0) {
-      toast.error('Enter at least one valid paragraph index (e.g. "37" or "37-42" or "5,7,9").');
+      toast.error('Enter at least one valid paragraph number (e.g. "37" or "37-42" or "5,7,9").');
       return;
     }
     setScopedSelection(indices);
@@ -617,7 +617,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     <section style={{ marginTop: '1.5rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
       <h2>{doc.name}</h2>
       <p className="note">
-        {doc.filename} · {significantParagraphCount} paragraphs · ingested{' '}
+        {doc.filename} · {significantParagraphCount} paragraphs · uploaded{' '}
         {new Date(doc.ingested_at).toLocaleString()}
       </p>
 
@@ -631,7 +631,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       />
       {parseError && <div className="error">Preview parse failed: {parseError}</div>}
 
-      <h3>Cleanup pass</h3>
+      <h3>AI review</h3>
 
       <CleanupContextPanel
         onAskSage={onAskSage}
@@ -711,10 +711,10 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
                 style={{ width: 'auto' }}
                 disabled={running}
               />
-              Use pre-pass (identify problem paragraphs first, then narrow the fix pass)
+              Scan first (identify problem paragraphs, then focus the review on those)
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 400, fontSize: 12 }}>
-              Chunk concurrency:
+              Parallel speed:
               <select
                 value={chunkConcurrency}
                 onChange={(e) => setChunkConcurrency(Number(e.target.value))}
@@ -729,13 +729,13 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
             </label>
           </div>
           <p className="note" style={{ marginTop: '0.3rem' }}>
-            Pre-pass adds one cheap LLM call per chunk to identify which paragraphs need editing, then narrows the fix pass to those plus a small neighbor window. Total tokens are usually lower than the single-pass approach because the fix pass has less to read. Concurrency controls how many chunks process in parallel.
+            The scan-first option adds one quick AI check per batch to identify which paragraphs need editing, then focuses the review on just those. Usually costs less overall because the review has less to read. The parallel speed setting controls how many batches are processed at once.
           </p>
         </details>
 
         <details style={{ marginTop: '0.5rem' }}>
           <summary className="note" style={{ cursor: 'pointer' }}>
-            Targeted fix (one-shot edit on a specific paragraph range)
+            Quick fix (edit a specific paragraph range)
           </summary>
           <div className="row" style={{ marginTop: '0.4rem', gap: '0.4rem', alignItems: 'center' }}>
             <input
@@ -756,7 +756,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
             </button>
           </div>
           <p className="note" style={{ marginTop: '0.3rem' }}>
-            Cheaper and faster than the full cleanup pass. The system sends just the selected paragraphs (plus a small context window) to the LLM with a one-line instruction you provide. Result lands in the same accept/reject queue below.
+            Cheaper and faster than a full review. Sends just the selected paragraphs (plus surrounding context) to the AI with the instruction you provide. Results appear in the same accept/reject list below.
           </p>
         </details>
 
@@ -766,8 +766,8 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
               light
               label={
                 chunkProgress
-                  ? `Cleaning chunk ${chunkProgress.done}/${chunkProgress.total}…`
-                  : 'Asking the LLM…'
+                  ? `Reviewing batch ${chunkProgress.done}/${chunkProgress.total}…`
+                  : 'Reviewing…'
               }
             />
           ) : (
@@ -778,7 +778,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           <ProgressBar
             done={chunkProgress.done}
             total={chunkProgress.total}
-            label={`Cleaning chunk ${chunkProgress.done} of ${chunkProgress.total}`}
+            label={`Reviewing batch ${chunkProgress.done} of ${chunkProgress.total}`}
           />
         )}
       </form>

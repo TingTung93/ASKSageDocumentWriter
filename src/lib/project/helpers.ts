@@ -75,6 +75,8 @@ export async function createProject(input: {
   template_ids: string[];
   reference_dataset_names: string[];
   live_search?: 0 | 1 | 2;
+  mode?: import('../db/schema').ProjectMode;
+  freeform_style?: string;
 }): Promise<ProjectRecord> {
   const now = new Date().toISOString();
   // Pre-populate shared_inputs from user-level defaults so the user
@@ -98,6 +100,8 @@ export async function createProject(input: {
     template_ids: input.template_ids,
     reference_dataset_names: input.reference_dataset_names,
     shared_inputs: seededInputs,
+    mode: input.mode ?? 'template',
+    freeform_style: input.freeform_style,
     model_overrides: {},
     live_search: input.live_search ?? 0,
     created_at: now,

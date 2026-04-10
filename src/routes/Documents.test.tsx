@@ -54,7 +54,7 @@ describe('Documents route', () => {
 
   it('renders the heading', () => {
     renderDocuments();
-    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/documents.*inline cleanup/i);
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/documents.*review.*polish/i);
   });
 
   it('shows a drop zone for uploading DOCX files', () => {

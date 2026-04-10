@@ -36,32 +36,32 @@ interface StageMeta {
 const STAGES: StageMeta[] = [
   {
     stage: 'synthesis',
-    label: 'Template synthesis',
-    description: 'One-shot pass that converts a parsed DOCX skeleton into a semantic schema.',
+    label: 'Template analysis',
+    description: 'Reads a DOCX template and identifies sections, structure, and writing guidance.',
     default: DEFAULT_SYNTHESIS_MODEL,
   },
   {
     stage: 'drafting',
     label: 'Section drafting',
-    description: 'Per-section drafting calls during a project run.',
+    description: 'Generates content for each section when running a project.',
     default: DEFAULT_DRAFTING_MODEL,
   },
   {
     stage: 'critic',
-    label: 'Critic',
-    description: 'Post-draft validation pass (Phase 4 of the orchestrator).',
+    label: 'Quality reviewer',
+    description: 'Reviews each drafted section for errors and suggests improvements.',
     default: DEFAULT_DRAFTING_MODEL,
   },
   {
     stage: 'cleanup',
     label: 'Document cleanup',
-    description: 'Inline cleanup pass over an uploaded DOCX in the Documents route.',
+    description: 'Reviews and polishes an uploaded DOCX on the Documents page.',
     default: DEFAULT_DOCUMENT_EDIT_MODEL,
   },
   {
     stage: 'schema_edit',
-    label: 'Schema editing',
-    description: 'LLM-assisted edits applied to a template schema.',
+    label: 'Template refinement',
+    description: 'AI-assisted edits to a template\'s section definitions and writing rules.',
     default: DEFAULT_EDIT_MODEL,
   },
 ];
@@ -110,12 +110,12 @@ export function Settings() {
     <main>
       <h1>Settings</h1>
       <p>
-        Per-stage model overrides and cost projection assumptions. Settings
-        persist in IndexedDB across sessions. Leave a model field blank to
-        fall back to the compiled-in default for that stage.
+        Choose which AI model to use for each step, and adjust cost
+        estimates. Your settings are saved locally and persist between
+        sessions. Leave a model field blank to use the built-in default.
       </p>
 
-      <h2>Model overrides</h2>
+      <h2>AI model preferences</h2>
       {!apiKey && (
         <EmptyState
           title="Not connected"
@@ -149,46 +149,44 @@ export function Settings() {
         compatibilityFilter={compatibilityFilter}
       />
 
-      <h2>Critic loop (agentic drafting)</h2>
+      <h2>Quality review loop (automated review)</h2>
       <p className="note">
-        When enabled, every drafted section is checked by a separate
-        critic LLM call before being accepted. If the critic finds
-        medium-or-high severity issues, the orchestrator re-drafts up
-        to <code>max_iterations</code> times with the critic's feedback
-        inlined into the next attempt. Used by the auto-draft recipe
+        When enabled, every drafted section is reviewed by a separate
+        AI check before being accepted. If the reviewer finds significant
+        issues, the system re-drafts up to the configured number of times
+        using the reviewer's feedback. Used by the auto-draft workflow
         and by manual <code>Draft sections</code> runs.
       </p>
       <CriticSettingsSection critic={settings.critic ?? null} />
 
       <h2>Style consistency review</h2>
       <p className="note">
-        After every section is drafted and the cross-section content
-        review runs, this pass takes one more LLM call that looks at
-        the WHOLE document's formatting — role usage, table structure,
-        leaked markdown, heading hierarchy, bullet nesting — and emits
-        structured fix ops that get applied before DOCX assembly. Use
-        this when independently-drafted sections have produced
-        inconsistent formatting (mixed fonts, malformed tables, stray
-        markdown). One LLM call per project run.
+        After all sections are drafted and reviewed, this step takes one
+        more AI pass that examines the WHOLE document's formatting —
+        heading levels, table structure, bullet nesting, stray markup,
+        and role usage — then applies corrections before the final Word
+        document is assembled. Use this when independently-drafted
+        sections have produced inconsistent formatting (mixed fonts,
+        malformed tables, stray characters). One AI call per project run.
       </p>
       <StyleReviewSettingsSection styleReview={settings.style_review ?? null} />
 
       <h2>User defaults</h2>
       <p className="note">
-        Key/value pairs that get auto-populated into every NEW project's
-        shared inputs. Use this for facts that don't change between
-        documents — your office symbol, signature block, default POC line.
-        Keys should match the shared input field keys your templates emit
+        Values that get automatically filled in for every NEW project.
+        Use this for information that stays the same across documents —
+        your office symbol, signature block, default POC line.
+        Field names should match what your templates expect
         (e.g. <code>office_symbol</code>, <code>signature_block</code>,
-        <code>poc_line</code>). Existing projects are unchanged.
+        <code>poc_line</code>). Existing projects are not changed.
       </p>
       <UserDefaultsSection defaults={settings.user_defaults ?? { shared_inputs: {} }} />
 
       <h2>Cost projection</h2>
       <p className="note">
-        These numbers feed the rough token / cost estimates shown on the Documents
-        and Project Detail pages before you kick off a long pass. They're not
-        exact — tune them once you have real data.
+        These numbers feed the rough cost estimates shown on the Documents
+        and Project Detail pages before you start a review or drafting run.
+        They're approximate — adjust them once you have real usage data.
       </p>
       <CostAssumptionsSection cost={settings.cost} />
 
@@ -425,7 +423,7 @@ function ModelOverrideRow({
         {meta.description}
       </p>
       <p className="note" style={{ marginTop: '0.25rem', fontSize: 11 }}>
-        Requires ≥ {formatTokenFloor(stageReq.min_context_length)} context, text in/out, temperature parameter.
+        Requires a model with at least {formatTokenFloor(stageReq.min_context_length)} capacity and text generation support.
         {compatibilityFilter && hiddenIncompatibleCount > 0 && (
           <> {hiddenIncompatibleCount.toLocaleString()} incompatible model{hiddenIncompatibleCount === 1 ? '' : 's'} hidden.</>
         )}
@@ -452,7 +450,7 @@ function ModelOverrideRow({
           onBlur={() => {
             if ((draft || null) !== current) void commit(draft);
           }}
-          placeholder="Or type a model id…"
+          placeholder="Or type a model name…"
           style={{ flex: 1 }}
           disabled={saving}
         />
@@ -509,15 +507,13 @@ function CompatibilityFilterControl({
           onChange={(e) => onChange(e.target.checked)}
           style={{ width: 'auto' }}
         />
-        Hide models that can't run the selected stage
+        Hide incompatible models
       </label>
       <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0 }}>
-        Filters each per-stage dropdown to OpenRouter models whose
-        advertised context window, modalities, and supported parameters
-        meet the stage's requirements. Models with no capability metadata
-        (e.g. all Ask Sage models) are always shown — the filter is a
-        guard rail, not a blocklist. Turn off if you want to try a model
-        whose advertised limits look wrong.
+        Hides OpenRouter models that don't meet the minimum requirements
+        for each step (capacity, text support, etc.). All Ask Sage models
+        are always shown. Turn this off if you want to try a model whose
+        listed specs may be inaccurate.
       </p>
     </div>
   );
@@ -575,9 +571,9 @@ function PricingFilterControl({
         </span>
       </div>
       <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0 }}>
-        Free OpenRouter models have aggressive rate limits and shorter
-        context windows — usable for cleanup and refinement passes, often
-        too slow or context-limited for full template synthesis.
+        Free OpenRouter models have strict usage limits and handle less
+        content at once — fine for cleanup and refinement, but often too
+        slow or limited for full template analysis.
       </p>
     </div>
   );
@@ -597,7 +593,7 @@ function CriticSettingsSection({
     await saveSettings({
       critic: { ...(current.critic ?? { enabled: true, strictness: 'moderate', max_iterations: 2 }), ...patch },
     });
-    toast.success('Critic settings saved');
+    toast.success('Quality review settings saved');
   }
 
   return (
@@ -609,10 +605,10 @@ function CriticSettingsSection({
           onChange={(e) => void update({ enabled: e.target.checked })}
           style={{ width: 'auto' }}
         />
-        Enable critic loop
+        Enable quality review loop
       </label>
       <p className="note" style={{ marginTop: '0.4rem' }}>
-        When disabled, sections draft once and are accepted as-is (the legacy single-pass behavior). Saves cost but loses quality on tricky sections.
+        When disabled, sections are drafted once and accepted as-is with no review. Saves cost but may miss quality issues in complex sections.
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
@@ -643,7 +639,7 @@ function CriticSettingsSection({
         </label>
       </div>
       <p className="note" style={{ marginTop: '0.4rem' }}>
-        Cost impact: enabling the critic with default settings adds ~25% to the per-project token spend in exchange for substantially better quality. See the design discussion in the project memory for the full math.
+        Cost impact: enabling the quality review with default settings adds ~25% to the per-project AI cost in exchange for substantially better output. See the design discussion in the project memory for the full math.
       </p>
     </div>
   );
@@ -674,12 +670,12 @@ function StyleReviewSettingsSection({
         Enable style consistency review
       </label>
       <p className="note" style={{ marginTop: '0.4rem' }}>
-        When disabled, the recipe runner skips this stage and goes straight from cross-section review to DOCX assembly. Save cost; lose normalization.
+        When disabled, the workflow skips this step and goes straight from content review to Word document assembly. Saves cost but may leave inconsistent formatting.
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontWeight: 400 }}>
-          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Max fix ops per run</span>
+          <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>Max corrections per run</span>
           <input
             type="number"
             min={1}
@@ -692,7 +688,7 @@ function StyleReviewSettingsSection({
         </label>
       </div>
       <p className="note" style={{ marginTop: '0.4rem' }}>
-        Cost impact: one extra LLM call per project run. Token cost scales with the total drafted content (the whole document JSON is sent in one shot).
+        Cost impact: one extra AI call per project run. Cost scales with the total drafted content (the entire document is reviewed in one pass).
       </p>
     </div>
   );
@@ -702,56 +698,56 @@ function CostAssumptionsSection({ cost }: { cost: CostAssumptions }) {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem 1rem' }}>
       <CostField
-        label="Drafting tokens-in per section"
+        label="Avg. input units per section"
         field="drafting_tokens_in_per_section"
         value={cost.drafting_tokens_in_per_section}
-        hint="Average input tokens per section drafting call (prompt + context + references)."
+        hint="Average input sent to the AI per section (prompt + context + references). Higher = more context per call."
       />
       <CostField
-        label="Drafting tokens-out per section"
+        label="Avg. output units per section"
         field="drafting_tokens_out_per_section"
         value={cost.drafting_tokens_out_per_section}
-        hint="Average output tokens the model generates per section."
+        hint="Average amount of text the AI generates per section."
       />
       <CostField
-        label="Characters per token"
+        label="Characters per unit"
         field="chars_per_token"
         value={cost.chars_per_token}
         step={0.1}
-        hint="Rough char-to-token ratio for estimating token counts from text length. ~4 for English."
+        hint="Approximate characters per AI processing unit. ~4 for English text."
       />
       <CostField
-        label="Cleanup system prompt overhead (tokens)"
+        label="Cleanup instructions overhead"
         field="cleanup_system_prompt_tokens"
         value={cost.cleanup_system_prompt_tokens}
-        hint="Fixed token cost of the system prompt sent with each cleanup chunk."
+        hint="Fixed cost of the instructions sent with each cleanup batch."
       />
       <CostField
-        label="Cleanup framing tokens per paragraph"
+        label="Cleanup overhead per paragraph"
         field="cleanup_paragraph_overhead_tokens"
         value={cost.cleanup_paragraph_overhead_tokens}
-        hint="Per-paragraph overhead (index labels, formatting) added to each cleanup chunk."
+        hint="Per-paragraph overhead (numbering, formatting) added to each cleanup batch."
       />
       <CostField
         label="Cleanup output ratio (out / in)"
         field="cleanup_output_ratio"
         value={cost.cleanup_output_ratio}
         step={0.05}
-        hint="Expected ratio of output tokens to input tokens for cleanup. Lower = fewer edits proposed."
+        hint="Expected ratio of AI output to input for cleanup. Lower = fewer edits proposed."
       />
       <CostField
-        label="USD per 1k input tokens"
+        label="USD per 1k input units"
         field="usd_per_1k_in"
         value={cost.usd_per_1k_in}
         step={0.01}
-        hint="Fallback input token price when the model has no per-token pricing data (e.g. Ask Sage)."
+        hint="Fallback input price when the model has no built-in pricing data (e.g. Ask Sage)."
       />
       <CostField
-        label="USD per 1k output tokens"
+        label="USD per 1k output units"
         field="usd_per_1k_out"
         value={cost.usd_per_1k_out}
         step={0.01}
-        hint="Fallback output token price when the model has no per-token pricing data."
+        hint="Fallback output price when the model has no built-in pricing data."
       />
     </div>
   );

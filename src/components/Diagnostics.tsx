@@ -125,13 +125,12 @@ export function Diagnostics({ baseUrl, apiKey }: DiagnosticsProps) {
     <section style={{ marginTop: '2rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
       <h2>Diagnostics</h2>
       <p className="note">
-        Runs the same probes as <code>probe.html</code> but renders the
-        results inline so you can debug without DevTools. The API key is
-        sent only to the base URL above and is shown as <code>&lt;redacted&gt;</code>{' '}
-        in the output below.
+        Tests your connection to the AI service and shows detailed results
+        below. Your API key is sent only to the server URL above and is
+        hidden in the output.
       </p>
       <button type="button" onClick={runAll} disabled={running || !apiKey}>
-        {running ? 'Running probes…' : 'Run all probes'}
+        {running ? 'Running tests…' : 'Run connection tests'}
       </button>
       {results.length > 0 && (
         <div style={{ marginTop: '1rem' }}>
@@ -178,17 +177,15 @@ function ProbeView({ r }: { r: ProbeResult }) {
             wordBreak: 'break-word',
           }}
         >
-          NETWORK ERROR: {r.networkError.name}: {r.networkError.message}
+          CONNECTION ERROR: {r.networkError.name}: {r.networkError.message}
           {'\n\n'}
-          The browser refused or could not complete the request. Common
-          causes from a file:// origin against api.asksage.health.mil:
+          The browser could not reach the server. Common causes:
           {'\n'}
-          • CORS preflight rejected by the server (no
-          Access-Control-Allow-Origin for this origin){'\n'}
-          • Network unreachable (firewall, VPN, proxy){'\n'}
-          • DNS resolution failure{'\n'}
-          • Browser security policy on file://{'\n'}
-          • Mixed content / certificate issue{'\n'}
+          • The server blocked this request due to security settings{'\n'}
+          • Network unreachable (firewall, VPN, or proxy issue){'\n'}
+          • Server address could not be found{'\n'}
+          • Browser security policy when running from a local file{'\n'}
+          • Certificate or secure-connection issue{'\n'}
         </pre>
       )}
       {r.responseBodyExcerpt !== null && (
@@ -201,7 +198,7 @@ function ProbeView({ r }: { r: ProbeResult }) {
       )}
       <details style={{ marginTop: '0.25rem' }}>
         <summary style={{ cursor: 'pointer', fontSize: 12 }}>
-          Visible response headers ({headerCount}) — most are hidden by CORS
+          Visible response headers ({headerCount}) — most are hidden by browser security
         </summary>
         <pre style={{ background: '#f4f4f4', padding: '0.5rem', fontSize: 11 }}>
           {headerCount === 0
@@ -212,7 +209,7 @@ function ProbeView({ r }: { r: ProbeResult }) {
         </pre>
       </details>
       <details style={{ marginTop: '0.25rem' }}>
-        <summary style={{ cursor: 'pointer', fontSize: 12 }}>Request shape</summary>
+        <summary style={{ cursor: 'pointer', fontSize: 12 }}>Request details</summary>
         <pre style={{ background: '#f4f4f4', padding: '0.5rem', fontSize: 11 }}>
           POST {r.url}
           {'\n'}

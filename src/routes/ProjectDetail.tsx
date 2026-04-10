@@ -287,15 +287,15 @@ export function ProjectDetail() {
           usd = actualUsdFromPricing(run.total_tokens_in, run.total_tokens_out, draftingPricing);
         }
         const usdSuffix = usd !== null ? ` · ${formatUsd(usd)}` : '';
-        toast.success(`Recipe complete · ${totalTokens.toLocaleString()} tokens${usdSuffix}`);
+        toast.success(`Auto-draft complete · ${totalTokens.toLocaleString()} units${usdSuffix}`);
       } else if (run.status === 'paused') {
-        toast.info('Recipe paused for your review — see the panel below');
+        toast.info('Auto-draft paused for your review — see the panel below');
       } else if (run.status === 'failed') {
-        toast.error('Recipe failed — check the panel below for details');
+        toast.error('Auto-draft failed — check the panel below for details');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      toast.error(`Recipe error: ${message}`);
+      toast.error(`Auto-draft error: ${message}`);
     } finally {
       setRecipeRunning(false);
     }
@@ -329,9 +329,9 @@ export function ProjectDetail() {
       });
       setCurrentRun(run);
       if (run.status === 'completed') {
-        toast.success('Recipe complete');
+        toast.success('Auto-draft complete');
       } else if (run.status === 'paused') {
-        toast.info('Recipe paused again');
+        toast.info('Auto-draft paused again');
       }
     } catch (err) {
       toast.error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -345,7 +345,7 @@ export function ProjectDetail() {
     try {
       await cancelRecipeRun(currentRun.id);
       setCurrentRun({ ...currentRun, status: 'cancelled' });
-      toast.info('Recipe cancelled');
+      toast.info('Auto-draft cancelled');
     } catch (err) {
       toast.error(`Cancel failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -380,11 +380,11 @@ export function ProjectDetail() {
       });
       setCurrentRun(run);
       if (run.status === 'completed') {
-        toast.success('Recipe complete after retry');
+        toast.success('Auto-draft complete after retry');
       } else if (run.status === 'failed') {
-        toast.error('Recipe failed again — check the panel below for details');
+        toast.error('Auto-draft failed again — check the panel below for details');
       } else if (run.status === 'paused') {
-        toast.info('Recipe paused for review');
+        toast.info('Auto-draft paused for review');
       }
     } catch (err) {
       toast.error(`Retry failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -534,7 +534,7 @@ export function ProjectDetail() {
           <strong>OpenRouter mode (non-CUI).</strong>{' '}
           Reference extraction (DOCX, PDF, plain text) runs in the
           browser. Web search is provided by the OpenRouter `web`
-          plugin. Named-dataset RAG is unavailable — use the inline
+          plugin. Named-dataset lookups are unavailable — use the inline
           reference files instead.
         </div>
       )}
@@ -548,8 +548,8 @@ export function ProjectDetail() {
       <h2>Shared inputs ({sharedFields.length})</h2>
       {sharedFields.length === 0 && (
         <p className="note">
-          No metadata fill regions detected across the selected templates. Drafting will proceed
-          using only the project description and reference datasets as ground truth.
+          No shared document fields detected across the selected templates. Drafting will proceed
+          using only the project description and reference datasets as source material.
         </p>
       )}
       <div>
@@ -579,9 +579,9 @@ export function ProjectDetail() {
         style={{ width: '100%', padding: '0.5rem', font: 'inherit', maxWidth: 500 }}
         disabled={drafting}
       >
-        <option value={0}>Disabled — no web search, RAG only</option>
-        <option value={1}>Google results — inject web hits as references</option>
-        <option value={2}>Google + crawl — autonomous market research mode</option>
+        <option value={0}>Disabled — no web search, datasets only</option>
+        <option value={1}>Google results — include web search results as references</option>
+        <option value={2}>Google + crawl — full market research mode</option>
       </select>
       <p className="note">
         Applies to every drafting call for this project. Mode 2 is the right
@@ -636,7 +636,7 @@ export function ProjectDetail() {
               {est.usd_source === 'pricing' ? (
                 <>Live pricing from OpenRouter ({effectiveDraftingModelId}).</>
               ) : est.usd_source === 'assumptions' ? (
-                <>Using <Link to="/settings">Settings</Link> cost assumptions ($/1k tokens).</>
+                <>Using <Link to="/settings">Settings</Link> cost assumptions.</>
               ) : !effectiveDraftingModelId ? (
                 <>Set a drafting model on the <Link to="/settings">Settings</Link> tab to see a cost estimate.</>
               ) : (
@@ -652,9 +652,9 @@ export function ProjectDetail() {
           type="button"
           onClick={() => void onRunRecipe()}
           disabled={recipeRunning || drafting || !apiKey}
-          title="Run the agentic PWS recipe end-to-end: pre-flight gap analysis, drafting with critic loop, cross-section review, and final assembly"
+          title="Run the full auto-draft workflow: gap analysis, drafting with quality review, content review, and final document assembly"
         >
-          {recipeRunning ? <Spinner light label={recipeStageMessage ?? 'Running recipe…'} /> : '🤖 Auto-draft this project'}
+          {recipeRunning ? <Spinner light label={recipeStageMessage ?? 'Running auto-draft…'} /> : '🤖 Auto-draft this project'}
         </button>
         <button type="button" className="btn-secondary" onClick={onStartDrafting} disabled={drafting || recipeRunning || !apiKey}>
           {drafting ? <Spinner light label="Drafting…" /> : 'Draft sections (manual)'}
@@ -1143,7 +1143,7 @@ function RecipeRunComparePanel({ runA, runB }: { runA: RecipeRun; runB: RecipeRu
               {new Date(runB.started_at).toLocaleString()} (B)
             </th>
             <th style={{ padding: '0.25rem 0.4rem', borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}>
-              Δ tokens
+              Δ usage
             </th>
             <th style={{ padding: '0.25rem 0.4rem', borderBottom: '1px solid var(--color-border)', textAlign: 'right' }}>
               Δ duration
@@ -1267,16 +1267,16 @@ function RecipeRunPanel({
   return (
     <div className="card" style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)' }}>
       <div className="row" style={{ alignItems: 'center' }}>
-        <strong>🤖 Recipe run · {run.recipe_name}</strong>
+        <strong>🤖 Auto-draft run · {run.recipe_name}</strong>
         <span className={`badge ${statusColor}`}>{run.status}</span>
-        <span className="badge">{totalTokens.toLocaleString()} tokens</span>
+        <span className="badge">{totalTokens.toLocaleString()} units</span>
         {totalUsd !== null && totalUsd !== undefined && (
           <span
             className="badge"
             title={
               breakdown
                 ? `${breakdown.per_model.length} model${breakdown.per_model.length === 1 ? '' : 's'} · ${breakdown.web_search_results > 0 ? `${breakdown.web_search_results} web search results · ` : ''}see breakdown below`
-                : `Computed from ${fallbackModelId ?? 'fallback'} pricing × total tokens`
+                : `Computed from ${fallbackModelId ?? 'fallback'} pricing × total usage`
             }
           >
             {formatUsd(totalUsd)}
@@ -2108,7 +2108,7 @@ function ProjectTemplatesEditor({
       )}
       {available.length === 0 && currentlySelected.length > 0 && (
         <p className="note">
-          All your templates are in this project. Ingest more on the{' '}
+          All your templates are in this project. Upload more on the{' '}
           <Link to="/templates">Templates</Link> tab.
         </p>
       )}
@@ -2394,7 +2394,7 @@ function SectionCard({
           </span>
         )}
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#666' }}>
-          {draft ? `${draft.status} · ${draft.tokens_in + draft.tokens_out} tokens` : 'not drafted'}
+          {draft ? `${draft.status} · ${draft.tokens_in + draft.tokens_out} units` : 'not drafted'}
         </span>
         {draft && draft.status === 'ready' && !isEditing && !isRedrafting && (
           <>
@@ -2599,7 +2599,7 @@ function SectionRedraftPanel({
         references_inlined_chunk_ids: selected.map((c) => c.chunk_id),
       });
       toast.success(
-        `Redrafted "${section.name}" · ${(result.tokens_in + result.tokens_out).toLocaleString()} tokens`,
+        `Redrafted "${section.name}" · ${(result.tokens_in + result.tokens_out).toLocaleString()} units used`,
       );
       onDone();
     } catch (err) {
@@ -3097,7 +3097,7 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
       }));
       toast.success(
         `${fileItem.filename}: ${text.length.toLocaleString()} chars` +
-          (tokens !== null ? ` · ${tokens.toLocaleString()} tokens` : ''),
+          (tokens !== null ? ` · ${tokens.toLocaleString()} units` : ''),
       );
     } catch (err) {
       toast.error(
@@ -3261,7 +3261,7 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
           <span className="badge badge-primary" style={{ marginLeft: '0.4rem' }}>
             {previewedFileIds.length} of {files.length} previewed ·{' '}
             {totalPreviewedTokens > 0
-              ? `~${totalPreviewedTokens.toLocaleString()} tokens`
+              ? `~${totalPreviewedTokens.toLocaleString()} units`
               : `${totalPreviewedChars.toLocaleString()} chars`}
           </span>
         )}
@@ -3269,8 +3269,7 @@ function ProjectContextSection({ project }: { project: ProjectRecord }) {
       {files.length > 0 && previewedFileIds.length < files.length && (
         <p className="note">
           Click <strong>test extract</strong> on each file to verify Ask Sage
-          can read it and to see the exact token count it'll consume in the
-          drafting prompt.
+          can read it and to see how much of the drafting budget it'll use.
         </p>
       )}
       <DropZone

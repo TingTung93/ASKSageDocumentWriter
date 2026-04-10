@@ -49,7 +49,7 @@ export function Templates() {
 
   async function onSynthesize(template: TemplateRecord) {
     if (!apiKey) {
-      setSynthError('Connect on the Connection tab first — synthesis needs an API key.');
+      setSynthError('Connect on the Connection tab first — template analysis needs an API key.');
       return;
     }
     setSynthError(null);
@@ -71,12 +71,12 @@ export function Templates() {
       await db.templates.put(updated);
       const intentCount = result.schema.sections.filter((s) => s.intent).length;
       toast.success(
-        `Synthesis complete · ${intentCount}/${result.schema.sections.length} sections have intent`,
+        `Analysis complete · ${intentCount}/${result.schema.sections.length} sections have writing guidance`,
       );
       if (result.body_truncated) {
         toast.sticky(
           'error',
-          `Document body was truncated: only ${result.body_paragraphs_sent}/${result.body_paragraphs_total} paragraphs (${result.body_chars_sent.toLocaleString()} chars) fit under the cap. Sections beyond that point may be missing. Raise body_cap_chars or use a smaller template.`,
+          `Document was too large: only ${result.body_paragraphs_sent}/${result.body_paragraphs_total} paragraphs (${result.body_chars_sent.toLocaleString()} chars) could be processed. Sections beyond that point may be missing. Try a shorter template or increase the body size limit in settings.`,
         );
       }
       if (result.subject_leakage_warnings.length > 0) {
@@ -90,7 +90,7 @@ export function Templates() {
             : '';
         toast.sticky(
           'info',
-          `Subject leakage detected in ${result.subject_leakage_warnings.length} section${result.subject_leakage_warnings.length === 1 ? '' : 's'}: ${summary}${more}. The drafter will override these at draft time, but you can hand-edit the intents to clean them up.`,
+          `Sample content detected in ${result.subject_leakage_warnings.length} section${result.subject_leakage_warnings.length === 1 ? '' : 's'}: ${summary}${more}. The drafter will replace these when generating new content, but you can also edit the section descriptions manually to clean them up.`,
         );
       }
     } catch (err) {
@@ -98,7 +98,7 @@ export function Templates() {
       // eslint-disable-next-line no-console
       console.error('[Templates] synthesis failed:', err);
       setSynthError(message);
-      toast.error(`Synthesis failed: ${message}`);
+      toast.error(`Template analysis failed: ${message}`);
     } finally {
       setSynthesizingId(null);
     }
@@ -138,7 +138,7 @@ export function Templates() {
       await db.templates.put(record);
       setSelectedId(schema.id);
       toast.success(
-        `Ingested ${file.name} · ${schema.sections.length} section${schema.sections.length === 1 ? '' : 's'}`,
+        `Uploaded ${file.name} · ${schema.sections.length} section${schema.sections.length === 1 ? '' : 's'}`,
       );
 
       // Phase 1 (agentic auto-triggers): synthesize semantic schema
@@ -208,18 +208,18 @@ export function Templates() {
     <main>
       <h1>Template library</h1>
       <p>
-        Drop a DOCX template here. The parser reads its OOXML and emits the
-        structural half of a TemplateSchema (page setup, named styles,
-        numbering, fill regions). The original DOCX is kept locally as the
-        export skeleton.
+        Upload a Word template (.docx) that you'd normally fill in by hand.
+        The tool reads its structure — sections, headings, and fillable
+        areas — so the AI knows what to write and where. Your original
+        file is kept safely on your computer.
       </p>
 
       <DropZone
         accept=".docx,.json,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/json"
         onFile={onFile}
         disabled={parsing}
-        label="Drop a DOCX template OR a shared .asdbundle.json file here"
-        hint="DOCX files are parsed locally. Bundle files import a template a teammate exported from this tool."
+        label="Drop a DOCX template or a shared bundle file here"
+        hint="DOCX files are read on your computer. Bundle files import a template a teammate exported from this tool."
       />
       {parsing && <p className="note">Parsing…</p>}
       {parseError && <div className="error">Parse failed: {parseError}</div>}
@@ -230,8 +230,9 @@ export function Templates() {
       )}
       {(!templates || templates.length === 0) && (
         <EmptyState
+          icon="📄"
           title="No templates yet"
-          body={<>Drop a DOCX above to ingest your first template.</>}
+          body={<>To get started, drag a Word (.docx) template file into the box above, or click the box to browse for one on your computer.</>}
         />
       )}
       {templates && templates.length > 0 && filtered.length === 0 && (
@@ -317,10 +318,10 @@ function SchemaViewer({ schema, templateId, onSynthesize, synthesizing, synthErr
 
   return (
     <section style={{ marginTop: '1.5rem', borderTop: '1px solid #ddd', paddingTop: '1rem' }}>
-      <h2>Schema · {schema.name}</h2>
+      <h2>Template details · {schema.name}</h2>
       <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '0.5rem', alignItems: 'center' }}>
         <TabBtn active={tab === 'summary'} onClick={() => setTab('summary')}>Summary</TabBtn>
-        <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Raw JSON</TabBtn>
+        <TabBtn active={tab === 'json'} onClick={() => setTab('json')}>Raw data</TabBtn>
         <TabBtn active={tab === 'refine'} onClick={() => setTab('refine')}>Refine</TabBtn>
         <span style={{ flex: 1 }} />
         <button
@@ -328,18 +329,18 @@ function SchemaViewer({ schema, templateId, onSynthesize, synthesizing, synthErr
           className={hasSemantic ? 'btn-secondary btn-sm' : 'btn-sm'}
           onClick={onSynthesize}
           disabled={synthesizing || !canSynthesize}
-          title={!canSynthesize ? 'Connect on the Connection tab first' : `Calls ${DEFAULT_SYNTHESIS_MODEL} via /server/query`}
+          title={!canSynthesize ? 'Connect on the Connection tab first' : `Uses ${DEFAULT_SYNTHESIS_MODEL} to analyze this template`}
         >
           {synthesizing ? (
             <Spinner light label="Synthesizing…" />
           ) : hasSemantic ? (
-            'Re-synthesize semantic'
+            'Re-analyze sections'
           ) : (
-            'Synthesize semantic'
+            'Analyze sections'
           )}
         </button>
       </div>
-      {synthError && <div className="error">Synthesis failed: {synthError}</div>}
+      {synthError && <div className="error">Analysis failed: {synthError}</div>}
       {tab === 'summary' && <SummaryView schema={schema} templateId={templateId} />}
       {tab === 'json' && <JsonView value={schema} />}
       {tab === 'refine' && <RefinePanel templateId={templateId} schema={schema} />}
@@ -452,10 +453,10 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
   return (
     <div style={{ marginTop: '0.5rem' }}>
       <p className="note">
-        Free-form instructions to the LLM. It returns a small list of edit operations
-        instead of regenerating the whole schema — much cheaper for localized changes
-        than re-running the full synthesis pass. The result is a preview you can accept
-        or reject.
+        Describe what you want to change in plain language. The AI returns a
+        targeted set of edits instead of rebuilding the entire template — much
+        cheaper for small adjustments than re-running the full analysis. You can
+        preview the changes and accept or reject them.
       </p>
       <p className="note">
         Examples: <em>"Make the purpose section's intent more specific to maintenance contracts"</em>{' '}
@@ -482,7 +483,7 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
           disabled={running || !apiKey}
         />
         <button type="submit" disabled={running || !apiKey || !instruction.trim()}>
-          {running ? 'Asking the LLM…' : 'Request edits'}
+          {running ? 'Processing…' : 'Request edits'}
         </button>
       </form>
 
@@ -502,8 +503,8 @@ function RefinePanel({ templateId, schema }: { templateId: string; schema: Templ
             Proposed edits ({pending.applied.applied.length})
           </h3>
           <p className="note" style={{ margin: '0 0 0.5rem' }}>
-            Tokens: {pending.tokens_in} in / {pending.tokens_out} out
-            {pending.rationale && <> · LLM rationale: <em>{pending.rationale}</em></>}
+            AI usage: {pending.tokens_in} in / {pending.tokens_out} out
+            {pending.rationale && <> · Reasoning: <em>{pending.rationale}</em></>}
           </p>
           <ul style={{ listStyle: 'none', padding: 0, fontSize: 12, fontFamily: 'ui-monospace, Consolas, monospace' }}>
             {pending.applied.applied.map((a, i) => (
@@ -559,9 +560,9 @@ function SummaryView({ schema, templateId }: { schema: TemplateSchema; templateI
     <div style={{ fontSize: 13 }}>
       <h3 style={{ marginTop: '0.75rem' }}>Source</h3>
       <Field label="Filename">{schema.source.filename}</Field>
-      <Field label="Ingested">{schema.source.ingested_at}</Field>
+      <Field label="Uploaded">{schema.source.ingested_at}</Field>
       <Field label="Parser">{schema.source.structural_parser_version}</Field>
-      <Field label="Semantic">{schema.source.semantic_synthesizer ?? '(not yet — Phase 1b)'}</Field>
+      <Field label="Analysis model">{schema.source.semantic_synthesizer ?? '(not yet analyzed)'}</Field>
 
       <h3>Page setup</h3>
       <Field label="Paper">{ps.paper}</Field>
@@ -604,7 +605,7 @@ function SummaryView({ schema, templateId }: { schema: TemplateSchema; templateI
       <Field label="Headers">{schema.formatting.headers.map((h) => h.part).join(', ') || '(none)'}</Field>
       <Field label="Footers">{schema.formatting.footers.map((f) => f.part).join(', ') || '(none)'}</Field>
 
-      <h3>Metadata fill regions ({schema.metadata_fill_regions.length})</h3>
+      <h3>Document fields ({schema.metadata_fill_regions.length})</h3>
       {schema.metadata_fill_regions.length === 0 ? (
         <em>(none detected)</em>
       ) : (
@@ -620,24 +621,24 @@ function SummaryView({ schema, templateId }: { schema: TemplateSchema; templateI
         ))
       )}
 
-      <h3>Style (semantic — editable)</h3>
+      <h3>Writing style (editable)</h3>
       <div style={{ background: '#f8f4e8', padding: '0.5rem', border: '1px solid #d4c483', fontSize: 12 }}>
         <InlineTextField
           label="Voice"
           value={schema.style.voice ?? ''}
-          placeholder="third_person | second_person | first_person_plural"
+          placeholder="e.g. third person, second person, first person plural"
           onChange={(v) => updateStyle(templateId, { voice: v || null })}
         />
         <InlineTextField
           label="Tense"
           value={schema.style.tense ?? ''}
-          placeholder="present | past"
+          placeholder="e.g. present, past"
           onChange={(v) => updateStyle(templateId, { tense: v || null })}
         />
         <InlineTextField
           label="Register"
           value={schema.style.register ?? ''}
-          placeholder="formal_government | technical | instructional"
+          placeholder="e.g. formal government, technical, instructional"
           onChange={(v) => updateStyle(templateId, { register: v || null })}
         />
         <InlineTextField
@@ -661,7 +662,7 @@ function SummaryView({ schema, templateId }: { schema: TemplateSchema; templateI
         />
       </div>
 
-      <h3>Body fill regions / sections ({schema.sections.length}) — editable</h3>
+      <h3>Fillable sections ({schema.sections.length}) — editable</h3>
       {schema.sections.length === 0 ? (
         <em>(none detected)</em>
       ) : (
@@ -764,7 +765,7 @@ function SectionEditor({ section, templateId }: { section: BodyFillRegion; templ
           <InlineTextField
             label="Depends on"
             value={(section.depends_on ?? []).join(', ')}
-            placeholder="comma-separated section ids"
+            placeholder="comma-separated section names"
             onChange={(v) =>
               updateSection(templateId, section.id, {
                 depends_on: v
