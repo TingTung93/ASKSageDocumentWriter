@@ -120,13 +120,15 @@ const draftDocumentStage: RecipeStage = {
       limit_references: 6,
     });
 
-    // Save draft to the project record
+    // Save draft + references to the project record
     await db.projects.update(ctx.project.id, {
       freeform_draft: result.paragraphs,
       freeform_draft_model: result.model,
       freeform_draft_tokens_in: result.tokens_in,
       freeform_draft_tokens_out: result.tokens_out,
       freeform_draft_generated_at: new Date().toISOString(),
+      freeform_draft_raw_references: result.raw_references,
+      freeform_draft_sources: result.sources,
       updated_at: new Date().toISOString(),
     });
 

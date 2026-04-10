@@ -141,6 +141,10 @@ export interface ProjectRecord {
   freeform_draft_tokens_out?: number;
   /** ISO timestamp of the most recent freeform draft */
   freeform_draft_generated_at?: string;
+  /** Raw references string from Ask Sage (RAG + web search) */
+  freeform_draft_raw_references?: string;
+  /** Extracted source references (URLs, file citations, etc.) */
+  freeform_draft_sources?: import('../freeform/drafter').SourceReference[];
   /** TemplateRecord ids included in this project */
   template_ids: string[];
   /** Ask Sage dataset names to use for RAG context during drafting */

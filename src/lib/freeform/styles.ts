@@ -43,6 +43,18 @@ WRITING RULES:
 - Use headings, sub-headings, and numbered/bulleted lists where they improve readability.
 - Do NOT include a title page or cover sheet — start directly with the first heading.
 
+CITATION AND SOURCING RULES:
+- When you use information from the context, reference material, or web search results, cite the source inline using brackets, e.g. [Source: FAR 6.302-1] or [Source: https://example.com/page].
+- For web URLs, always include the FULL URL so the reader can verify.
+- For reference files, cite by filename, e.g. [Source: prior_pws_2025.docx, Section 3].
+- For dataset references, cite by the reference text provided, e.g. [Source: DHA Issuance 6025.01].
+- At the END of the document, include a ## References section listing every source you cited, with:
+  - Full title or description
+  - Full URL if it is a web source
+  - Document name and section if it is a file reference
+  - Date accessed or publication date if known
+- Do NOT fabricate URLs or sources. Only cite material that was actually provided to you or returned by web search. If you cannot find a URL, cite the source by name/description only.
+
 PROJECT DESCRIPTION:
 {{PROJECT_DESCRIPTION}}
 

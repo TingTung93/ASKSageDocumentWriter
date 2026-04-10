@@ -6,6 +6,11 @@
  * Unlike the template-based drafter which calls the LLM once per
  * section, this produces the entire document in a single call (or
  * iteratively with the critic loop if enabled).
+ *
+ * The drafter instructs the LLM to cite sources inline and include a
+ * References section. It also captures the raw `references` field
+ * from Ask Sage (RAG + web search grounding) and extracts all URLs
+ * from both the LLM output and the Ask Sage references.
  */
 
 import type { LLMClient } from '../provider/types';
@@ -32,12 +37,26 @@ export interface FreeformDraftArgs {
   limit_references?: number;
 }
 
+/** A single extracted source reference */
+export interface SourceReference {
+  /** The full URL if this is a web source */
+  url?: string;
+  /** Human-readable title or description */
+  title: string;
+  /** Where this reference was found: 'llm_output', 'ask_sage_rag', or 'attached_file' */
+  source_type: 'llm_output' | 'ask_sage_rag' | 'attached_file';
+}
+
 export interface FreeformDraftResult {
   paragraphs: DraftParagraph[];
   model: string;
   tokens_in: number;
   tokens_out: number;
   prompt_sent: string;
+  /** Raw references string returned by Ask Sage (RAG + web search) */
+  raw_references: string;
+  /** All extracted source references (URLs + file citations) */
+  sources: SourceReference[];
 }
 
 /**
@@ -60,6 +79,7 @@ export async function draftFreeformDocument(
 
   // ── Build context block ──────────────────────────────────────
   const contextParts: string[] = [];
+  const attachedFilenames: string[] = [];
 
   // Notes
   const notes = context_items.filter((c) => c.kind === 'note');
@@ -77,6 +97,7 @@ export async function draftFreeformDocument(
     for (const f of files) {
       const text = file_extracts.get(f.id);
       if (text) {
+        attachedFilenames.push(f.filename);
         fileTexts.push(`--- ${f.filename} ---\n${text}`);
       }
     }
@@ -105,7 +126,7 @@ export async function draftFreeformDocument(
 
   // ── Call LLM ─────────────────────────────────────────────────
   const effectiveModel = model ?? DEFAULT_DRAFTING_MODEL;
-  const userMessage = `Write the complete ${style.name} now. Follow the outline exactly and produce publication-ready content.`;
+  const userMessage = `Write the complete ${style.name} now. Follow the outline exactly, cite all sources inline, and include a References section at the end with full URLs for any web sources used.`;
 
   const queryInput: QueryInput = {
     message: userMessage,
@@ -124,7 +145,32 @@ export async function draftFreeformDocument(
     ? response.response
     : String(response.response);
 
+  const rawReferences = response.references ?? '';
   const paragraphs = parseMarkdownToParagraphs(rawText);
+
+  // ── Extract sources ──────────────────────────────────────────
+  const sources = extractSources(rawText, rawReferences, attachedFilenames);
+
+  // If Ask Sage returned references that contain URLs not already
+  // in the document, append them as an additional sources section
+  const ragSources = extractUrlsFromText(rawReferences)
+    .filter((url) => !rawText.includes(url));
+  if (ragSources.length > 0) {
+    // Check if document already ends with a References heading
+    const hasRefsSection = paragraphs.some(
+      (p) => p.role === 'heading' && /references|sources|bibliography/i.test(p.text),
+    );
+    if (!hasRefsSection) {
+      paragraphs.push({ role: 'heading', text: 'References', level: 1 });
+    }
+    paragraphs.push({
+      role: 'body',
+      text: 'Additional sources from reference material search:',
+    });
+    for (const url of ragSources) {
+      paragraphs.push({ role: 'bullet', text: url });
+    }
+  }
 
   const tokens_in = response.usage?.prompt_tokens ?? 0;
   const tokens_out = response.usage?.completion_tokens ?? 0;
@@ -135,7 +181,73 @@ export async function draftFreeformDocument(
     tokens_in,
     tokens_out,
     prompt_sent: systemPrompt,
+    raw_references: rawReferences,
+    sources,
   };
+}
+
+/**
+ * Extract all source references from the LLM output, Ask Sage RAG
+ * references, and attached file list. Deduplicates by URL.
+ */
+function extractSources(
+  llmOutput: string,
+  ragReferences: string,
+  attachedFilenames: string[],
+): SourceReference[] {
+  const seen = new Set<string>();
+  const sources: SourceReference[] = [];
+
+  function addUrl(url: string, title: string, type: SourceReference['source_type']) {
+    const key = url.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    sources.push({ url, title, source_type: type });
+  }
+
+  function addNonUrl(title: string, type: SourceReference['source_type']) {
+    const key = title.toLowerCase().trim();
+    if (seen.has(key)) return;
+    seen.add(key);
+    sources.push({ title, source_type: type });
+  }
+
+  // Extract URLs from LLM output
+  for (const url of extractUrlsFromText(llmOutput)) {
+    addUrl(url, url, 'llm_output');
+  }
+
+  // Extract URLs from Ask Sage RAG references
+  for (const url of extractUrlsFromText(ragReferences)) {
+    addUrl(url, url, 'ask_sage_rag');
+  }
+
+  // Extract inline [Source: ...] citations from LLM output
+  const citationPattern = /\[Source:\s*([^\]]+)\]/gi;
+  let match;
+  while ((match = citationPattern.exec(llmOutput)) !== null) {
+    const citation = match[1].trim();
+    // If it's a URL, skip (already captured above)
+    if (/^https?:\/\//i.test(citation)) continue;
+    addNonUrl(citation, 'llm_output');
+  }
+
+  // Add attached files as sources
+  for (const filename of attachedFilenames) {
+    addNonUrl(filename, 'attached_file');
+  }
+
+  return sources;
+}
+
+/** Extract all http/https URLs from a text string */
+function extractUrlsFromText(text: string): string[] {
+  if (!text) return [];
+  // Match URLs — liberal pattern that captures most real-world URLs
+  const urlPattern = /https?:\/\/[^\s<>"')\]},;]+/gi;
+  const matches = text.match(urlPattern) ?? [];
+  // Clean trailing punctuation that's likely not part of the URL
+  return [...new Set(matches.map((u) => u.replace(/[.),:;]+$/, '')))];
 }
 
 /**
@@ -176,7 +288,6 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
 
     // Table separator row (---|---|---)
     if (/^\s*\|?\s*[-:]+(\s*\|\s*[-:]+)+\s*\|?\s*$/.test(line)) {
-      // Skip the separator, it's just formatting
       continue;
     }
 
@@ -198,7 +309,7 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
     // Headings
     const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
-      const level = headingMatch[1].length - 1; // # = 0, ## = 1, ### = 2
+      const level = headingMatch[1].length - 1;
       paragraphs.push({
         role: 'heading',
         text: stripInlineFormatting(headingMatch[2]),
@@ -211,7 +322,7 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
     const bulletMatch = line.match(/^(\s*)[*-]\s+(.+)$/);
     if (bulletMatch) {
       const indent = bulletMatch[1].length;
-      const level = Math.floor(indent / 2); // 2 spaces per level
+      const level = Math.floor(indent / 2);
       paragraphs.push({
         role: 'bullet',
         text: stripInlineFormatting(bulletMatch[2]),
