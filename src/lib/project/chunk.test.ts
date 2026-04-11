@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   naiveChunkText,
   selectChunksForSection,
   renderSelectedChunks,
   cosineSim,
+  semanticChunkText,
   NAIVE_CHUNK_SIZE_CHARS,
 } from './chunk';
 import type { BodyFillRegion } from '../template/types';
@@ -308,5 +309,67 @@ describe('cosineSim', () => {
 
   it('returns 0 when either vector is all zeros', () => {
     expect(cosineSim([0, 0], [1, 1])).toBeCloseTo(0.0);
+  });
+});
+
+describe('semanticChunkText embedding integration', () => {
+  it('attaches embeddings to chunks when client supports embed()', async () => {
+    const mockClient = {
+      capabilities: { fileUpload: false, dataset: false, liveSearch: false },
+      getModels: vi.fn(),
+      query: vi.fn(),
+      queryJson: vi.fn().mockResolvedValueOnce({
+        data: {
+          chunks: [
+            { title: 'Scope', summary: 'Defines scope.', text: 'Scope text here.' },
+            { title: 'PoP', summary: 'Period of performance.', text: 'Base year plus options.' },
+          ],
+        },
+        raw: { usage: { prompt_tokens: 100, completion_tokens: 50 } },
+      }),
+      embed: vi.fn().mockResolvedValueOnce({
+        embeddings: [[0.1, 0.2], [0.3, 0.4]],
+        tokens: 20,
+      }),
+    };
+
+    const result = await semanticChunkText(mockClient, 'full document text', {
+      model: 'test-model',
+    });
+
+    expect(mockClient.embed).toHaveBeenCalledOnce();
+    const embedArgs = mockClient.embed.mock.calls[0]![0] as string[];
+    expect(embedArgs).toHaveLength(2);
+    expect(embedArgs[0]).toContain('Scope');
+    expect(embedArgs[0]).toContain('Defines scope.');
+    expect(embedArgs[1]).toContain('PoP');
+
+    expect(result.chunks[0]!.embedding).toEqual([0.1, 0.2]);
+    expect(result.chunks[1]!.embedding).toEqual([0.3, 0.4]);
+
+    const models = Object.keys(result.usage_by_model);
+    expect(models.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('skips embedding when client does not support embed()', async () => {
+    const mockClient = {
+      capabilities: { fileUpload: false, dataset: false, liveSearch: false },
+      getModels: vi.fn(),
+      query: vi.fn(),
+      queryJson: vi.fn().mockResolvedValueOnce({
+        data: {
+          chunks: [
+            { title: 'Scope', summary: 'Defines scope.', text: 'Scope text.' },
+          ],
+        },
+        raw: { usage: { prompt_tokens: 50, completion_tokens: 25 } },
+      }),
+    };
+
+    const result = await semanticChunkText(mockClient, 'document text', {
+      model: 'test-model',
+    });
+
+    expect(result.chunks[0]!.embedding).toBeUndefined();
   });
 });

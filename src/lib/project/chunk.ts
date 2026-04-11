@@ -24,6 +24,7 @@
 // heuristic for an LLM-based selection pass.
 
 import type { LLMClient } from '../provider/types';
+import { canEmbed } from '../provider/types';
 import type { BodyFillRegion } from '../template/types';
 import type { ProjectContextFile, ReferenceChunk } from '../db/schema';
 import type { SectionSizeClass } from '../draft/section_size';
@@ -206,6 +207,21 @@ export async function semanticChunkText(
       'LLM returned no usable chunks. Check the audit log for the raw response — the model may have rejected the document or returned an empty array.',
     );
   }
+  // When the provider supports embeddings, vectorize the scoring
+  // surface (title + summary) for each chunk. This is a single batch
+  // API call. The vectors are stored on the ReferenceChunk and reused
+  // by selectChunksForSection for cosine-similarity scoring.
+  let embeddingTokens = 0;
+  let embeddingModel: string | undefined;
+  if (canEmbed(client)) {
+    const scoringTexts = out.map((c) => `${c.title}\n${c.summary}`);
+    const embResult = await client.embed(scoringTexts);
+    for (let j = 0; j < out.length; j++) {
+      out[j]!.embedding = embResult.embeddings[j];
+    }
+    embeddingTokens = embResult.tokens;
+    embeddingModel = 'openai/text-embedding-3-small';
+  }
   const usage = (raw.usage as { prompt_tokens?: number; completion_tokens?: number }) ?? {};
   const tokens_in = usage.prompt_tokens ?? 0;
   const tokens_out = usage.completion_tokens ?? 0;
@@ -220,6 +236,12 @@ export async function semanticChunkText(
     tokens_out,
     web_search_results: raw.web_search_results,
   });
+  if (embeddingModel && embeddingTokens > 0) {
+    recordUsage(usage_by_model, embeddingModel, {
+      tokens_in: embeddingTokens,
+      tokens_out: 0,
+    });
+  }
   return {
     chunks: out,
     tokens_in,
