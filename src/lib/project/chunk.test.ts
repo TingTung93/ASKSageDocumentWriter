@@ -3,6 +3,7 @@ import {
   naiveChunkText,
   selectChunksForSection,
   renderSelectedChunks,
+  cosineSim,
   NAIVE_CHUNK_SIZE_CHARS,
 } from './chunk';
 import type { BodyFillRegion } from '../template/types';
@@ -181,6 +182,80 @@ describe('selectChunksForSection', () => {
     });
     expect(selected).toEqual([]);
   });
+
+  it('uses cosine similarity when query_embedding and chunk embeddings are present', () => {
+    const file = makeFile('f1', 'pws.docx', [
+      {
+        id: 'c_scope',
+        title: 'Contractor Responsibilities',
+        summary: 'Defines labor resources and workforce obligations.',
+        text: 'The contractor shall supply all necessary labor.',
+        embedding: [0.9, 0.1, 0.0],
+      },
+      {
+        id: 'c_billing',
+        title: 'Invoice Procedures',
+        summary: 'Describes how the contractor submits monthly invoices.',
+        text: 'Invoices shall be submitted on the 15th of each month.',
+        embedding: [0.0, 0.1, 0.9],
+      },
+    ]);
+    const selected = selectChunksForSection({
+      files: [file],
+      extractedById: new Map(),
+      section: makeSection('scope', 'Scope of Work', 'Define contractor workforce responsibilities.'),
+      size_class: 'body',
+      query_embedding: [0.85, 0.15, 0.05],
+    });
+    expect(selected[0]?.chunk_id).toBe('c_scope');
+  });
+
+  it('falls back to Jaccard when query_embedding is absent even if chunks have embeddings', () => {
+    const file = makeFile('f1', 'pws.docx', [
+      {
+        id: 'c1',
+        title: 'Scope of Work',
+        summary: 'Defines scope and contractor responsibilities.',
+        text: 'The contractor shall perform maintenance.',
+        embedding: [0.9, 0.1],
+      },
+    ]);
+    const selected = selectChunksForSection({
+      files: [file],
+      extractedById: new Map(),
+      section: makeSection('scope', 'Scope', 'Scope of contractor work.'),
+      size_class: 'body',
+    });
+    expect(selected.length).toBe(1);
+    expect(selected[0]?.chunk_id).toBe('c1');
+  });
+
+  it('falls back to Jaccard for individual chunks without embeddings in a mixed set', () => {
+    const file = makeFile('f1', 'pws.docx', [
+      {
+        id: 'c_with',
+        title: 'Period of Performance',
+        summary: 'States the ordering timeline for the contract.',
+        text: 'Base year plus four option years.',
+        embedding: [0.1, 0.9],
+      },
+      {
+        id: 'c_without',
+        title: 'Scope of Work',
+        summary: 'Defines scope and contractor responsibilities for maintenance.',
+        text: 'The contractor shall perform equipment maintenance.',
+      },
+    ]);
+    const selected = selectChunksForSection({
+      files: [file],
+      extractedById: new Map(),
+      section: makeSection('scope', 'Scope', 'Define contractor maintenance scope.'),
+      template_example: 'The contractor shall perform maintenance.',
+      size_class: 'body',
+      query_embedding: [0.1, 0.9],
+    });
+    expect(selected.length).toBe(2);
+  });
 });
 
 describe('renderSelectedChunks', () => {
@@ -213,5 +288,25 @@ describe('renderSelectedChunks', () => {
 describe('NAIVE_CHUNK_SIZE_CHARS', () => {
   it('is sized in the multi-thousand range so naive fallback isn\'t too granular', () => {
     expect(NAIVE_CHUNK_SIZE_CHARS).toBeGreaterThanOrEqual(2000);
+  });
+});
+
+describe('cosineSim', () => {
+  it('returns 1.0 for identical vectors', () => {
+    expect(cosineSim([1, 0, 0], [1, 0, 0])).toBeCloseTo(1.0);
+  });
+
+  it('returns 0.0 for orthogonal vectors', () => {
+    expect(cosineSim([1, 0], [0, 1])).toBeCloseTo(0.0);
+  });
+
+  it('returns a value between 0 and 1 for similar vectors', () => {
+    const score = cosineSim([0.9, 0.1], [0.8, 0.2]);
+    expect(score).toBeGreaterThan(0.9);
+    expect(score).toBeLessThanOrEqual(1.0);
+  });
+
+  it('returns 0 when either vector is all zeros', () => {
+    expect(cosineSim([0, 0], [1, 1])).toBeCloseTo(0.0);
   });
 });

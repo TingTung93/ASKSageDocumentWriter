@@ -305,6 +305,14 @@ export function selectChunksForSection(args: {
    * say (no references, or use_template_only).
    */
   preferred_chunk_ids?: string[];
+  /**
+   * Pre-computed embedding vector for this section's query. When
+   * provided AND a chunk has an `embedding` field, cosine similarity
+   * is used instead of Jaccard token overlap. The caller (orchestrator)
+   * batch-embeds all section queries in a single API call and passes
+   * the per-section vector here.
+   */
+  query_embedding?: number[];
 }): SelectedChunk[] {
   const tier = SECTION_REF_BUDGETS[args.size_class];
   const budget = args.budget_chars ?? tier.maxChars;
@@ -343,8 +351,13 @@ export function selectChunksForSection(args: {
     }
     let chunkOrder = 0;
     for (const c of chunks) {
-      const scoringText = c.summary && c.summary.length > 0 ? `${c.title}\n${c.summary}` : c.text;
-      const score = jaccardScore(queryTokens, tokenize(scoringText));
+      let score: number;
+      if (args.query_embedding && c.embedding) {
+        score = cosineSim(args.query_embedding, c.embedding);
+      } else {
+        const scoringText = c.summary && c.summary.length > 0 ? `${c.title}\n${c.summary}` : c.text;
+        score = jaccardScore(queryTokens, tokenize(scoringText));
+      }
       scored.push({
         source_file: f.filename,
         source_file_id: f.id,
@@ -491,4 +504,21 @@ function jaccardScore(a: Set<string>, b: Set<string>): number {
   }
   const union = a.size + b.size - intersect;
   return union === 0 ? 0 : intersect / union;
+}
+
+/**
+ * Cosine similarity between two equal-length vectors. Returns 0 when
+ * either vector is all zeros (avoids NaN from division by zero).
+ */
+export function cosineSim(a: number[], b: number[]): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i]! * b[i]!;
+    normA += a[i]! * a[i]!;
+    normB += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
 }
