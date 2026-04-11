@@ -75,3 +75,26 @@ export interface LLMClient {
    */
   queryJson<T>(input: QueryInput): Promise<{ data: T; raw: QueryResponse }>;
 }
+
+/**
+ * Optional capability for providers that support embedding text into
+ * vectors via an embeddings API. Used for cosine-similarity chunk
+ * selection. Providers that implement this should add an `embed()`
+ * method — the type guard `canEmbed()` detects it at runtime without
+ * coupling callers to a concrete class.
+ */
+export interface EmbeddingCapable {
+  embed(texts: string[], model?: string): Promise<{
+    embeddings: number[][];
+    tokens: number;
+  }>;
+}
+
+/**
+ * Runtime check for whether an LLMClient supports embedding. Returns
+ * true when the client has an `embed` method (structural typing —
+ * no instanceof needed).
+ */
+export function canEmbed(client: LLMClient): client is LLMClient & EmbeddingCapable {
+  return 'embed' in client && typeof (client as Record<string, unknown>).embed === 'function';
+}
