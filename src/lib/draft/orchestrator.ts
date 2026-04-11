@@ -5,7 +5,8 @@
 // completes so a refresh mid-run doesn't lose work.
 
 import type { LLMClient } from '../provider/types';
-import { type UsageByModel, emptyUsage, mergeUsage } from '../usage';
+import { canEmbed } from '../provider/types';
+import { type UsageByModel, emptyUsage, mergeUsage, recordUsage } from '../usage';
 import { extractReferencesForRun } from './file_extract';
 import {
   db,
@@ -198,6 +199,49 @@ export async function draftProject(
     return acc + Math.max(1, Math.ceil(text.length / 5_000));
   }, 0);
 
+  // ─── Pre-flight 3: batch-embed section queries ────────────────────
+  // When the provider supports embeddings, vectorize every section's
+  // scoring query (name + intent) in a single API call. The resulting
+  // map is keyed by section id so the per-section selection call can
+  // pass its query embedding for cosine-similarity scoring. This runs
+  // once per draft run — re-drafts re-embed (cheap, ~15 short strings)
+  // because section queries may have changed.
+  const sectionQueryEmbeddings = new Map<string, number[]>();
+  if (canEmbed(client)) {
+    // Collect all sections across all templates (deduplicate by id in
+    // case multiple templates share section ids — unlikely but safe).
+    const allSections: Array<{ id: string; query: string }> = [];
+    const seenIds = new Set<string>();
+    for (const t of templates) {
+      const schema = t.schema_json;
+      for (const s of schema.sections ?? []) {
+        if (seenIds.has(s.id)) continue;
+        seenIds.add(s.id);
+        allSections.push({
+          id: s.id,
+          query: `${s.name} ${s.intent ?? ''}`.trim(),
+        });
+      }
+    }
+    if (allSections.length > 0) {
+      try {
+        const { embeddings, tokens } = await client.embed(
+          allSections.map((s) => s.query),
+        );
+        for (let i = 0; i < allSections.length; i++) {
+          sectionQueryEmbeddings.set(allSections[i]!.id, embeddings[i]!);
+        }
+        recordUsage(usage_by_model, 'openai/text-embedding-3-small', {
+          tokens_in: tokens,
+          tokens_out: 0,
+        });
+      } catch {
+        // Embedding failure is non-fatal — selection falls back to
+        // Jaccard. Log but don't abort the run.
+      }
+    }
+  }
+
   for (const template of templates) {
     // ─── Pre-flight 2: parse the template DOCX once per template ───
     // Used to slice per-section example text from the actual source.
@@ -295,6 +339,7 @@ export async function draftProject(
         template_example: templateExample,
         size_class: sizeClass,
         preferred_chunk_ids: mapping?.matched_chunk_ids,
+        query_embedding: sectionQueryEmbeddings.get(section.id),
       });
       const referencesBlock = renderSelectedChunks(selectedChunks, totalChunkCount);
       const referencesInlinedChars = referencesBlock?.length ?? 0;
