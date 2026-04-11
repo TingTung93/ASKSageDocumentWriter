@@ -105,6 +105,8 @@ export interface ReferenceChunk {
   summary: string;
   /** Verbatim text of the chunk */
   text: string;
+  /** Embedding vector from OpenRouter /v1/embeddings (1536 dims). Absent on Ask Sage or legacy chunks. */
+  embedding?: number[];
 }
 
 /** Project mode: template-driven (classic) or freeform (style-based). */
