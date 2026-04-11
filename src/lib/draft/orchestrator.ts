@@ -4,8 +4,7 @@
 // dependency is ready. Persists each drafted section to Dexie as it
 // completes so a refresh mid-run doesn't lose work.
 
-import type { LLMClient } from '../provider/types';
-import { canEmbed } from '../provider/types';
+import { type LLMClient, canEmbed } from '../provider/types';
 import { type UsageByModel, emptyUsage, mergeUsage, recordUsage } from '../usage';
 import { extractReferencesForRun } from './file_extract';
 import {
