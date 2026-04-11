@@ -5,8 +5,8 @@ import { parseDocx } from './index';
 
 const FIXTURES = resolve(__dirname, '../../../test/fixtures');
 
-const DHA_PUBLICATION = 'DHA Publication Template (updated 09.13.23).docx';
-const DHA_POLICY_MEMO = 'DHA-Policy Memo Template (April 8 2025).docx';
+const DHA_PUBLICATION = 'synthetic-publication.docx';
+const DHA_POLICY_MEMO = 'synthetic-memo.docx';
 
 function loadFixture(name: string): Uint8Array {
   const buf = readFileSync(resolve(FIXTURES, name));
@@ -17,7 +17,7 @@ function loadFixture(name: string): Uint8Array {
   return u8;
 }
 
-describe('parseDocx — real DHA templates', () => {
+describe('parseDocx — synthetic templates', () => {
   describe(DHA_PUBLICATION, () => {
     it('parses without throwing and returns a complete TemplateSchema', async () => {
       const bytes = loadFixture(DHA_PUBLICATION);
@@ -167,8 +167,8 @@ describe('parseDocx — real DHA templates', () => {
     });
   });
 
-  describe('DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx', () => {
-    const NAME = 'DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx';
+  describe('synthetic-pws.docx', () => {
+    const NAME = 'synthetic-pws.docx';
 
     it('parses without throwing', async () => {
       const { schema, paragraphs } = await parseDocx(loadFixture(NAME), {
@@ -203,8 +203,8 @@ describe('parseDocx — real DHA templates', () => {
     });
   });
 
-  describe('Market Research Report Template (AUGUST 2025).docx', () => {
-    const NAME = 'Market Research Report Template (AUGUST 2025).docx';
+  describe('synthetic-mrr.docx', () => {
+    const NAME = 'synthetic-mrr.docx';
 
     it('parses without throwing and yields a body section', async () => {
       const { schema } = await parseDocx(loadFixture(NAME), {

@@ -5,7 +5,7 @@ import { parseDocx } from '../parser';
 import { extractFullBody, DEFAULT_FULL_BODY_CAP } from './sample';
 
 const FIXTURES = resolve(__dirname, '../../../test/fixtures');
-const DHA_PWS = 'DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx';
+const DHA_PWS = 'synthetic-pws.docx';
 
 function loadFixture(name: string): Uint8Array {
   const buf = readFileSync(resolve(FIXTURES, name));

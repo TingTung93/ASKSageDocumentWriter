@@ -16,7 +16,7 @@ function loadFixture(name: string): Uint8Array {
 
 describe('exportEditedDocx (clone-and-mutate writer)', () => {
   it('round-trips a real DOCX without changes when no overrides are given (no-op passthrough)', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const result = await exportEditedDocx(original, {});
     expect(result.applied).toBe(0);
     expect(result.skipped).toEqual([]);
@@ -30,8 +30,8 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
 
   it('no-op round-trip is structurally identical to the original (every paragraph matches)', async () => {
     const fixtures = [
-      'DHA-Policy Memo Template (April 8 2025).docx',
-      'DHA Publication Template (updated 09.13.23).docx',
+      'synthetic-memo.docx',
+      'synthetic-publication.docx',
     ];
     for (const f of fixtures) {
       const original = loadFixture(f);
@@ -83,7 +83,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
     // Confirm that editing one paragraph doesn't disturb any other
     // paragraph's text, style, or properties — the surgical-edit
     // contract.
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'before.docx', docx_blob_id: 'b' });
     const targetIdx = before.paragraphs.find((p) => p.text.trim().length > 5)!.index;
 
@@ -107,7 +107,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
   });
 
   it('replaces a paragraph text in place and preserves the count', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, {
       filename: 'before.docx',
       docx_blob_id: 'test',
@@ -137,7 +137,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
   });
 
   it('preserves the style_id of an edited paragraph', async () => {
-    const original = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const original = loadFixture('synthetic-publication.docx');
     const before = await parseDocx(original, {
       filename: 'before.docx',
       docx_blob_id: 'test',
@@ -165,7 +165,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
   });
 
   it('applies multiple paragraph edits in one pass', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, {
       filename: 'before.docx',
       docx_blob_id: 'test',
@@ -199,7 +199,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
     // structural separators. The new extractor should surface them as
     // '\t' in the parsed text, both before and after the writer
     // round-trip.
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, {
       filename: 'tabs.docx',
       docx_blob_id: 'test',
@@ -209,7 +209,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
   });
 
   it('skips overrides for indices that do not exist', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const result = await exportEditedDocx(original, {
       0: 'first paragraph edit',
       99999: 'this index does not exist',
@@ -219,7 +219,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
   });
 
   it('preserves total formatting (named styles, page setup, numbering) after edit', async () => {
-    const original = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const original = loadFixture('synthetic-publication.docx');
     const before = await parseDocx(original, {
       filename: 'before.docx',
       docx_blob_id: 'test',
@@ -248,7 +248,7 @@ describe('exportEditedDocx (clone-and-mutate writer)', () => {
 
 describe('applyDocumentEdits — Phase B/C/D op union', () => {
   it('replace_paragraph_text via the new API works the same as exportEditedDocx', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     const target = before.paragraphs.find((p) => p.text.trim().length > 5)!;
     const ops: DocumentEditOp[] = [
@@ -264,7 +264,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
 
   it('replace_run_text targets a specific run within a paragraph', async () => {
     // Find a paragraph with at least 1 run
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     const target = before.paragraphs.find((p) => p.runs.length >= 1 && p.runs[0]!.text.trim().length > 0)!;
     expect(target).toBeDefined();
@@ -298,7 +298,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('set_run_property toggles bold on a specific run', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     // Find a paragraph with a run that is currently NOT bold
     const target = before.paragraphs.find(
@@ -326,7 +326,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('set_run_property turns italic OFF when value is false', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     // Find a paragraph with an italic run
     const target = before.paragraphs.find(
@@ -355,7 +355,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('set_paragraph_alignment changes a paragraph to centered', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     const target = before.paragraphs.find(
       (p) => p.alignment !== 'center' && p.text.trim().length > 5,
@@ -372,7 +372,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('set_paragraph_style applies a new style id', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     // Pick the first style id present in the schema and an unrelated paragraph
     const targetStyle = before.schema.formatting.named_styles.find((s) => s.type === 'paragraph');
@@ -394,7 +394,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('delete_paragraph removes a paragraph and reduces the count', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     // Pick a paragraph with sufficiently unique text so the post-
     // delete content of the same index slot is verifiably different.
@@ -418,7 +418,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   it('set_content_control_value updates the text inside a tagged sdt', async () => {
     // The Publication template has 10 metadata content controls.
     // Find one with a tag and a current text value.
-    const original = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const original = loadFixture('synthetic-publication.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     const target = before.schema.metadata_fill_regions.find((m) => m.sdt_tag);
     if (!target) return; // skip if no tagged content controls
@@ -441,7 +441,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   it('insert_table_row clones a row and writes new cell text', async () => {
     // Find a fixture that has a table — use the PWS template which is
     // known to have many.
-    const original = loadFixture('DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx');
+    const original = loadFixture('synthetic-pws.docx');
     const before = await parseDocx(original, { filename: 'b.docx', docx_blob_id: 'b' });
     if (before.tables.length === 0) return;
     const targetTable = before.tables.findIndex((t) => t.rows.length > 0);
@@ -466,7 +466,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('reports per-op errors when an op references an out-of-range index', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const ops: DocumentEditOp[] = [
       { op: 'replace_paragraph_text', index: 99999, new_text: 'nope' },
       { op: 'replace_run_text', paragraph_index: 99999, run_index: 0, new_text: 'nope' },
@@ -479,7 +479,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
   });
 
   it('passthrough on empty ops list returns the original bytes', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const result = await applyDocumentEdits(original, []);
     expect(result.applied).toEqual([]);
     // Re-parse to confirm it's still a valid DOCX
@@ -490,7 +490,7 @@ describe('applyDocumentEdits — Phase B/C/D op union', () => {
 
 describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () => {
   it('insert_paragraph_after adds a new paragraph after the anchor', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const target = before.paragraphs.findIndex((p) => p.text.trim().length > 0);
     expect(target).toBeGreaterThanOrEqual(0);
@@ -516,7 +516,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('merge_paragraphs combines two adjacent paragraphs into one', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const idx = before.paragraphs.findIndex(
       (p, i) =>
@@ -536,7 +536,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('split_paragraph breaks a paragraph at a verbatim substring', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     // Find a paragraph whose VISIBLE text (excluding leading
     // whitespace) is at least 30 chars; split at a position past the
@@ -563,7 +563,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('split_paragraph fails clearly when the substring is not found', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const idx = before.paragraphs.findIndex((p) => p.text.length >= 5);
     const ops: DocumentEditOp[] = [
@@ -579,7 +579,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('set_paragraph_indent writes left/firstLine twips into pPr/ind', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const idx = before.paragraphs.findIndex((p) => p.text.trim().length > 0);
     const ops: DocumentEditOp[] = [
@@ -598,7 +598,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('set_run_font writes font family + size on the targeted run', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const idx = before.paragraphs.findIndex(
       (p) => p.runs.length > 0 && p.text.trim().length > 0,
@@ -621,7 +621,7 @@ describe('applyDocumentEdits — Phase E/F (structural + formatting ops)', () =>
   });
 
   it('set_run_color writes a hex color on the targeted run', async () => {
-    const original = loadFixture('DHA-Policy Memo Template (April 8 2025).docx');
+    const original = loadFixture('synthetic-memo.docx');
     const before = await parseDocx(original, { filename: 'p.docx', docx_blob_id: 'p' });
     const idx = before.paragraphs.findIndex(
       (p) => p.runs.length > 0 && p.text.trim().length > 0,

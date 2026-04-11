@@ -39,7 +39,7 @@ function mockClientWithResponse(jsonOutput: LLMSemanticOutput | string, opts: { 
 
 describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
   it('runs the full pipeline against a real DHA template', async () => {
-    const bytes = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
       filename: 'pub.docx',
       docx_blob_id: 'fixture://pub',
@@ -100,7 +100,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
   });
 
   it('passes the correct model and parameters to Ask Sage', async () => {
-    const bytes = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
       filename: 'pub.docx',
       docx_blob_id: 'fixture://pub',
@@ -130,7 +130,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
   });
 
   it('strips a markdown code fence around the JSON response', async () => {
-    const bytes = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
       filename: 'pub.docx',
       docx_blob_id: 'fixture://pub',
@@ -146,7 +146,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
   });
 
   it('throws AskSageError if the LLM response is not valid JSON', async () => {
-    const bytes = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
       filename: 'pub.docx',
       docx_blob_id: 'fixture://pub',
@@ -156,7 +156,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
   });
 
   it('honors a custom model option', async () => {
-    const bytes = loadFixture('DHA Publication Template (updated 09.13.23).docx');
+    const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
       filename: 'pub.docx',
       docx_blob_id: 'fixture://pub',

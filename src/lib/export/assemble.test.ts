@@ -1,5 +1,5 @@
 // Phase 5a — assembleProjectDocx tests. Round-trip safety against
-// the real DHA fixtures is the primary concern: a no-op assembly
+// the synthetic fixtures is the primary concern: a no-op assembly
 // (empty draft map) must produce a DOCX that re-parses identically.
 // Single-section and multi-section replacement tests assert the new
 // paragraphs show up in the right place and that untouched sections
@@ -16,10 +16,10 @@ import type { BodyFillRegion, TemplateSchema } from '../template/types';
 
 const FIXTURES = resolve(__dirname, '../../test/fixtures');
 
-const PUBLICATION = 'DHA Publication Template (updated 09.13.23).docx';
-const POLICY_MEMO = 'DHA-Policy Memo Template (April 8 2025).docx';
-const PWS = 'DHA PWS Template - Non-Personal Svcs - Title of Requirement.docx';
-const MRR = 'Market Research Report Template (AUGUST 2025).docx';
+const PUBLICATION = 'synthetic-publication.docx';
+const POLICY_MEMO = 'synthetic-memo.docx';
+const PWS = 'synthetic-pws.docx';
+const MRR = 'synthetic-mrr.docx';
 
 function loadFixture(name: string): Uint8Array {
   const buf = readFileSync(resolve(FIXTURES, name));
