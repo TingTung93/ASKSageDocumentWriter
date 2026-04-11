@@ -320,4 +320,88 @@ describe('OpenRouterClient', () => {
     expect((err as AskSageError).message).toContain('not parseable JSON');
     expect((err as AskSageError).body).toContain('not json at all');
   });
+
+  describe('embed()', () => {
+    it('sends POST /v1/embeddings with correct model and input', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              { index: 0, embedding: [0.1, 0.2, 0.3] },
+              { index: 1, embedding: [0.4, 0.5, 0.6] },
+            ],
+            usage: { prompt_tokens: 12, total_tokens: 12 },
+          }),
+          { status: 200 },
+        ),
+      );
+      const client = makeClient();
+      const result = await client.embed(['hello world', 'foo bar']);
+
+      const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://openrouter.ai/api/v1/embeddings');
+      expect(opts.method).toBe('POST');
+      const body = JSON.parse(opts.body as string);
+      expect(body.model).toBe('openai/text-embedding-3-small');
+      expect(body.input).toEqual(['hello world', 'foo bar']);
+
+      expect(result.embeddings).toEqual([
+        [0.1, 0.2, 0.3],
+        [0.4, 0.5, 0.6],
+      ]);
+      expect(result.tokens).toBe(12);
+    });
+
+    it('uses a custom model when provided', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ index: 0, embedding: [1, 2] }],
+            usage: { prompt_tokens: 5, total_tokens: 5 },
+          }),
+          { status: 200 },
+        ),
+      );
+      const client = makeClient();
+      await client.embed(['test'], 'openai/text-embedding-3-large');
+
+      const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string);
+      expect(body.model).toBe('openai/text-embedding-3-large');
+    });
+
+    it('throws AskSageError on HTTP failure', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('rate limited', { status: 429, statusText: 'Too Many Requests' }),
+      );
+      const client = makeClient();
+      await expect(client.embed(['test'])).rejects.toThrow(/429/);
+    });
+
+    it('throws on non-JSON response', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('not json', { status: 200 }),
+      );
+      const client = makeClient();
+      await expect(client.embed(['test'])).rejects.toThrow(/non-JSON/);
+    });
+
+    it('sorts embeddings by index when response is out of order', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              { index: 1, embedding: [0.4, 0.5] },
+              { index: 0, embedding: [0.1, 0.2] },
+            ],
+            usage: { prompt_tokens: 8, total_tokens: 8 },
+          }),
+          { status: 200 },
+        ),
+      );
+      const client = makeClient();
+      const result = await client.embed(['first', 'second']);
+      expect(result.embeddings[0]).toEqual([0.1, 0.2]);
+      expect(result.embeddings[1]).toEqual([0.4, 0.5]);
+    });
+  });
 });

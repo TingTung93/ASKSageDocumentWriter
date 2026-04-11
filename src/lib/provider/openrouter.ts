@@ -53,6 +53,9 @@ const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 /** Default timeout for API calls (5 minutes). */
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Default embedding model for chunk vectorization. */
+const DEFAULT_EMBEDDING_MODEL = 'openai/text-embedding-3-small';
+
 // OpenRouter `/v1/models` shape (subset we use). Pricing fields are
 // stringified USD per token; `"0"` for free models.
 interface OpenRouterModelsResponse {
@@ -95,6 +98,18 @@ interface OpenAIChatCompletionResponse {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+/** OpenAI-compatible /v1/embeddings response shape. */
+interface OpenAIEmbeddingsResponse {
+  data: Array<{
+    index: number;
+    embedding: number[];
+  }>;
+  usage?: {
+    prompt_tokens?: number;
     total_tokens?: number;
   };
 }
@@ -313,6 +328,79 @@ export class OpenRouterClient implements LLMClient {
         text,
       );
     }
+  }
+
+  async embed(
+    texts: string[],
+    model: string = DEFAULT_EMBEDDING_MODEL,
+  ): Promise<{ embeddings: number[][]; tokens: number }> {
+    const url = this.url('/embeddings');
+    const startedAt = Date.now();
+    const reqBody = JSON.stringify({ model, input: texts });
+    let res: Response;
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+      res = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: this.buildHeaders(true),
+        body: reqBody,
+        signal: ac.signal,
+      });
+      clearTimeout(timer);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errorMsg = `Network error calling POST ${url}: ${message}`;
+      void writeAuditEntry({
+        endpoint: '/openrouter/embeddings',
+        model,
+        prompt_excerpt: reqBody.slice(0, 500),
+        response_excerpt: '',
+        ms: Date.now() - startedAt,
+        ok: false,
+        error: errorMsg,
+      });
+      throw new AskSageError(null, errorMsg);
+    }
+    const text = await res.text();
+    const ms = Date.now() - startedAt;
+    if (!res.ok) {
+      void writeAuditEntry({
+        endpoint: '/openrouter/embeddings',
+        model,
+        prompt_excerpt: reqBody.slice(0, 500),
+        response_excerpt: text,
+        ms,
+        ok: false,
+        error: `${res.status} ${res.statusText}`,
+      });
+      throw new AskSageError(
+        res.status,
+        `OpenRouter POST ${url} failed (${res.status} ${res.statusText}): ${text || '(empty body)'}`,
+        text,
+      );
+    }
+    let parsed: OpenAIEmbeddingsResponse;
+    try {
+      parsed = JSON.parse(text) as OpenAIEmbeddingsResponse;
+    } catch {
+      throw new AskSageError(res.status, `OpenRouter POST ${url} returned non-JSON body`, text);
+    }
+    void writeAuditEntry({
+      endpoint: '/openrouter/embeddings',
+      model,
+      prompt_excerpt: reqBody.slice(0, 500),
+      response_excerpt: text.slice(0, 1500),
+      tokens_in: parsed.usage?.prompt_tokens,
+      ms,
+      ok: true,
+    });
+    // Sort by index — the API may return embeddings out of order.
+    const sorted = [...parsed.data].sort((a, b) => a.index - b.index);
+    return {
+      embeddings: sorted.map((d) => d.embedding),
+      tokens: parsed.usage?.prompt_tokens ?? 0,
+    };
   }
 }
 
