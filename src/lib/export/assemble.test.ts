@@ -704,11 +704,17 @@ describe('assembleProjectDocx — preserves paragraph + run formatting from the 
 
 // ─── document_part (header/footer) assembly ───────────────────────
 //
-// Bug 2 fix: header / footer XML parts must be parsed by the parser,
-// surfaced as document_part sections in the schema, and rewritten by
-// the assembler when the user drafts them. The synthetic DOCX below
-// has both a real word/header1.xml and a word/footer1.xml so we can
-// exercise the round trip end to end.
+// The parser still surfaces header/footer parts as document_part
+// sections so the UI can show their text and so the drafter has
+// visibility into them. But the assembler does NOT rewrite them:
+// DoD / DHA letterheads carry seals (<w:drawing>), tab-stop-centered
+// banner lines, and tiny-font classification markings — every attempt
+// to splice drafted paragraphs into <w:hdr>/<w:ftr> broke something
+// (the MFR seal, the 7pt banner formatting cascading to body runs,
+// the word/media/ and _rels entries dropping on round trip). The
+// current contract: header/footer XML is byte-preserved from the
+// template, and document_part sections always report
+// `skipped_unsupported_region`.
 
 describe('assembleProjectDocx — document_part (header/footer) sections', () => {
   async function buildTemplateWithHeaderFooter(): Promise<TemplateRecord> {
@@ -836,11 +842,13 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
     expect(footerSection!.intent).toBeTruthy();
   });
 
-  it('writes drafted paragraphs into word/header1.xml preserving pPr/rPr', async () => {
+  it('leaves word/header1.xml byte-preserved even when a draft is supplied', async () => {
     const tpl = await buildTemplateWithHeaderFooter();
     const headerSection = tpl.schema_json.sections.find(
       (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
     )!;
+
+    const originalHeaderXml = await readPartXml(tpl.docx_bytes, 'word/header1.xml');
 
     const drafted: DraftParagraph[] = [
       { role: 'body', text: 'DEPARTMENT OF THE ARMY' },
@@ -856,38 +864,25 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
     const headerStatus = result.section_results.find(
       (r) => r.section_id === headerSection.id,
     );
-    expect(headerStatus?.status.kind).toBe('assembled');
+    expect(headerStatus?.status.kind).toBe('skipped_unsupported_region');
 
     const headerXml = await readPartXml(result.blob, 'word/header1.xml');
-    expect(headerXml).toContain('TROOP COMMAND, MEDICAL READINESS COMMAND, PACIFIC');
-    expect(headerXml).toContain('9040 Jackson Ave, Tacoma WA 98433');
-    // Original "[UNIT NAME]" must be gone — it was replaced.
-    expect(headerXml).not.toContain('[UNIT NAME]');
-
-    // pPr was cloned: <w:jc w:val="center"/> from the original first
-    // paragraph survives onto the new ones.
-    const dom = new DOMParser().parseFromString(headerXml, 'text/xml');
-    const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-    const paragraphs = Array.from(dom.getElementsByTagNameNS(W_NS, 'p'));
-    expect(paragraphs.length).toBe(3);
-    for (const p of paragraphs) {
-      const jc = p.getElementsByTagNameNS(W_NS, 'jc')[0];
-      expect(jc?.getAttributeNS(W_NS, 'val')).toBe('center');
-    }
-    // rPr was cloned: Times New Roman, size 24, bold.
-    const firstRun = paragraphs[0]!.getElementsByTagNameNS(W_NS, 'r')[0]!;
-    const rFonts = firstRun.getElementsByTagNameNS(W_NS, 'rFonts')[0];
-    expect(rFonts?.getAttributeNS(W_NS, 'ascii')).toBe('Times New Roman');
-    const sz = firstRun.getElementsByTagNameNS(W_NS, 'sz')[0];
-    expect(sz?.getAttributeNS(W_NS, 'val')).toBe('24');
-    expect(firstRun.getElementsByTagNameNS(W_NS, 'b').length).toBe(1);
+    // Original header content — including the "[UNIT NAME]" placeholder
+    // — must survive untouched. The drafted paragraphs must NOT appear
+    // in the header part.
+    expect(headerXml).toBe(originalHeaderXml);
+    expect(headerXml).toContain('DEPARTMENT OF THE ARMY');
+    expect(headerXml).toContain('[UNIT NAME]');
+    expect(headerXml).not.toContain('TROOP COMMAND, MEDICAL READINESS COMMAND, PACIFIC');
   });
 
-  it('writes drafted paragraphs into word/footer1.xml', async () => {
+  it('leaves word/footer1.xml byte-preserved even when a draft is supplied', async () => {
     const tpl = await buildTemplateWithHeaderFooter();
     const footerSection = tpl.schema_json.sections.find(
       (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'footer',
     )!;
+
+    const originalFooterXml = await readPartXml(tpl.docx_bytes, 'word/footer1.xml');
 
     const drafted: DraftParagraph[] = [
       { role: 'body', text: 'CUI//SP-PROCURE' },
@@ -901,12 +896,11 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
     const footerStatus = result.section_results.find(
       (r) => r.section_id === footerSection.id,
     );
-    expect(footerStatus?.status.kind).toBe('assembled');
+    expect(footerStatus?.status.kind).toBe('skipped_unsupported_region');
 
     const footerXml = await readPartXml(result.blob, 'word/footer1.xml');
-    expect(footerXml).toContain('CUI//SP-PROCURE');
-    // Original "CUI" alone is gone — it was the source paragraph we replaced.
-    expect(footerXml).not.toMatch(/<w:t[^>]*>CUI<\/w:t>/);
+    expect(footerXml).toBe(originalFooterXml);
+    expect(footerXml).not.toContain('CUI//SP-PROCURE');
   });
 
   it('skips document_part sections without a draft entry, leaving the part untouched', async () => {
@@ -915,19 +909,18 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
       (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
     )!;
 
-    // Draft only the body paragraph, NOT the header. The header part
-    // must come out unchanged from the original bytes.
     const result = await assembleProjectDocx({
       template: tpl,
-      // Empty draft map for the header. The body has no draftable
-      // section in this fixture beyond the document_part regions.
       draftedBySectionId: new Map(),
     });
 
     const headerStatus = result.section_results.find(
       (r) => r.section_id === headerSection.id,
     );
-    expect(headerStatus?.status.kind).toBe('skipped_no_draft');
+    // No drafts at all → the whole function takes the
+    // no-op passthrough branch which reports document_part as
+    // skipped_unsupported_region (since we don't draft into it anyway).
+    expect(headerStatus?.status.kind).toBe('skipped_unsupported_region');
 
     const headerXml = await readPartXml(result.blob, 'word/header1.xml');
     expect(headerXml).toContain('DEPARTMENT OF THE ARMY');

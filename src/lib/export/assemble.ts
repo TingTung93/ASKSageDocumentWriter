@@ -114,13 +114,20 @@ export async function assembleProjectDocx(
     }
     const section_results = sections.map((s) => {
       const k = s.fill_region.kind;
-      const status: AssembleSectionStatus =
-        k === 'heading_bounded' || k === 'document_part'
-          ? { kind: 'skipped_no_draft' }
-          : {
-              kind: 'skipped_unsupported_region',
-              reason: `fill_region.kind=${k} is not supported in v1`,
-            };
+      let status: AssembleSectionStatus;
+      if (k === 'heading_bounded') {
+        status = { kind: 'skipped_no_draft' };
+      } else if (k === 'document_part') {
+        status = {
+          kind: 'skipped_unsupported_region',
+          reason: 'header/footer drafting is disabled — letterhead is preserved from the template',
+        };
+      } else {
+        status = {
+          kind: 'skipped_unsupported_region',
+          reason: `fill_region.kind=${k} is not supported in v1`,
+        };
+      }
       onSectionAssembled?.(s, status);
       return { section_id: s.id, section_name: s.name, status };
     });
@@ -208,21 +215,21 @@ export async function assembleProjectDocx(
   }
 
   // ── document_part pass ──
-  // For each header/footer fill region with a draft entry, open the
-  // referenced part XML, splice the drafted paragraphs into the
-  // <w:hdr>/<w:ftr> root with cloned pPr/rPr from the original first
-  // paragraph, and write the file back into the zip. Each part is
-  // processed independently — failures in one don't affect others.
+  // Headers and footers are letterhead on DHA / DoD templates — seals,
+  // office symbols, distribution lines. Rewriting them via the drafter
+  // wipes out the paragraphs that hold <w:drawing> seals and replaces
+  // tab-stop-centered letterhead formatting with whatever rPr/pPr the
+  // first paragraph carried, which on an MFR template is a 7pt banner
+  // line. We leave document_part sections untouched so the template's
+  // original header/footer XML (and the word/media/ + _rels/*.rels
+  // entries it references) survive the assembly pass byte-stable.
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i]!;
     if (section.fill_region.kind !== 'document_part') continue;
-    const status = await processDocumentPartSection(
-      zip,
-      section,
-      draftedBySectionId,
-      availableStyleIds,
-      formatInventory,
-    );
+    const status: AssembleSectionStatus = {
+      kind: 'skipped_unsupported_region',
+      reason: 'header/footer drafting is disabled — letterhead is preserved from the template',
+    };
     resultByOriginalIdx[i] = status;
     onSectionAssembled?.(section, status);
   }
@@ -398,147 +405,6 @@ function processSection(
   }
 }
 
-// ─── document_part processor ──────────────────────────────────────
-//
-// Header and footer XML parts are self-contained documents rooted at
-// <w:hdr> or <w:ftr>. We mutate them in place: load → parse → replace
-// all <w:p> children of the root with new ones built from the draft,
-// preserving the first original paragraph's pPr/rPr so the letterhead
-// keeps its centering, font, and tabs. Non-paragraph children
-// (<w:tbl>, <w:sdt>, drawings) are left alone — only the loose
-// paragraph stream is replaced.
-
-async function processDocumentPartSection(
-  zip: JSZip,
-  section: BodyFillRegion,
-  draftedBySectionId: Map<string, DraftParagraph[]>,
-  availableStyleIds: Set<string>,
-  inventory: FormatInventory,
-): Promise<AssembleSectionStatus> {
-  const fr = section.fill_region;
-  if (fr.kind !== 'document_part') {
-    return {
-      kind: 'failed',
-      error: `processDocumentPartSection called with non-document_part region (${fr.kind})`,
-    };
-  }
-
-  const draft = draftedBySectionId.get(section.id);
-  if (!draft || draft.length === 0) {
-    return { kind: 'skipped_no_draft' };
-  }
-
-  const file = zip.file(fr.part_path);
-  if (!file) {
-    return {
-      kind: 'failed',
-      error: `referenced part not found in zip: ${fr.part_path}`,
-    };
-  }
-
-  try {
-    const partXml = await file.async('string');
-    const partDom = new DOMParser().parseFromString(partXml, 'text/xml');
-    const errs = partDom.getElementsByTagName('parsererror');
-    if (errs.length > 0) {
-      return {
-        kind: 'failed',
-        error: `XML parse error in ${fr.part_path}: ${errs[0]!.textContent ?? 'unknown'}`,
-      };
-    }
-
-    // Header parts are rooted at <w:hdr>, footer at <w:ftr>.
-    const rootName = fr.placement === 'header' ? 'hdr' : 'ftr';
-    const root = partDom.getElementsByTagNameNS(W_NS, rootName)[0];
-    if (!root) {
-      return {
-        kind: 'failed',
-        error: `${fr.part_path} has no <w:${rootName}> root element`,
-      };
-    }
-
-    // Capture format templates from the existing top-level paragraphs
-    // before we remove them. We only consider DIRECT children of the
-    // root — paragraphs nested inside tables / sdt have their own
-    // formatting and shouldn't be touched.
-    const oldParagraphs: Element[] = [];
-    for (let n = root.firstChild; n; n = n.nextSibling) {
-      if (
-        n.nodeType === 1 &&
-        (n as Element).localName === 'p' &&
-        (n as Element).namespaceURI === W_NS
-      ) {
-        oldParagraphs.push(n as Element);
-      }
-    }
-
-    if (oldParagraphs.length === 0) {
-      // Empty header/footer (or contains only tables). Append the
-      // drafted paragraphs as fresh ones with no template formatting.
-      const emptyTemplates: FormatTemplates = {
-        heading: { pPr: null, rPr: null },
-        body: { pPr: null, rPr: null },
-      };
-      // Header/footer parts use a SEPARATE DOM (partDom) from the
-      // main body. The body-side inventory's elements belong to the
-      // wrong owner Document, so cloneNode() across documents would
-      // fail. Re-collect a tiny inventory from the part itself; it's
-      // rare for a header/footer to contain its own bullet anyway,
-      // so this usually returns an empty map and bullet drafts in
-      // headers fall through to body styling — acceptable for v1.
-      const partInventory = collectGlobalFormatInventory(partDom);
-      void inventory; // body-side inventory intentionally unused here
-      const newEls = buildSectionElements(
-        partDom,
-        draft,
-        availableStyleIds,
-        emptyTemplates,
-        partInventory,
-      );
-      for (const el of newEls) {
-        root.appendChild(el);
-      }
-    } else {
-      const formatTemplates = collectFormatTemplates(oldParagraphs);
-      const partInventory = collectGlobalFormatInventory(partDom);
-      void inventory;
-      const newEls = buildSectionElements(
-        partDom,
-        draft,
-        availableStyleIds,
-        formatTemplates,
-        partInventory,
-      );
-      // Insert the new paragraphs immediately before the first old
-      // one, then remove the old paragraphs. Anything that wasn't a
-      // direct <w:p> child (tables, sdt, drawing anchors) is left in
-      // place, preserving the structural scaffolding of the part.
-      const firstOld = oldParagraphs[0]!;
-      for (const n of newEls) {
-        root.insertBefore(n, firstOld);
-      }
-      for (const old of oldParagraphs) {
-        root.removeChild(old);
-      }
-    }
-
-    const newXml = new XMLSerializer().serializeToString(partDom);
-    const xmlHeader = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
-    const finalXml = newXml.startsWith('<?xml') ? newXml : xmlHeader + newXml;
-    zip.file(fr.part_path, finalXml);
-
-    return {
-      kind: 'assembled',
-      paragraphs_replaced: oldParagraphs.length,
-      paragraphs_inserted: draft.length,
-    };
-  } catch (e) {
-    return {
-      kind: 'failed',
-      error: e instanceof Error ? e.message : String(e),
-    };
-  }
-}
 
 // ─── <w:p> construction ───────────────────────────────────────────
 
