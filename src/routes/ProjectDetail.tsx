@@ -2657,6 +2657,9 @@ function SectionCard({
       {draft?.status === 'ready' && draft.paragraphs.length > 0 && !isEditing && (
         <DraftParagraphList paragraphs={draft.paragraphs} />
       )}
+      {draft?.status === 'ready' && draft.slots && draft.slots.length > 0 && !isEditing && (
+        <DraftSlotList slots={draft.slots} section={section} />
+      )}
       {draft?.status === 'ready' && isEditing && (
         <SectionInlineEditor
           draft={draft}
@@ -3720,6 +3723,72 @@ function DraftParagraphList({ paragraphs }: { paragraphs: DraftParagraph[] }) {
           <span style={{ flex: 1 }}>{p.text}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Renders a letterhead (document_part) draft as a slot list. The
+ * drafter only returns slots it wants to change, so paragraphs the
+ * drafter chose to leave alone show up as "(kept from template)" for
+ * visual completeness. Drawing / complex-content paragraphs show as
+ * "(fixed — preserved from template)" to remind the user the seal and
+ * anchored imagery are never rewritten.
+ */
+function DraftSlotList({
+  slots,
+  section,
+}: {
+  slots: ReadonlyArray<{ slot_index: number; text: string }>;
+  section: BodyFillRegion;
+}) {
+  const details =
+    section.fill_region.kind === 'document_part'
+      ? section.fill_region.paragraph_details
+      : [];
+  const bySlot = new Map(slots.map((s) => [s.slot_index, s.text]));
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      {details.length === 0
+        ? slots.map((s) => (
+            <div
+              key={s.slot_index}
+              style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.25rem' }}
+            >
+              <span style={{ fontSize: 10, fontWeight: 600, color: '#666', minWidth: 60 }}>
+                SLOT {s.slot_index}
+              </span>
+              <span style={{ flex: 1 }}>{s.text}</span>
+            </div>
+          ))
+        : details.map((d) => {
+            const drafted = bySlot.get(d.slot_index);
+            const fixed = d.has_drawing || d.has_complex_content;
+            return (
+              <div
+                key={d.slot_index}
+                style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.25rem' }}
+              >
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    color: fixed ? '#999' : '#666',
+                    minWidth: 60,
+                  }}
+                >
+                  SLOT {d.slot_index}
+                </span>
+                <span style={{ flex: 1, color: fixed ? '#999' : drafted !== undefined ? 'inherit' : '#888', fontStyle: drafted !== undefined ? 'normal' : 'italic' }}>
+                  {fixed
+                    ? `(fixed — preserved from template)`
+                    : drafted !== undefined
+                      ? drafted
+                      : `(kept from template: ${d.text || '(empty)'})`}
+                </span>
+              </div>
+            );
+          })}
     </div>
   );
 }
