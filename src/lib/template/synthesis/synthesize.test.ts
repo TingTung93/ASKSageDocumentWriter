@@ -64,7 +64,10 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
         intent: `Auto-generated intent ${i + 1}.`,
         target_words: [100, 200] as [number, number],
         depends_on: i === 0 ? [] : [schema.sections[i - 1]!.id],
+        style_notes: '',
+        visual_style: { font_family: null, font_size_pt: null, alignment: null, numbering_convention: null },
       })),
+      document_parts: [],
     };
 
     const client = mockClientWithResponse(fakeOutput);
@@ -108,6 +111,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
     const fakeOutput: LLMSemanticOutput = {
       style: { voice: 'x', tense: 'x', register: 'x', jargon_policy: 'x', banned_phrases: [] },
       sections: [],
+      document_parts: [],
     };
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
@@ -138,6 +142,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
     const fakeOutput: LLMSemanticOutput = {
       style: { voice: 'x', tense: 'y', register: 'z', jargon_policy: 'q', banned_phrases: [] },
       sections: [],
+      document_parts: [],
     };
     const fenced = '```json\n' + JSON.stringify(fakeOutput) + '\n```';
     const client = mockClientWithResponse(fakeOutput, { rawText: fenced });
@@ -164,6 +169,7 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
     const fakeOutput: LLMSemanticOutput = {
       style: { voice: 'x', tense: 'y', register: 'z', jargon_policy: 'q', banned_phrases: [] },
       sections: [],
+      document_parts: [],
     };
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

@@ -91,6 +91,8 @@ function makeSemantic(): LLMSemanticOutput {
         intent: 'State the SOP goal.',
         target_words: [80, 150],
         depends_on: [],
+        style_notes: '',
+        visual_style: { font_family: null, font_size_pt: null, alignment: null, numbering_convention: null },
         validation: { must_not_exceed_words: 200 },
       },
       {
@@ -100,8 +102,11 @@ function makeSemantic(): LLMSemanticOutput {
         intent: 'Define the SOP applicability.',
         target_words: [60, 120],
         depends_on: ['purpose'],
+        style_notes: '',
+        visual_style: { font_family: null, font_size_pt: null, alignment: null, numbering_convention: null },
       },
     ],
+    document_parts: [],
   };
 }
 
@@ -168,6 +173,7 @@ describe('mergeSemanticIntoSchema', () => {
     const empty: LLMSemanticOutput = {
       style: makeSemantic().style,
       sections: [],
+      document_parts: [],
     };
     const merged = mergeSemanticIntoSchema(structural, empty, {
       semantic_synthesizer: 'google-gemini-2.5-flash',

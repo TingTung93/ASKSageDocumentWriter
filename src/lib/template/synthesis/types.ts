@@ -3,6 +3,28 @@
 // LLMSemanticOutput. The merger then folds it into the structural
 // TemplateSchema produced by Phase 1a.
 
+export interface LLMVisualStyle {
+  font_family: string | null;
+  font_size_pt: number | null;
+  alignment: 'left' | 'center' | 'right' | 'justify' | null;
+  numbering_convention: 'none' | 'manual_numeric' | 'manual_lettered' | 'ooxml_list' | null;
+}
+
+export interface LLMSemanticDocumentPartSlot {
+  slot_index: number;
+  /** The parser-extracted source_text; echoed back verbatim. Merger rejects mismatches. */
+  source_text: string;
+  intent: string;
+  style_notes: string;
+  visual_style: LLMVisualStyle;
+}
+
+export interface LLMSemanticDocumentPart {
+  part_path: string;
+  placement: 'header' | 'footer';
+  slots: LLMSemanticDocumentPartSlot[];
+}
+
 export interface LLMSemanticSection {
   /** snake_case identifier the LLM picks (e.g. "scope_and_objectives") */
   id: string;
@@ -20,6 +42,14 @@ export interface LLMSemanticSection {
   target_words: [number, number];
   /** Section ids (from this same output list) whose content this section requires */
   depends_on: string[];
+  /**
+   * Free-form textual conventions for this section — how the drafter should
+   * match template voice (e.g. "ALL CAPS section titles only", "numbered
+   * list with 1. 2. 3. prefixes").
+   */
+  style_notes: string;
+  /** Structured visual style for the assembler fallback and drafter guidance. */
+  visual_style: LLMVisualStyle;
   /** Concrete, verifiable validation rules. Omit if none apply. */
   validation?: {
     must_mention?: string[];
@@ -40,6 +70,7 @@ export interface LLMSemanticStyle {
 export interface LLMSemanticOutput {
   style: LLMSemanticStyle;
   sections: LLMSemanticSection[];
+  document_parts: LLMSemanticDocumentPart[];
 }
 
 export interface SynthesisOptions {
