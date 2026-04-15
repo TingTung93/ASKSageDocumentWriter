@@ -85,6 +85,43 @@ export interface DraftParagraph {
   level?: number;
 }
 
+// ─── SectionDraft discriminated union ─────────────────────────────
+//
+// Two drafting shapes now: body sections still produce DraftParagraph[]
+// (wrapped as { kind: 'body', paragraphs }), while document_part sections
+// (page headers / footers) produce a per-slot rewrite as { kind:
+// 'document_part', slots[] }. The assembler dispatches on `kind` to
+// decide whether to splice paragraphs or to rewrite specific slot_index
+// runs in place inside an existing <w:p>.
+
+export interface SlotDraftEntry {
+  slot_index: number;
+  text: string;
+}
+
+export interface DocumentPartDraft {
+  kind: 'document_part';
+  slots: SlotDraftEntry[];
+}
+
+export interface BodyDraft {
+  kind: 'body';
+  paragraphs: DraftParagraph[];
+}
+
+export type SectionDraft = BodyDraft | DocumentPartDraft;
+
+/**
+ * Normalize a drafter's output (either a bare DraftParagraph[] from
+ * legacy call sites, or an explicit SectionDraft) into the discriminated
+ * union form. Used at the assembler entry point so the rest of the
+ * pipeline can dispatch on `kind` without caring about legacy shapes.
+ */
+export function toSectionDraft(input: SectionDraft | DraftParagraph[]): SectionDraft {
+  if (Array.isArray(input)) return { kind: 'body', paragraphs: input };
+  return input;
+}
+
 export interface LLMDraftOutput {
   paragraphs: DraftParagraph[];
   /**

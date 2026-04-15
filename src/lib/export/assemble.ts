@@ -21,7 +21,13 @@
 import JSZip from 'jszip';
 import type { TemplateRecord } from '../db/schema';
 import type { BodyFillRegion } from '../template/types';
-import type { DraftParagraph, DraftRun } from '../draft/types';
+import type {
+  DocumentPartDraft,
+  DraftParagraph,
+  DraftRun,
+  SectionDraft,
+} from '../draft/types';
+import { toSectionDraft } from '../draft/types';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DOCX_MIME =
@@ -29,6 +35,12 @@ const DOCX_MIME =
 
 export type AssembleSectionStatus =
   | { kind: 'assembled'; paragraphs_replaced: number; paragraphs_inserted: number }
+  | {
+      kind: 'assembled_slots';
+      slots_replaced: number;
+      slots_preserved: number;
+      slots_skipped_drawing: number;
+    }
   | { kind: 'skipped_no_draft' }
   | { kind: 'skipped_unsupported_region'; reason: string }
   | { kind: 'failed'; error: string };
@@ -42,7 +54,12 @@ export interface AssembleProjectDocxArgs {
    * does NOT splice anything for missing sections — that's a
    * deliberate "skip what's not drafted" rule, NOT an error.
    */
-  draftedBySectionId: Map<string, DraftParagraph[]>;
+  /**
+   * Legacy call sites pass a bare `DraftParagraph[]` which is coerced
+   * into `{ kind: 'body', paragraphs }`. New document_part call sites
+   * pass `DocumentPartDraft` directly. Either works.
+   */
+  draftedBySectionId: Map<string, DraftParagraph[] | SectionDraft>;
   /** Optional: tracking the per-section assembly result. */
   onSectionAssembled?: (section: BodyFillRegion, status: AssembleSectionStatus) => void;
 }
@@ -97,15 +114,22 @@ export interface AssembleProjectDocxResult {
 export async function assembleProjectDocx(
   args: AssembleProjectDocxArgs,
 ): Promise<AssembleProjectDocxResult> {
-  const { template, draftedBySectionId, onSectionAssembled } = args;
+  const { template, draftedBySectionId: rawDraftedBySectionId, onSectionAssembled } = args;
   const sections = template.schema_json.sections;
+
+  // Normalize to SectionDraft up front so the rest of the function
+  // operates on the discriminated union.
+  const draftedBySectionId = new Map<string, SectionDraft>();
+  for (const [sid, v] of rawDraftedBySectionId) {
+    draftedBySectionId.set(sid, toSectionDraft(v));
+  }
 
   // No-op passthrough: empty draft map → return the original bytes
   // unchanged. This gives the strongest round-trip guarantee for the
   // "open and re-export with nothing drafted" workflow (e.g. the
   // recipe runner aborted before any section completed).
-  const hasAnyDraft = Array.from(draftedBySectionId.values()).some(
-    (arr) => arr && arr.length > 0,
+  const hasAnyDraft = Array.from(draftedBySectionId.values()).some((d) =>
+    d.kind === 'body' ? d.paragraphs.length > 0 : d.slots.length > 0,
   );
   if (!hasAnyDraft) {
     const validateZip = await JSZip.loadAsync(template.docx_bytes);
@@ -118,10 +142,7 @@ export async function assembleProjectDocx(
       if (k === 'heading_bounded') {
         status = { kind: 'skipped_no_draft' };
       } else if (k === 'document_part') {
-        status = {
-          kind: 'skipped_unsupported_region',
-          reason: 'header/footer drafting is disabled — letterhead is preserved from the template',
-        };
+        status = { kind: 'skipped_no_draft' };
       } else {
         status = {
           kind: 'skipped_unsupported_region',
@@ -216,20 +237,27 @@ export async function assembleProjectDocx(
 
   // ── document_part pass ──
   // Headers and footers are letterhead on DHA / DoD templates — seals,
-  // office symbols, distribution lines. Rewriting them via the drafter
-  // wipes out the paragraphs that hold <w:drawing> seals and replaces
-  // tab-stop-centered letterhead formatting with whatever rPr/pPr the
-  // first paragraph carried, which on an MFR template is a 7pt banner
-  // line. We leave document_part sections untouched so the template's
-  // original header/footer XML (and the word/media/ + _rels/*.rels
-  // entries it references) survive the assembly pass byte-stable.
+  // office symbols, distribution lines. The old strategy here was to
+  // rewrite entire header/footer XML, which destroyed <w:drawing>
+  // seals and banner formatting. The new per-slot rewrite approach
+  // mutates specific <w:r> text inside existing <w:p> elements,
+  // leaving drawing paragraphs, media entries, and _rels untouched
+  // by construction.
   for (let i = 0; i < sections.length; i++) {
     const section = sections[i]!;
     if (section.fill_region.kind !== 'document_part') continue;
-    const status: AssembleSectionStatus = {
-      kind: 'skipped_unsupported_region',
-      reason: 'header/footer drafting is disabled — letterhead is preserved from the template',
-    };
+    const draftUnion = draftedBySectionId.get(section.id);
+    let status: AssembleSectionStatus;
+    if (!draftUnion || (draftUnion.kind === 'document_part' && draftUnion.slots.length === 0)) {
+      status = { kind: 'skipped_no_draft' };
+    } else if (draftUnion.kind !== 'document_part') {
+      status = {
+        kind: 'failed',
+        error: 'document_part section got a body draft',
+      };
+    } else {
+      status = await processDocumentPartSlots(zip, section.fill_region, draftUnion);
+    }
     resultByOriginalIdx[i] = status;
     onSectionAssembled?.(section, status);
   }
@@ -270,7 +298,7 @@ function processSection(
   dom: Document,
   section: BodyFillRegion,
   paragraphEls: Element[],
-  draftedBySectionId: Map<string, DraftParagraph[]>,
+  draftedBySectionId: Map<string, SectionDraft>,
   availableStyleIds: Set<string>,
   inventory: FormatInventory,
 ): AssembleSectionStatus {
@@ -293,8 +321,18 @@ function processSection(
     };
   }
 
-  const draft = draftedBySectionId.get(section.id);
-  if (!draft || draft.length === 0) {
+  const draftUnion = draftedBySectionId.get(section.id);
+  if (!draftUnion) {
+    return { kind: 'skipped_no_draft' };
+  }
+  if (draftUnion.kind !== 'body') {
+    return {
+      kind: 'failed',
+      error: `heading_bounded section got non-body draft kind: ${draftUnion.kind}`,
+    };
+  }
+  const draft = draftUnion.paragraphs;
+  if (draft.length === 0) {
     return { kind: 'skipped_no_draft' };
   }
 
@@ -1401,4 +1439,128 @@ async function toBlob(input: ArrayBuffer | Uint8Array | Blob): Promise<Blob> {
     return new Blob([input as BlobPart], { type: DOCX_MIME });
   }
   return input as unknown as Blob;
+}
+
+// ─── document_part per-slot rewriter ──────────────────────────────
+//
+// Rewrites text-only paragraphs inside a header/footer part in place,
+// leaving drawing-bearing paragraphs and other complex content
+// (<w:pict>, <w:drawing>, <w:sdt>, <w:fldChar>) byte-stable. This is
+// the structural guarantee that letterhead seals and CUI banner
+// formatting can't be destroyed — we never touch a paragraph flagged
+// has_drawing=true or has_complex_content=true.
+
+async function processDocumentPartSlots(
+  zip: JSZip,
+  fr: Extract<BodyFillRegion['fill_region'], { kind: 'document_part' }>,
+  draft: DocumentPartDraft,
+): Promise<AssembleSectionStatus> {
+  const file = zip.file(fr.part_path);
+  if (!file) return { kind: 'failed', error: `part not found: ${fr.part_path}` };
+  const partXml = await file.async('string');
+  const partDom = new DOMParser().parseFromString(partXml, 'text/xml');
+  const errs = partDom.getElementsByTagName('parsererror');
+  if (errs.length > 0) {
+    return {
+      kind: 'failed',
+      error: `XML parse error in ${fr.part_path}: ${errs[0]!.textContent ?? 'unknown'}`,
+    };
+  }
+  const rootName = fr.placement === 'header' ? 'hdr' : 'ftr';
+  const root = partDom.getElementsByTagNameNS(W_NS, rootName)[0];
+  if (!root) return { kind: 'failed', error: `no <w:${rootName}> root in ${fr.part_path}` };
+
+  // Collect the top-level <w:p> children of the root in document order.
+  // We only look at direct children here — nested <w:p> (inside a table,
+  // for example) would have a different slot_index space; headers/
+  // footers almost never use tables. Using direct children matches the
+  // parser's behavior which also walks top-level paragraphs.
+  const paragraphs: Element[] = [];
+  for (let n = root.firstChild; n; n = n.nextSibling) {
+    if (
+      n.nodeType === 1 /* ELEMENT_NODE */ &&
+      (n as Element).localName === 'p' &&
+      (n as Element).namespaceURI === W_NS
+    ) {
+      paragraphs.push(n as Element);
+    }
+  }
+  // Fallback: if the direct-children walk found nothing (e.g. wrapping
+  // shapes), fall back to getElementsByTagNameNS which walks
+  // descendants. The parser uses the descendant walk too, so this
+  // matches what paragraph_details indexed.
+  if (paragraphs.length === 0) {
+    for (const p of Array.from(partDom.getElementsByTagNameNS(W_NS, 'p'))) {
+      paragraphs.push(p);
+    }
+  }
+
+  const slotMap = new Map<number, string>();
+  for (const s of draft.slots) slotMap.set(s.slot_index, s.text);
+
+  let replaced = 0;
+  let preserved = 0;
+  let skipped = 0;
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const detail = fr.paragraph_details[i];
+    if (!detail) {
+      preserved++;
+      continue;
+    }
+    if (detail.has_drawing || detail.has_complex_content) {
+      if (slotMap.has(i)) skipped++;
+      continue;
+    }
+    if (!slotMap.has(i)) {
+      preserved++;
+      continue;
+    }
+
+    const p = paragraphs[i]!;
+    // Preserve the first <w:r>'s rPr (if any) so the replacement run
+    // inherits source font / size / color.
+    const firstR = p.getElementsByTagNameNS(W_NS, 'r')[0] ?? null;
+    const keepRPr = firstR ? firstChildNS(firstR, 'rPr') : null;
+
+    // Remove all <w:r> children from p (keep pPr and any other
+    // non-run children such as bookmarks). We gather first then
+    // remove to avoid nextSibling hazards.
+    const toRemove: Element[] = [];
+    for (let n = p.firstChild; n; n = n.nextSibling) {
+      if (
+        n.nodeType === 1 &&
+        (n as Element).localName === 'r' &&
+        (n as Element).namespaceURI === W_NS
+      ) {
+        toRemove.push(n as Element);
+      }
+    }
+    for (const el of toRemove) p.removeChild(el);
+
+    // Build one new <w:r> with the cloned rPr and drafted text.
+    const r = partDom.createElementNS(W_NS, 'w:r');
+    if (keepRPr) r.appendChild(keepRPr.cloneNode(true) as Element);
+    const t = partDom.createElementNS(W_NS, 'w:t');
+    // xml:space=preserve so leading/trailing whitespace survives
+    // serialization (letterhead tab-stopped addresses routinely start
+    // with indents).
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = slotMap.get(i) ?? '';
+    r.appendChild(t);
+    p.appendChild(r);
+    replaced++;
+  }
+
+  const newXml = new XMLSerializer().serializeToString(partDom);
+  const xmlHeader = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+  const finalXml = newXml.startsWith('<?xml') ? newXml : xmlHeader + newXml;
+  zip.file(fr.part_path, finalXml);
+
+  return {
+    kind: 'assembled_slots',
+    slots_replaced: replaced,
+    slots_preserved: preserved,
+    slots_skipped_drawing: skipped,
+  };
 }
