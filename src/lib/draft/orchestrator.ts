@@ -16,6 +16,7 @@ import {
 } from '../db/schema';
 import type { BodyFillRegion } from '../template/types';
 import { draftSection, summarizeDraft } from './drafter';
+import { draftDocumentPart } from './draftDocumentPart';
 import type { DraftingOptions, PriorSectionSummary } from './types';
 import { getContextItems, renderNotesBlock } from '../project/context';
 import {
@@ -306,6 +307,55 @@ export async function draftProject(
         tokens_out: 0,
       };
       await db.drafts.put(pendingRecord);
+
+      // ── document_part (letterhead) branch ──
+      // Headers and footers are drafted per-slot, not per-paragraph.
+      // We skip the whole body-draft apparatus (prior summaries,
+      // reference chunks, critic loop, cross-section review): letterhead
+      // text is a narrow slot fill driven by the project's subject +
+      // shared inputs. Store the result on DraftRecord.slots and move
+      // on. The assembler picks the slots path when present.
+      if (section.fill_region.kind === 'document_part') {
+        try {
+          const dpDraft = await draftDocumentPart(
+            client,
+            {
+              template: template.schema_json,
+              section: section as typeof section & {
+                fill_region: typeof section.fill_region & { kind: 'document_part' };
+              },
+              project_description: project.description,
+              shared_inputs: project.shared_inputs,
+            },
+            { model: options?.model },
+          );
+          const ready: DraftRecord = {
+            ...pendingRecord,
+            paragraphs: [],
+            slots: dpDraft.slots,
+            status: 'ready',
+            generated_at: new Date().toISOString(),
+          };
+          await db.drafts.put(ready);
+          sectionsDrafted += 1;
+          callbacks?.onSectionComplete?.(template, section, ready);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const errorRecord: DraftRecord = {
+            ...pendingRecord,
+            status: 'error',
+            error: message,
+          };
+          await db.drafts.put(errorRecord);
+          sectionsErrored += 1;
+          callbacks?.onSectionError?.(
+            template,
+            section,
+            err instanceof Error ? err : new Error(message),
+          );
+        }
+        continue;
+      }
 
       // Pull only the prior summaries this section depends_on (or, if
       // depends_on is empty, send all prior summaries from the same

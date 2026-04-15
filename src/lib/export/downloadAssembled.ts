@@ -15,6 +15,7 @@
 
 import { db, type DraftRecord, type ProjectRecord, type TemplateRecord } from '../db/schema';
 import { assembleProjectDocx, type AssembleProjectDocxResult } from './assemble';
+import type { SectionDraft } from '../draft/types';
 
 export interface AssembleProjectResult {
   template_id: string;
@@ -41,8 +42,17 @@ export async function assembleProjectFromDrafts(
   for (const tpl of templates) {
     const sectionMap = byTemplate.get(tpl.id);
     if (!sectionMap || sectionMap.size === 0) continue;
-    const draftedBySectionId = new Map<string, DraftRecord['paragraphs']>();
-    for (const [sid, d] of sectionMap) draftedBySectionId.set(sid, d.paragraphs);
+    // A DraftRecord carries either `paragraphs` (body section) or
+    // `slots` (document_part letterhead). Project the record onto the
+    // SectionDraft union the assembler expects.
+    const draftedBySectionId = new Map<string, SectionDraft>();
+    for (const [sid, d] of sectionMap) {
+      if (d.slots && d.slots.length > 0) {
+        draftedBySectionId.set(sid, { kind: 'document_part', slots: d.slots });
+      } else {
+        draftedBySectionId.set(sid, { kind: 'body', paragraphs: d.paragraphs });
+      }
+    }
 
     const result = await assembleProjectDocx({ template: tpl, draftedBySectionId });
     out.push({

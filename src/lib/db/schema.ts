@@ -206,6 +206,12 @@ export interface DraftRecord {
   section_id: string;
   /** Structured paragraph array with role tags; see PRD §6. */
   paragraphs: DraftParagraph[];
+  /**
+   * For document_part (letterhead) sections only: the per-slot rewrite
+   * produced by draftDocumentPart. When present, the assembler uses
+   * this instead of `paragraphs`. Body sections leave it undefined.
+   */
+  slots?: import('../draft/types').SlotDraftEntry[];
   /** Free-form references string returned by Ask Sage from RAG */
   references: string;
   /**
