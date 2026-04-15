@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { mergeSemanticIntoSchema } from './merge';
-import type { TemplateSchema } from '../types';
+import type { BodyFillRegion, TemplateSchema } from '../types';
 import type { LLMSemanticOutput } from './types';
 
 function makeStructural(): TemplateSchema {
@@ -192,5 +192,169 @@ describe('mergeSemanticIntoSchema', () => {
       semantic_synthesizer: 'google-gemini-2.5-flash',
     });
     expect(JSON.stringify(structural)).toBe(beforeJson);
+  });
+});
+
+describe('mergeSemanticIntoSchema — new fields (style_notes, visual_style, slots)', () => {
+  function makeStructuralWithHeader(): TemplateSchema {
+    const base = makeStructural();
+    const headerSection: BodyFillRegion = {
+      id: 'header_header1',
+      name: 'Page Header (header1)',
+      order: 2,
+      required: false,
+      fill_region: {
+        kind: 'document_part',
+        part_path: 'word/header1.xml',
+        placement: 'header',
+        original_text_lines: ['DEPARTMENT OF THE ARMY', '[UNIT NAME]'],
+        permitted_roles: ['body', 'heading'],
+        paragraph_details: [
+          {
+            slot_index: 0,
+            text: 'DEPARTMENT OF THE ARMY',
+            has_drawing: false,
+            has_complex_content: false,
+            alignment: 'center',
+            font_family: 'Arial',
+            font_size_pt: 14,
+          },
+          {
+            slot_index: 1,
+            text: '',
+            has_drawing: true,
+            has_complex_content: false,
+            alignment: 'center',
+            font_family: null,
+            font_size_pt: null,
+          },
+          {
+            slot_index: 2,
+            text: '[UNIT NAME]',
+            has_drawing: false,
+            has_complex_content: false,
+            alignment: 'center',
+            font_family: null,
+            font_size_pt: null,
+          },
+        ],
+      },
+    };
+    return { ...base, sections: [...base.sections, headerSection] };
+  }
+
+  it('folds style_notes and visual_style onto body sections', () => {
+    const merged = mergeSemanticIntoSchema(makeStructural(), makeSemantic(), {
+      semantic_synthesizer: 'test',
+    });
+    const purpose = merged.sections.find((s) => s.id === 'purpose')!;
+    expect(purpose.style_notes).toBe('');
+    expect(purpose.visual_style).toEqual({
+      font_family: null,
+      font_size_pt: null,
+      alignment: null,
+      numbering_convention: null,
+    });
+  });
+
+  it('folds slots[] onto document_part sections', () => {
+    const structural = makeStructuralWithHeader();
+    const semantic = makeSemantic();
+    semantic.document_parts = [
+      {
+        part_path: 'word/header1.xml',
+        placement: 'header',
+        slots: [
+          {
+            slot_index: 0,
+            source_text: 'DEPARTMENT OF THE ARMY',
+            intent: 'Organization banner',
+            style_notes: 'ALL CAPS, centered',
+            visual_style: {
+              font_family: 'Arial',
+              font_size_pt: 14,
+              alignment: 'center',
+              numbering_convention: 'none',
+            },
+          },
+          {
+            slot_index: 2,
+            source_text: '[UNIT NAME]',
+            intent: 'Unit identifier',
+            style_notes: 'Title case',
+            visual_style: {
+              font_family: null,
+              font_size_pt: null,
+              alignment: 'center',
+              numbering_convention: 'none',
+            },
+          },
+        ],
+      },
+    ];
+    const merged = mergeSemanticIntoSchema(structural, semantic, {
+      semantic_synthesizer: 'test',
+    });
+    const header = merged.sections.find((s) => s.fill_region.kind === 'document_part')!;
+    if (header.fill_region.kind !== 'document_part') throw new Error('type narrow');
+    expect(header.fill_region.slots).toHaveLength(2);
+    expect(header.fill_region.slots![0]!.slot_index).toBe(0);
+    expect(header.fill_region.slots![0]!.intent).toBe('Organization banner');
+  });
+
+  it('rejects synthesis when source_text mismatches parser-extracted text', () => {
+    const structural = makeStructuralWithHeader();
+    const semantic = makeSemantic();
+    semantic.document_parts = [
+      {
+        part_path: 'word/header1.xml',
+        placement: 'header',
+        slots: [
+          {
+            slot_index: 0,
+            source_text: 'WRONG TEXT',
+            intent: 'x',
+            style_notes: 'y',
+            visual_style: {
+              font_family: null,
+              font_size_pt: null,
+              alignment: null,
+              numbering_convention: null,
+            },
+          },
+        ],
+      },
+    ];
+    expect(() =>
+      mergeSemanticIntoSchema(structural, semantic, { semantic_synthesizer: 'test' }),
+    ).toThrow(/source_text mismatch/);
+  });
+
+  it('rejects synthesis when a slot points at a drawing paragraph', () => {
+    const structural = makeStructuralWithHeader();
+    const semantic = makeSemantic();
+    semantic.document_parts = [
+      {
+        part_path: 'word/header1.xml',
+        placement: 'header',
+        slots: [
+          {
+            slot_index: 1,
+            source_text: '',
+            intent: 'x',
+            style_notes: 'y',
+            visual_style: {
+              font_family: null,
+              font_size_pt: null,
+              alignment: null,
+              numbering_convention: null,
+            },
+          },
+        ],
+      },
+    ];
+    expect(() =>
+      mergeSemanticIntoSchema(structural, semantic, { semantic_synthesizer: 'test' }),
+    ).toThrow(/non-draftable/);
   });
 });

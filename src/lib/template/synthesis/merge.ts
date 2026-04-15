@@ -40,12 +40,49 @@ export function mergeSemanticIntoSchema(
         )
       : structural.sections.filter((s) => s.fill_region.kind !== 'document_part');
 
-  // Re-number document_part orders so they sort after the LLM body
-  // sections in the project view.
-  const renumberedDocParts = docPartSections.map((s, i) => ({
-    ...s,
-    order: llmAuthored.length + i,
-  }));
+  // Fold per-slot guidance onto document_part sections; validate
+  // source_text echo. Throws on mismatch so the retry loop in
+  // synthesize.ts can ask the LLM to try again.
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const renumberedDocParts = docPartSections.map((s, i): BodyFillRegion => {
+    const base: BodyFillRegion = { ...s, order: llmAuthored.length + i };
+    if (base.fill_region.kind !== 'document_part') return base;
+    const llmPart = (semantic.document_parts ?? []).find(
+      (dp) => dp.part_path === base.fill_region.part_path &&
+        base.fill_region.kind === 'document_part',
+    );
+    if (!llmPart) return base;
+    const details = base.fill_region.paragraph_details;
+    for (const slot of llmPart.slots) {
+      const detail = details.find((d) => d.slot_index === slot.slot_index);
+      if (!detail) {
+        throw new Error(
+          `slot_index ${slot.slot_index} not in parser paragraph_details for ${llmPart.part_path}`,
+        );
+      }
+      if (detail.has_drawing || detail.has_complex_content) {
+        throw new Error(
+          `slot_index ${slot.slot_index} on ${llmPart.part_path} is non-draftable (drawing/complex); synthesis produced a slot for it`,
+        );
+      }
+      if (norm(slot.source_text) !== norm(detail.text)) {
+        throw new Error(
+          `source_text mismatch on ${llmPart.part_path}[${slot.slot_index}]: ` +
+            `expected "${detail.text}", got "${slot.source_text}"`,
+        );
+      }
+    }
+    base.fill_region = {
+      ...base.fill_region,
+      slots: llmPart.slots.map((s2) => ({
+        slot_index: s2.slot_index,
+        intent: s2.intent,
+        style_notes: s2.style_notes,
+        visual_style: s2.visual_style,
+      })),
+    };
+    return base;
+  });
 
   const sections = [...llmAuthored, ...renumberedDocParts];
 
@@ -99,6 +136,8 @@ function buildSectionFromLLM(
     target_words: llm.target_words,
     depends_on: llm.depends_on,
     validation: llm.validation as Record<string, unknown> | undefined,
+    style_notes: llm.style_notes,
+    visual_style: llm.visual_style,
   };
 }
 
