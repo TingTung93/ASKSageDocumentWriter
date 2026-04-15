@@ -77,6 +77,16 @@ export interface NumberingDefinition {
   levels: NumberingLevel[];
 }
 
+export interface ParagraphDetail {
+  slot_index: number;
+  text: string;
+  has_drawing: boolean;
+  has_complex_content: boolean;
+  alignment: 'left' | 'center' | 'right' | 'justify' | null;
+  font_family: string | null;
+  font_size_pt: number | null;
+}
+
 export interface HeaderFooterPart {
   /** "default" | "first" | "even" */
   type: string;
@@ -127,6 +137,20 @@ export interface MetadataFillRegion {
   required: boolean;
 }
 
+export interface VisualStyle {
+  font_family: string | null;
+  font_size_pt: number | null;
+  alignment: 'left' | 'center' | 'right' | 'justify' | null;
+  numbering_convention: 'none' | 'manual_numeric' | 'manual_lettered' | 'ooxml_list' | null;
+}
+
+export interface DocumentPartSlot {
+  slot_index: number;
+  intent: string;
+  style_notes: string;
+  visual_style: VisualStyle;
+}
+
 export interface BodyFillRegion {
   /** Stable id, snake_case */
   id: string;
@@ -140,6 +164,19 @@ export interface BodyFillRegion {
   target_words?: [number, number];
   depends_on?: string[];
   validation?: Record<string, unknown>;
+  /**
+   * Textual conventions for this section (e.g. "ALL CAPS titles only",
+   * numbering style, voice). Populated by the semantic synthesizer for
+   * heading_bounded sections; absent on old schemas.
+   */
+  style_notes?: string;
+  /**
+   * Structured visual style for this section. Used by the drafter to
+   * inform style guidance and by the assembler as a narrow fallback
+   * when the template's own pPr/rPr looks degenerate (tiny-font cloning
+   * from header banner runs).
+   */
+  visual_style?: VisualStyle;
 }
 
 export type BodyFillRegionDescriptor =
@@ -199,6 +236,18 @@ export type BodyFillRegionDescriptor =
        */
       original_text_lines: string[];
       permitted_roles: string[];
+      /**
+       * Per-paragraph classification of the header/footer part, produced
+       * by the parser via classifyParagraph. Enables the synthesizer to
+       * skip drawing-bearing paragraphs in the slot list and the
+       * assembler to rewrite only text-only paragraphs in place.
+       */
+      paragraph_details: ParagraphDetail[];
+      /**
+       * Optional per-slot synthesis guidance. Absent on old schemas
+       * synthesized before the letterhead slot rewrite feature.
+       */
+      slots?: DocumentPartSlot[];
     };
 
 // ─── Semantic half (Phase 1b will populate these) ────────────────────

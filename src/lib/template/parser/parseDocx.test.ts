@@ -274,6 +274,90 @@ describe('parseDocx — synthetic templates', () => {
   });
 });
 
+describe('document_part paragraph_details', () => {
+  it('emits paragraph_details on document_part fill regions', async () => {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t xml:space="preserve">body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId10"/>
+      <w:pgSz w:w="12240" w:h="15840"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+    const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">DEPARTMENT OF THE ARMY</w:t></w:r>
+  </w:p>
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:drawing/></w:r>
+  </w:p>
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:t xml:space="preserve">[UNIT NAME]</w:t></w:r>
+  </w:p>
+</w:hdr>`;
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>`;
+
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/header1.xml', headerXml);
+
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const parsed = await parseDocx(u8, {
+      filename: 'pd.docx',
+      docx_blob_id: 'pd',
+    });
+    const section = parsed.schema.sections.find(
+      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
+    )!;
+    if (section.fill_region.kind !== 'document_part') throw new Error('type narrow');
+    const details = section.fill_region.paragraph_details;
+    expect(details).toHaveLength(3);
+    expect(details[0]!.slot_index).toBe(0);
+    expect(details[0]!.has_drawing).toBe(false);
+    expect(details[0]!.text).toContain('DEPARTMENT OF THE ARMY');
+    expect(details[0]!.alignment).toBe('center');
+    expect(details[0]!.font_family).toBe('Arial');
+    expect(details[0]!.font_size_pt).toBe(14);
+    expect(details[1]!.slot_index).toBe(1);
+    expect(details[1]!.has_drawing).toBe(true);
+    expect(details[2]!.slot_index).toBe(2);
+    expect(details[2]!.has_drawing).toBe(false);
+    expect(details[2]!.text).toBe('[UNIT NAME]');
+  });
+});
+
 describe('classifyParagraph', () => {
   it('flags drawing-bearing paragraphs', () => {
     const p = pFromXml('<w:r><w:drawing/></w:r>');

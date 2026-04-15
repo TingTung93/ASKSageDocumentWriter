@@ -14,9 +14,15 @@ import {
   type FormattingHalf,
   type HeaderFooterPart,
   type NamedStyle,
+  type ParagraphDetail,
   type TemplateSchema,
 } from '../types';
-import { parseDocumentXml, parseHeaderFooterXml, type ParagraphInfo } from './document';
+import {
+  parseDocumentXml,
+  parseHeaderFooterXml,
+  classifyParagraph,
+  type ParagraphInfo,
+} from './document';
 import { parseStylesXml } from './styles';
 import { parseNumberingXml } from './numbering';
 import { findContentControls } from './contentControls';
@@ -30,6 +36,13 @@ export interface PartContent {
   /** Display label inferred from the part name (e.g. "header1") */
   label: string;
   paragraphs: ParagraphInfo[];
+  /**
+   * Raw <w:p> elements in document order, 1:1 with `paragraphs`.
+   * Used by buildDocumentPartSections to classify each paragraph for
+   * drawing / complex content via classifyParagraph. Not persisted in
+   * the schema; lives only during parse.
+   */
+  elements: Element[];
 }
 
 export interface ParseDocxOptions {
@@ -199,9 +212,10 @@ async function loadPartContents(zip: JSZip, partNames: string[]): Promise<PartCo
       const xml = await file.async('string');
       const dom = parseXml(xml);
       const paragraphs = parseHeaderFooterXml(dom);
+      const elements = paragraphs.map((p) => p.el);
       const labelMatch = part.match(/word\/(.*?)\.xml$/);
       const label = labelMatch ? labelMatch[1]! : part;
-      out.push({ part, label, paragraphs });
+      out.push({ part, label, paragraphs, elements });
     } catch {
       // Skip parts we can't parse — preview is best-effort.
     }
@@ -334,6 +348,33 @@ function buildDocumentPartSections(
   return out;
 }
 
+function buildParagraphDetails(part: PartContent): ParagraphDetail[] {
+  return part.paragraphs.map((info, i): ParagraphDetail => {
+    const el = part.elements[i]!;
+    const { has_drawing, has_complex_content } = classifyParagraph(el);
+    const align = info.alignment;
+    const normalizedAlign: ParagraphDetail['alignment'] =
+      align === 'both' ? 'justify' : align ?? null;
+    // Derive font_family / font_size_pt from the first run with data.
+    let font_family: string | null = null;
+    let font_size_pt: number | null = null;
+    for (const r of info.runs) {
+      if (font_family === null && r.font_family) font_family = r.font_family;
+      if (font_size_pt === null && r.font_size_pt !== null) font_size_pt = r.font_size_pt;
+      if (font_family !== null && font_size_pt !== null) break;
+    }
+    return {
+      slot_index: i,
+      text: info.text,
+      has_drawing,
+      has_complex_content,
+      alignment: normalizedAlign,
+      font_family,
+      font_size_pt,
+    };
+  });
+}
+
 function makeDocPartSection(
   part: PartContent,
   placement: 'header' | 'footer',
@@ -341,6 +382,7 @@ function makeDocPartSection(
   order: number,
 ): BodyFillRegion {
   const friendlyPlacement = placement === 'header' ? 'Page Header' : 'Page Footer';
+  const paragraph_details = buildParagraphDetails(part);
   return {
     id: `${placement}_${part.label}`,
     name: `${friendlyPlacement} (${part.label})`,
@@ -352,6 +394,7 @@ function makeDocPartSection(
       placement,
       original_text_lines: lines,
       permitted_roles: ['body', 'heading'],
+      paragraph_details,
     },
     intent:
       `Regenerate the page ${placement} content for this template. ` +
