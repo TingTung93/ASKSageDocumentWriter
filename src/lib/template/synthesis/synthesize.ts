@@ -67,21 +67,50 @@ export async function synthesizeSchema(
       `prompt_chars=${prompt.message.length} (≈${Math.round(prompt.message.length / 4)} tokens)`,
   );
 
-  // (4)+(5): call Ask Sage and parse JSON.
-  const { data, raw } = await client.queryJson<LLMSemanticOutput>({
-    message: prompt.message,
-    system_prompt: prompt.system_prompt,
-    model,
-    dataset: 'none',
-    temperature,
-    usage: true,
-  });
-
-  // (6): merge.
-  const merged = mergeSemanticIntoSchema(structural, data, {
-    semantic_synthesizer: model,
-    ingested_at: structural.source.ingested_at,
-  });
+  // (4)+(5)+(6): call Ask Sage, parse JSON, merge — with a single
+  // retry when the merger rejects the LLM output because of a
+  // source_text mismatch in a document_part slot. The retry re-sends
+  // the prompt with the merger's error message appended, nudging the
+  // model to echo source_text exactly on the second attempt.
+  let data: LLMSemanticOutput;
+  let raw: { usage?: unknown } = {};
+  let merged: TemplateSchema;
+  let currentMessage = prompt.message;
+  let attempt = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const res = await client.queryJson<LLMSemanticOutput>({
+      message: currentMessage,
+      system_prompt: prompt.system_prompt,
+      model,
+      dataset: 'none',
+      temperature,
+      usage: true,
+    });
+    data = res.data;
+    raw = res.raw;
+    try {
+      merged = mergeSemanticIntoSchema(structural, data, {
+        semantic_synthesizer: model,
+        ingested_at: structural.source.ingested_at,
+      });
+      break;
+    } catch (e) {
+      if (attempt >= 1) throw e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!/source_text mismatch|non-draftable|not in parser paragraph_details/.test(msg)) {
+        throw e;
+      }
+      // eslint-disable-next-line no-console
+      console.warn(`[synthesize] merge failed on attempt ${attempt + 1}, retrying: ${msg}`);
+      currentMessage =
+        prompt.message +
+        `\n\nNOTE: your previous response was rejected because: ${msg}\n` +
+        `Please re-check the DOCUMENT_PARTS block, echo each source_text VERBATIM, ` +
+        `and skip any slot whose has_drawing=true or has_complex_content=true.`;
+      attempt += 1;
+    }
+  }
 
   // (7): sanity scan — flag any sections whose intent looks like it
   // baked in subject matter from the template's example placeholder

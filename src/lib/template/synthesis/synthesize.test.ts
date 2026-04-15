@@ -160,6 +160,151 @@ describe('synthesizeSchema (integration with mocked Ask Sage)', () => {
     await expect(synthesizeSchema(client, schema, docx_blob)).rejects.toThrow(/not parseable JSON/);
   });
 
+  it('retries once when the merger rejects on source_text mismatch', async () => {
+    // Build a template with a document_part header so the merger has a
+    // chance to reject on source_text mismatch.
+    const bytes = loadFixture('synthetic-memo.docx');
+    const { schema, docx_blob } = await parseDocx(bytes, {
+      filename: 'memo.docx',
+      docx_blob_id: 'fixture://memo',
+    });
+    const headerSec = schema.sections.find(
+      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
+    );
+    if (!headerSec || headerSec.fill_region.kind !== 'document_part') {
+      // If the fixture lacks a header, skip this specific test path.
+      return;
+    }
+    const firstTextDetail = headerSec.fill_region.paragraph_details.find(
+      (d) => !d.has_drawing && !d.has_complex_content && d.text.trim().length > 0,
+    );
+    if (!firstTextDetail) return;
+
+    const goodSlot = {
+      slot_index: firstTextDetail.slot_index,
+      source_text: firstTextDetail.text,
+      intent: 'banner',
+      style_notes: '',
+      visual_style: {
+        font_family: null,
+        font_size_pt: null,
+        alignment: null,
+        numbering_convention: null,
+      },
+    };
+    const badOutput: LLMSemanticOutput = {
+      style: { voice: 'x', tense: 'y', register: 'z', jargon_policy: 'q', banned_phrases: [] },
+      sections: [],
+      document_parts: [
+        {
+          part_path: headerSec.fill_region.part_path,
+          placement: 'header',
+          slots: [{ ...goodSlot, source_text: 'NOT THE ACTUAL TEXT' }],
+        },
+      ],
+    };
+    const goodOutput: LLMSemanticOutput = {
+      style: { voice: 'x', tense: 'y', register: 'z', jargon_policy: 'q', banned_phrases: [] },
+      sections: [],
+      document_parts: [
+        {
+          part_path: headerSec.fill_region.part_path,
+          placement: 'header',
+          slots: [goodSlot],
+        },
+      ],
+    };
+    const responses = [badOutput, goodOutput];
+    const fetchMock = vi.fn().mockImplementation(() => {
+      const next = responses.shift();
+      if (!next) throw new Error('no more mock responses');
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            response: 'OK',
+            message: JSON.stringify(next),
+            status: 200,
+            uuid: 'u',
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+    const client = new AskSageClient(
+      'https://api.asksage.health.mil',
+      'k',
+      fetchMock as unknown as typeof fetch,
+    );
+    const result = await synthesizeSchema(client, schema, docx_blob);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.schema).toBeTruthy();
+  });
+
+  it('throws after two failed attempts with source_text mismatch', async () => {
+    const bytes = loadFixture('synthetic-memo.docx');
+    const { schema, docx_blob } = await parseDocx(bytes, {
+      filename: 'memo.docx',
+      docx_blob_id: 'fixture://memo',
+    });
+    const headerSec = schema.sections.find(
+      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
+    );
+    if (!headerSec || headerSec.fill_region.kind !== 'document_part') return;
+    const firstTextDetail = headerSec.fill_region.paragraph_details.find(
+      (d) => !d.has_drawing && !d.has_complex_content && d.text.trim().length > 0,
+    );
+    if (!firstTextDetail) return;
+
+    const badOutput: LLMSemanticOutput = {
+      style: { voice: 'x', tense: 'y', register: 'z', jargon_policy: 'q', banned_phrases: [] },
+      sections: [],
+      document_parts: [
+        {
+          part_path: headerSec.fill_region.part_path,
+          placement: 'header',
+          slots: [
+            {
+              slot_index: firstTextDetail.slot_index,
+              source_text: 'WRONG AGAIN',
+              intent: 'x',
+              style_notes: '',
+              visual_style: {
+                font_family: null,
+                font_size_pt: null,
+                alignment: null,
+                numbering_convention: null,
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            response: 'OK',
+            message: JSON.stringify(badOutput),
+            status: 200,
+            uuid: 'u',
+            usage: { prompt_tokens: 100, completion_tokens: 50 },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    const client = new AskSageClient(
+      'https://api.asksage.health.mil',
+      'k',
+      fetchMock as unknown as typeof fetch,
+    );
+    await expect(synthesizeSchema(client, schema, docx_blob)).rejects.toThrow(
+      /source_text mismatch/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('honors a custom model option', async () => {
     const bytes = loadFixture('synthetic-publication.docx');
     const { schema, docx_blob } = await parseDocx(bytes, {
