@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import { assembleProjectDocx, roleToStyleId } from './assemble';
 import { parseDocx } from '../template/parser';
 import type { TemplateRecord } from '../db/schema';
-import type { DraftParagraph } from '../draft/types';
+import type { DraftParagraph, SectionDraft } from '../draft/types';
 import type { BodyFillRegion, TemplateSchema } from '../template/types';
 
 const FIXTURES = resolve(__dirname, '../../test/fixtures');
@@ -842,65 +842,170 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
     expect(footerSection!.intent).toBeTruthy();
   });
 
-  it('leaves word/header1.xml byte-preserved even when a draft is supplied', async () => {
-    const tpl = await buildTemplateWithHeaderFooter();
-    const headerSection = tpl.schema_json.sections.find(
+  async function buildTemplateWithHeaderFooterWithSeal(): Promise<TemplateRecord> {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    <w:p><w:r><w:t xml:space="preserve">body</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:headerReference w:type="default" r:id="rId10"/>
+      <w:pgSz w:w="12240" w:h="15840"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+    // Header with three paragraphs: first is text-only, second is a
+    // drawing-bearing seal, third is text-only. Slot rewriting should
+    // replace 0 and 2 only; slot 1 must survive byte-stable.
+    const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:sz w:val="28"/></w:rPr><w:t xml:space="preserve">DEPARTMENT OF THE ARMY</w:t></w:r>
+  </w:p>
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:drawing><!-- seal --></w:drawing></w:r>
+  </w:p>
+  <w:p>
+    <w:pPr><w:jc w:val="center"/></w:pPr>
+    <w:r><w:t xml:space="preserve">[UNIT NAME]</w:t></w:r>
+  </w:p>
+</w:hdr>`;
+
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+  <Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  <Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>
+</Relationships>`;
+
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+    zip.file('word/header1.xml', headerXml);
+
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const ab = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(ab).set(u8);
+    const blob = new Blob([ab]);
+    const parsed = await parseDocx(blob, {
+      filename: 'hfs.docx',
+      docx_blob_id: 'hfs',
+    });
+
+    return {
+      id: 'tpl_hfs',
+      name: 'hfs',
+      filename: 'hfs.docx',
+      ingested_at: new Date().toISOString(),
+      docx_bytes: blob,
+      schema_json: parsed.schema,
+    };
+  }
+
+  it('rewrites text-only slots and preserves drawing-bearing paragraphs', async () => {
+    const tpl = await buildTemplateWithHeaderFooterWithSeal();
+    const hdr = tpl.schema_json.sections.find(
       (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
     )!;
 
-    const originalHeaderXml = await readPartXml(tpl.docx_bytes, 'word/header1.xml');
-
-    const drafted: DraftParagraph[] = [
-      { role: 'body', text: 'DEPARTMENT OF THE ARMY' },
-      { role: 'body', text: 'TROOP COMMAND, MEDICAL READINESS COMMAND, PACIFIC' },
-      { role: 'body', text: '9040 Jackson Ave, Tacoma WA 98433' },
-    ];
+    const draft: SectionDraft = {
+      kind: 'document_part',
+      slots: [
+        { slot_index: 0, text: 'NEW ORG NAME' },
+        { slot_index: 2, text: 'NEW UNIT NAME' },
+      ],
+    };
 
     const result = await assembleProjectDocx({
       template: tpl,
-      draftedBySectionId: new Map([[headerSection.id, drafted]]),
+      draftedBySectionId: new Map([[hdr.id, draft]]),
     });
-
-    const headerStatus = result.section_results.find(
-      (r) => r.section_id === headerSection.id,
-    );
-    expect(headerStatus?.status.kind).toBe('skipped_unsupported_region');
-
+    const status = result.section_results.find((r) => r.section_id === hdr.id)!.status;
+    expect(status.kind).toBe('assembled_slots');
+    if (status.kind === 'assembled_slots') {
+      expect(status.slots_replaced).toBe(2);
+      expect(status.slots_skipped_drawing).toBe(0);
+    }
     const headerXml = await readPartXml(result.blob, 'word/header1.xml');
-    // Original header content — including the "[UNIT NAME]" placeholder
-    // — must survive untouched. The drafted paragraphs must NOT appear
-    // in the header part.
-    expect(headerXml).toBe(originalHeaderXml);
-    expect(headerXml).toContain('DEPARTMENT OF THE ARMY');
-    expect(headerXml).toContain('[UNIT NAME]');
-    expect(headerXml).not.toContain('TROOP COMMAND, MEDICAL READINESS COMMAND, PACIFIC');
+    expect(headerXml).toContain('NEW ORG NAME');
+    expect(headerXml).toContain('NEW UNIT NAME');
+    expect(headerXml).not.toContain('DEPARTMENT OF THE ARMY');
+    expect(headerXml).not.toContain('[UNIT NAME]');
+    // Seal (drawing) paragraph preserved.
+    expect(headerXml).toContain('<w:drawing');
+    // Paragraph count unchanged (3).
+    const W_NS_LOCAL = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const dom = new DOMParser().parseFromString(headerXml, 'text/xml');
+    expect(Array.from(dom.getElementsByTagNameNS(W_NS_LOCAL, 'p')).length).toBe(3);
   });
 
-  it('leaves word/footer1.xml byte-preserved even when a draft is supplied', async () => {
-    const tpl = await buildTemplateWithHeaderFooter();
-    const footerSection = tpl.schema_json.sections.find(
-      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'footer',
+  it('leaves slots without a draft entry untouched', async () => {
+    const tpl = await buildTemplateWithHeaderFooterWithSeal();
+    const hdr = tpl.schema_json.sections.find(
+      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
     )!;
 
-    const originalFooterXml = await readPartXml(tpl.docx_bytes, 'word/footer1.xml');
-
-    const drafted: DraftParagraph[] = [
-      { role: 'body', text: 'CUI//SP-PROCURE' },
-    ];
+    // Only rewrite slot 0, leave slot 2 ([UNIT NAME]) untouched.
+    const draft: SectionDraft = {
+      kind: 'document_part',
+      slots: [{ slot_index: 0, text: 'NEW ORG' }],
+    };
 
     const result = await assembleProjectDocx({
       template: tpl,
-      draftedBySectionId: new Map([[footerSection.id, drafted]]),
+      draftedBySectionId: new Map([[hdr.id, draft]]),
     });
+    const headerXml = await readPartXml(result.blob, 'word/header1.xml');
+    expect(headerXml).toContain('NEW ORG');
+    expect(headerXml).toContain('[UNIT NAME]');
+  });
 
-    const footerStatus = result.section_results.find(
-      (r) => r.section_id === footerSection.id,
-    );
-    expect(footerStatus?.status.kind).toBe('skipped_unsupported_region');
+  it('ignores slot_index pointing at a drawing paragraph', async () => {
+    const tpl = await buildTemplateWithHeaderFooterWithSeal();
+    const hdr = tpl.schema_json.sections.find(
+      (s) => s.fill_region.kind === 'document_part' && s.fill_region.placement === 'header',
+    )!;
 
-    const footerXml = await readPartXml(result.blob, 'word/footer1.xml');
-    expect(footerXml).toBe(originalFooterXml);
-    expect(footerXml).not.toContain('CUI//SP-PROCURE');
+    const draft: SectionDraft = {
+      kind: 'document_part',
+      slots: [{ slot_index: 1, text: 'SHOULD NOT APPEAR' }],
+    };
+
+    const result = await assembleProjectDocx({
+      template: tpl,
+      draftedBySectionId: new Map([[hdr.id, draft]]),
+    });
+    const status = result.section_results.find((r) => r.section_id === hdr.id)!.status;
+    expect(status.kind).toBe('assembled_slots');
+    if (status.kind === 'assembled_slots') {
+      expect(status.slots_replaced).toBe(0);
+      expect(status.slots_skipped_drawing).toBe(1);
+    }
+    const headerXml = await readPartXml(result.blob, 'word/header1.xml');
+    expect(headerXml).not.toContain('SHOULD NOT APPEAR');
+    expect(headerXml).toContain('<w:drawing');
   });
 
   it('skips document_part sections without a draft entry, leaving the part untouched', async () => {
@@ -917,10 +1022,7 @@ describe('assembleProjectDocx — document_part (header/footer) sections', () =>
     const headerStatus = result.section_results.find(
       (r) => r.section_id === headerSection.id,
     );
-    // No drafts at all → the whole function takes the
-    // no-op passthrough branch which reports document_part as
-    // skipped_unsupported_region (since we don't draft into it anyway).
-    expect(headerStatus?.status.kind).toBe('skipped_unsupported_region');
+    expect(headerStatus?.status.kind).toBe('skipped_no_draft');
 
     const headerXml = await readPartXml(result.blob, 'word/header1.xml');
     expect(headerXml).toContain('DEPARTMENT OF THE ARMY');
