@@ -380,6 +380,7 @@ function processSection(
     if (groups.length === 1) {
       const group = groups[0]!;
       const formatTemplates = collectFormatTemplates(group.paragraphs);
+      formatTemplates.visual_style = section.visual_style;
       const newEls = buildSectionElements(
         dom,
         draft,
@@ -412,6 +413,7 @@ function processSection(
       const group = groups[i]!;
       const slice = slices[i]!;
       const formatTemplates = collectFormatTemplates(group.paragraphs);
+      formatTemplates.visual_style = section.visual_style;
       const newEls = buildSectionElements(
         dom,
         slice,
@@ -624,6 +626,15 @@ interface FormatTemplate {
 interface FormatTemplates {
   heading: FormatTemplate;
   body: FormatTemplate;
+  /**
+   * Optional synthesizer-provided visual style for the section. Used
+   * by the rPr sanitizer to override degenerate font sizes/families
+   * when the cloned template rPr doesn't pass the smell test, and by
+   * the manual-numbering path to prepend "1. "-style prefixes when
+   * the template uses manual numeric/lettered lists rather than
+   * OOXML <w:numPr> lists.
+   */
+  visual_style?: import('../template/types').VisualStyle;
 }
 
 /**
@@ -706,18 +717,155 @@ function collectFormatTemplates(oldRange: Element[]): FormatTemplates {
     return { heading: empty, body: empty };
   }
   const headingTpl = extractFormatTemplate(oldRange[0]!);
-  // Walk from the back so we land on a body-shaped paragraph rather
-  // than a trailing blank. We accept the first one that actually has
-  // a pPr — paragraphs with no pPr at all carry no information.
-  let bodyTpl: FormatTemplate = headingTpl;
+  // Body template selection — two-pass smell test:
+  //
+  //   Pass 1: walk the range (from the back, skipping the heading
+  //           anchor at index 0) looking for a paragraph whose rPr has
+  //           a SANE font size (9pt..24pt). That rules out classification
+  //           markings, banner lines, and footnote-style trailers that
+  //           DoD templates scatter at the end of each section — which
+  //           is exactly how the Arial-7pt cascade bug got produced.
+  //
+  //   Pass 2: if no sane candidate exists, fall back to the legacy
+  //           "first paragraph with any pPr/rPr" rule. Better to have
+  //           a dodgy template than none at all.
+  let bodyTpl: FormatTemplate | null = null;
   for (let i = oldRange.length - 1; i >= 1; i--) {
     const candidate = extractFormatTemplate(oldRange[i]!);
-    if (candidate.pPr || candidate.rPr) {
+    if ((candidate.pPr || candidate.rPr) && isSaneBodyRPr(candidate.rPr)) {
       bodyTpl = candidate;
       break;
     }
   }
-  return { heading: headingTpl, body: bodyTpl };
+  if (!bodyTpl) {
+    for (let i = oldRange.length - 1; i >= 1; i--) {
+      const candidate = extractFormatTemplate(oldRange[i]!);
+      if (candidate.pPr || candidate.rPr) {
+        bodyTpl = candidate;
+        break;
+      }
+    }
+  }
+  return { heading: headingTpl, body: bodyTpl ?? headingTpl };
+}
+
+/**
+ * Smell test for a body-paragraph rPr. Font size inside the "looks
+ * like real body prose" band — 9pt to 24pt — is treated as sane.
+ * Anything outside is almost certainly a classification marking, a
+ * CUI banner, or a footnote-style trailer; we'd rather not let it
+ * become the template for all drafted body text in the section.
+ *
+ * A missing <w:sz> is sane (the paragraph inherits size from its
+ * style), and a missing rPr entirely is treated as sane (same reason).
+ * Only an explicit out-of-band <w:sz> trips the smell.
+ */
+function isSaneBodyRPr(rPr: Element | null): boolean {
+  if (!rPr) return true;
+  const sz = firstChildNS(rPr, 'sz');
+  if (!sz) return true;
+  const halfPts = Number(sz.getAttributeNS(W_NS, 'val') ?? sz.getAttribute('w:val'));
+  if (!Number.isFinite(halfPts)) return true;
+  return halfPts >= 18 && halfPts <= 48; // 9pt..24pt
+}
+
+/**
+ * Produce the run-base rPr the appenders should clone from. Does
+ * three things, in order:
+ *
+ *   1. Deep-clone the source rPr so we don't mutate the shared
+ *      FormatTemplate.
+ *   2. Smell-test the clone's <w:sz>. For non-heading roles, a sz
+ *      outside 9pt..24pt gets removed entirely — the Word style
+ *      behind the pStyle we set on pPr will supply a default size
+ *      that's almost always more appropriate than the leftover
+ *      banner-line sz we cloned.
+ *   3. Apply synthesizer `visual_style` as an authoritative override:
+ *      - font_size_pt (takes precedence over the smell-test removal)
+ *      - font_family (fills in rFonts.ascii/hAnsi when missing)
+ *
+ * Returns null when the base was null and no visual_style was supplied —
+ * the caller keeps using null rPr and Word renders with document default.
+ */
+function sanitizeClonedRPr(
+  dom: Document,
+  baseRPr: Element | null,
+  role: DraftParagraph['role'],
+  vs: import('../template/types').VisualStyle | undefined,
+): Element | null {
+  if (!baseRPr && !vs) return null;
+
+  const rPr = baseRPr
+    ? (baseRPr.cloneNode(true) as Element)
+    : dom.createElementNS(W_NS, 'w:rPr');
+
+  // Only smell-test non-heading roles. Headings can legitimately run
+  // big (Title style is often 28–48pt) or small (sub-sub-headings).
+  if (role !== 'heading') {
+    const sz = firstChildNS(rPr, 'sz');
+    if (sz) {
+      const halfPts = Number(sz.getAttributeNS(W_NS, 'val') ?? sz.getAttribute('w:val'));
+      const saneBand = Number.isFinite(halfPts) && halfPts >= 18 && halfPts <= 48;
+      if (!saneBand) {
+        removeChildrenByLocalName(rPr, 'sz');
+      }
+    }
+  }
+
+  // visual_style.font_size_pt: authoritative. If present, replaces any
+  // existing <w:sz>. Clamp to 8..48pt defensively in case the LLM
+  // emitted something nonsensical.
+  if (vs?.font_size_pt != null) {
+    const pt = Math.max(8, Math.min(48, vs.font_size_pt));
+    removeChildrenByLocalName(rPr, 'sz');
+    const sz = dom.createElementNS(W_NS, 'w:sz');
+    sz.setAttributeNS(W_NS, 'w:val', String(pt * 2)); // OOXML sz is half-points
+    rPr.appendChild(sz);
+    // szCs mirrors sz for complex scripts; setting both avoids Word
+    // falling back to a different complex-script size.
+    removeChildrenByLocalName(rPr, 'szCs');
+    const szCs = dom.createElementNS(W_NS, 'w:szCs');
+    szCs.setAttributeNS(W_NS, 'w:val', String(pt * 2));
+    rPr.appendChild(szCs);
+  }
+
+  // visual_style.font_family: fill in rFonts.ascii/hAnsi when not set.
+  // If the rPr already has an rFonts with ascii, we leave it alone —
+  // the template's choice wins over the synthesizer for fonts.
+  if (vs?.font_family) {
+    const existing = firstChildNS(rPr, 'rFonts');
+    const hasAscii = !!existing?.getAttributeNS(W_NS, 'ascii');
+    if (!hasAscii) {
+      removeChildrenByLocalName(rPr, 'rFonts');
+      const rFonts = dom.createElementNS(W_NS, 'w:rFonts');
+      rFonts.setAttributeNS(W_NS, 'w:ascii', vs.font_family);
+      rFonts.setAttributeNS(W_NS, 'w:hAnsi', vs.font_family);
+      rFonts.setAttributeNS(W_NS, 'w:cs', vs.font_family);
+      rPr.appendChild(rFonts);
+    }
+  }
+
+  // Empty rPr has no effect. Signal with null so the appenders skip it.
+  return rPr.firstChild ? rPr : null;
+}
+
+/**
+ * Apply synthesizer `visual_style` to a cloned pPr when the pPr
+ * doesn't already carry the equivalent setting. Currently: only
+ * alignment (<w:jc>) — indent/spacing are respected if the template
+ * provided them. The cloned pPr's own <w:jc> always wins.
+ */
+function applyPPrVisualStyle(
+  dom: Document,
+  pPr: Element,
+  vs: import('../template/types').VisualStyle | undefined,
+): void {
+  if (!vs?.alignment) return;
+  const existing = firstChildNS(pPr, 'jc');
+  if (existing) return;
+  const jc = dom.createElementNS(W_NS, 'w:jc');
+  jc.setAttributeNS(W_NS, 'w:val', vs.alignment);
+  pPr.appendChild(jc);
 }
 
 function extractFormatTemplate(p: Element): FormatTemplate {
@@ -798,16 +946,23 @@ function buildSectionElements(
   templates: FormatTemplates,
   inventory: FormatInventory,
 ): Element[] {
+  // Manual-numbering pass (pre-pass): when the synthesizer says this
+  // section uses manual_numeric or manual_lettered numbering (i.e.,
+  // the template types "1., 2., 3." or "a., b., c." as literal text
+  // prefixes rather than using OOXML <w:numPr> lists), prepend the
+  // prefix to each body-role paragraph's text when the drafter didn't
+  // already produce one. We operate on a shallow-cloned array so the
+  // caller's draft isn't mutated.
+  const numbered = applyManualNumbering(draft, templates.visual_style);
+
   const out: Element[] = [];
   let i = 0;
-  while (i < draft.length) {
-    const dp = draft[i]!;
+  while (i < numbered.length) {
+    const dp = numbered[i]!;
     if (dp.role === 'table_row') {
-      // Collect the maximal run of consecutive table_row paragraphs
-      // and build them as one <w:tbl>.
       const rows: DraftParagraph[] = [];
-      while (i < draft.length && draft[i]!.role === 'table_row') {
-        rows.push(draft[i]!);
+      while (i < numbered.length && numbered[i]!.role === 'table_row') {
+        rows.push(numbered[i]!);
         i += 1;
       }
       out.push(buildTable(dom, rows, templates));
@@ -816,12 +971,74 @@ function buildSectionElements(
     out.push(buildParagraph(dom, dp, availableStyleIds, templates, inventory));
     i += 1;
   }
-  // Word refuses a <w:tbl> as the LAST element of a <w:tc> without a
-  // trailing <w:p>. Append a tiny empty paragraph if we end on a table.
   if (out.length > 0 && out[out.length - 1]!.localName === 'tbl') {
     out.push(emptyParagraph(dom));
   }
   return out;
+}
+
+/**
+ * If `visual_style.numbering_convention` is `manual_numeric` or
+ * `manual_lettered`, walk the draft and prepend "1. " / "a. " style
+ * prefixes to each body-role paragraph that doesn't already carry one.
+ * Consecutive non-body paragraphs (heading, table_row) reset the
+ * counter so nested lists don't continue across intervening headings.
+ *
+ * Returns a new array of DraftParagraph; original objects are shallow-
+ * cloned when text is rewritten so the caller's draft is untouched.
+ */
+function applyManualNumbering(
+  draft: DraftParagraph[],
+  vs: import('../template/types').VisualStyle | undefined,
+): DraftParagraph[] {
+  const conv = vs?.numbering_convention;
+  if (conv !== 'manual_numeric' && conv !== 'manual_lettered') return draft;
+
+  const out: DraftParagraph[] = [];
+  let counter = 0;
+  // Already starts with a prefix like "1. ", "12. ", "a. ", "iv. ",
+  // or "A) " — avoid double-numbering. Case-insensitive, tolerates
+  // common separator variants.
+  const existingPrefix = /^\s*(?:[0-9]+|[A-Za-z]{1,3})[.)]\s+/;
+
+  for (const dp of draft) {
+    if (!isBodyShapedRole(dp.role)) {
+      counter = 0;
+      out.push(dp);
+      continue;
+    }
+    const text = dp.text ?? '';
+    if (existingPrefix.test(text)) {
+      // Drafter already emitted a prefix — respect it, but keep the
+      // counter in sync so sibling paragraphs don't duplicate.
+      counter += 1;
+      out.push(dp);
+      continue;
+    }
+    counter += 1;
+    const prefix = conv === 'manual_numeric'
+      ? `${counter}. `
+      : `${letteredPrefix(counter)}. `;
+    // Shallow-clone so we don't mutate the caller's draft array.
+    out.push({ ...dp, text: prefix + text });
+  }
+  return out;
+}
+
+/**
+ * 1 → "a", 2 → "b", ..., 26 → "z", 27 → "aa", 28 → "ab" ...
+ * Classic Excel-column style, lowercased. Over 702 wraps to "zz" →
+ * "aaa", which is overkill for any real memo but cheap to support.
+ */
+function letteredPrefix(n: number): string {
+  const letters: string[] = [];
+  let x = Math.max(1, n);
+  while (x > 0) {
+    const rem = (x - 1) % 26;
+    letters.unshift(String.fromCharCode(97 + rem));
+    x = Math.floor((x - 1) / 26);
+  }
+  return letters.join('');
 }
 
 function emptyParagraph(dom: Document): Element {
@@ -1079,12 +1296,23 @@ function buildParagraph(
     pPr.appendChild(dom.createElementNS(W_NS, 'w:pageBreakBefore'));
   }
 
+  // Apply visual_style alignment fallback to pPr if it doesn't
+  // already have an explicit <w:jc>.
+  applyPPrVisualStyle(dom, pPr, templates.visual_style);
+
   // Only attach pPr if it has any children — an empty pPr is legal
   // but pollutes the diff. Skipping when empty also matches the
   // original codepath's behavior when no style was available.
   if (pPr.firstChild) {
     p.appendChild(pPr);
   }
+
+  // Smell-test / override the run rPr BEFORE handing it to the
+  // appenders. For non-heading roles, an absurd font size (< 9pt,
+  // > 24pt) in the cloned rPr is almost always template debris we
+  // don't want cascaded into every drafted run. The sanitizer strips
+  // bad sizes and applies synthesizer-provided font/size when present.
+  const runBaseRPr = sanitizeClonedRPr(dom, tpl.rPr, dp.role, templates.visual_style);
 
   // ── Run(s) + text ──
   // Three input shapes for paragraph content:
@@ -1097,7 +1325,7 @@ function buildParagraph(
   //      somehow escaped grouping (defensive).
   //   3. plain dp.text path (the most common case).
   if (Array.isArray(dp.runs) && dp.runs.length > 0) {
-    appendRichRuns(dom, p, dp.runs, tpl.rPr, manualBulletPrefix);
+    appendRichRuns(dom, p, dp.runs, runBaseRPr, manualBulletPrefix);
   } else {
     let text: string;
     if (dp.role === 'table_row' && Array.isArray(dp.cells) && dp.cells.length > 0) {
@@ -1108,7 +1336,7 @@ function buildParagraph(
     if (manualBulletPrefix) {
       text = manualBulletPrefix + text;
     }
-    appendPlainTextRun(dom, p, text, tpl.rPr);
+    appendPlainTextRun(dom, p, text, runBaseRPr);
   }
 
   return p;

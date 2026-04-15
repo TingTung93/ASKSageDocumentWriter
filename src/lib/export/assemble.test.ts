@@ -2651,3 +2651,188 @@ describe('assembleProjectDocx — bullet fallback when no list inventory exists'
     expect(nested.textContent).toContain('nested item');
   });
 });
+
+// ─── Smell tests: don't cascade degenerate template rPr ──────────────
+//
+// MFR-style templates often close each section with a 7pt banner line
+// or a classification-marking stub. The legacy assembler lifted that
+// paragraph's rPr as the "body template" and applied it to every
+// drafted body run, producing Arial-8 body text that no government
+// writing convention would condone. The fixes below pin the smell
+// test (collectFormatTemplates prefers sane candidates) and the
+// visual_style fallback path.
+
+describe('assembleProjectDocx — smell tests for degenerate template rPr', () => {
+  async function buildTemplateWithTinyTrailer(): Promise<TemplateRecord> {
+    // Section with three paragraphs:
+    //   [0] heading
+    //   [1] sane 12pt Times New Roman body paragraph
+    //   [2] 7pt Arial "classification marking" trailer (the bad guy)
+    // Draft replaces all three. The legacy bug: runs end up with
+    // sz=14 (7pt). Smell test keeps them out of Arial-7pt territory.
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+      <w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">1. SECTION ONE</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+      <w:r><w:rPr><w:rFonts w:ascii="Times New Roman"/><w:sz w:val="24"/></w:rPr><w:t xml:space="preserve">body prose paragraph</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:pPr><w:pStyle w:val="Normal"/></w:pPr>
+      <w:r><w:rPr><w:rFonts w:ascii="Arial"/><w:sz w:val="14"/></w:rPr><w:t xml:space="preserve">CUI</w:t></w:r>
+    </w:p>
+    <w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>
+  </w:body>
+</w:document>`;
+    const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>
+</w:styles>`;
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+    zip.file('[Content_Types].xml', contentTypes);
+    zip.file('_rels/.rels', rootRels);
+    zip.file('word/_rels/document.xml.rels', docRels);
+    zip.file('word/document.xml', documentXml);
+    zip.file('word/styles.xml', stylesXml);
+
+    const u8 = await zip.generateAsync({ type: 'uint8array' });
+    const ab = new ArrayBuffer(u8.byteLength);
+    new Uint8Array(ab).set(u8);
+    const blob = new Blob([ab]);
+    const parsed = await parseDocx(blob, {
+      filename: 'tiny-trailer.docx',
+      docx_blob_id: 'tt',
+    });
+    return {
+      id: 'tpl_tt',
+      name: 'tt',
+      filename: 'tiny-trailer.docx',
+      ingested_at: new Date().toISOString(),
+      docx_bytes: blob,
+      schema_json: parsed.schema,
+    };
+  }
+
+  async function readDocumentXml(blob: Blob): Promise<string> {
+    const JSZip = (await import('jszip')).default;
+    const zip = await JSZip.loadAsync(blob);
+    return zip.file('word/document.xml')!.async('string');
+  }
+
+  it('does not cascade a 7pt trailer rPr onto drafted body runs', async () => {
+    const tpl = await buildTemplateWithTinyTrailer();
+    const body = tpl.schema_json.sections.find((s) => s.fill_region.kind === 'heading_bounded')!;
+    const draft: DraftParagraph[] = [
+      { role: 'body', text: 'Newly drafted paragraph one.' },
+      { role: 'body', text: 'Newly drafted paragraph two.' },
+    ];
+    const result = await assembleProjectDocx({
+      template: tpl,
+      draftedBySectionId: new Map([[body.id, draft]]),
+    });
+    const xml = await readDocumentXml(result.blob);
+    // No <w:sz w:val="14"/> — that's the 7pt trailer's size leaking
+    // into drafted runs, which is the Arial-8 symptom.
+    expect(xml).not.toMatch(/<w:sz[^>]+w:val="14"/);
+  });
+
+  it('applies visual_style.font_size_pt when provided, overriding any surviving sz', async () => {
+    const tpl = await buildTemplateWithTinyTrailer();
+    const body = tpl.schema_json.sections.find((s) => s.fill_region.kind === 'heading_bounded')!;
+    // Inject visual_style synthetically (the synthesizer would normally
+    // provide this; here we're testing the assembler in isolation).
+    if (body.fill_region.kind === 'heading_bounded') {
+      (body as typeof body & { visual_style?: unknown }).visual_style = {
+        font_family: 'Times New Roman',
+        font_size_pt: 12,
+        alignment: null,
+        numbering_convention: null,
+      };
+    }
+    const draft: DraftParagraph[] = [{ role: 'body', text: 'Drafted body.' }];
+    const result = await assembleProjectDocx({
+      template: tpl,
+      draftedBySectionId: new Map([[body.id, draft]]),
+    });
+    const xml = await readDocumentXml(result.blob);
+    // sz=24 = 12pt half-points.
+    expect(xml).toMatch(/<w:sz[^>]+w:val="24"/);
+    // Times New Roman should appear on drafted runs (either from the
+    // sane-body clone or the visual_style override).
+    expect(xml).toMatch(/Times New Roman/);
+  });
+
+  it('prepends 1. 2. 3. prefixes when visual_style.numbering_convention=manual_numeric', async () => {
+    const tpl = await buildTemplateWithTinyTrailer();
+    const body = tpl.schema_json.sections.find((s) => s.fill_region.kind === 'heading_bounded')!;
+    if (body.fill_region.kind === 'heading_bounded') {
+      (body as typeof body & { visual_style?: unknown }).visual_style = {
+        font_family: null,
+        font_size_pt: null,
+        alignment: null,
+        numbering_convention: 'manual_numeric',
+      };
+    }
+    const draft: DraftParagraph[] = [
+      { role: 'body', text: 'First point.' },
+      { role: 'body', text: 'Second point.' },
+      { role: 'body', text: 'Third point.' },
+    ];
+    const result = await assembleProjectDocx({
+      template: tpl,
+      draftedBySectionId: new Map([[body.id, draft]]),
+    });
+    const xml = await readDocumentXml(result.blob);
+    expect(xml).toContain('1. First point.');
+    expect(xml).toContain('2. Second point.');
+    expect(xml).toContain('3. Third point.');
+  });
+
+  it('does not double-number when the drafter already emitted prefixes', async () => {
+    const tpl = await buildTemplateWithTinyTrailer();
+    const body = tpl.schema_json.sections.find((s) => s.fill_region.kind === 'heading_bounded')!;
+    if (body.fill_region.kind === 'heading_bounded') {
+      (body as typeof body & { visual_style?: unknown }).visual_style = {
+        font_family: null,
+        font_size_pt: null,
+        alignment: null,
+        numbering_convention: 'manual_numeric',
+      };
+    }
+    const draft: DraftParagraph[] = [
+      { role: 'body', text: '1. Already prefixed.' },
+      { role: 'body', text: '2. Also prefixed.' },
+    ];
+    const result = await assembleProjectDocx({
+      template: tpl,
+      draftedBySectionId: new Map([[body.id, draft]]),
+    });
+    const xml = await readDocumentXml(result.blob);
+    expect(xml).toContain('1. Already prefixed.');
+    expect(xml).toContain('2. Also prefixed.');
+    // Would be the "1. 1." signature of double-numbering.
+    expect(xml).not.toMatch(/\d+\.\s+\d+\.\s/);
+  });
+});
