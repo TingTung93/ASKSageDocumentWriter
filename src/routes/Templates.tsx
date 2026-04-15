@@ -22,6 +22,29 @@ import { importBundleFromText } from '../lib/share/import';
 // row in the local template library → click to view the schema.
 // Phase 1b UI: synthesize semantic half via Gemini Flash on demand.
 
+/**
+ * Detect templates synthesized before the letterhead slot-rewrite
+ * feature shipped. Old schemas are missing style_notes on body
+ * sections and slots[] on document_part sections; re-synthesizing
+ * unlocks per-slot letterhead drafting and style-aware body prompts.
+ */
+function needsResynthesisForLetterhead(schema: TemplateSchema): boolean {
+  const anyBody = schema.sections.some((s) => s.fill_region.kind === 'heading_bounded');
+  const anyBodyHasStyleNotes = schema.sections.some(
+    (s) => s.fill_region.kind === 'heading_bounded' && s.style_notes != null,
+  );
+  const anyDocumentPart = schema.sections.some((s) => s.fill_region.kind === 'document_part');
+  const anyDocPartHasSlots = schema.sections.some(
+    (s) => s.fill_region.kind === 'document_part' && s.fill_region.slots != null,
+  );
+  // If semantic synthesis has never been run, the template card already
+  // shows a "synthesize" button — don't also show the re-synthesize pill.
+  if (!schema.source.semantic_synthesizer) return false;
+  if (anyBody && !anyBodyHasStyleNotes) return true;
+  if (anyDocumentPart && !anyDocPartHasSlots) return true;
+  return false;
+}
+
 export function Templates() {
   const templates = useLiveQuery(() => db.templates.orderBy('ingested_at').reverse().toArray(), []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -262,6 +285,25 @@ export function Templates() {
               {t.schema_json.sections.length === 1 ? '' : 's'} ·{' '}
               {t.schema_json.metadata_fill_regions.length} metadata
             </span>
+            {needsResynthesisForLetterhead(t.schema_json) && (
+              <button
+                type="button"
+                className="btn-warning btn-sm"
+                title="This template was synthesized before the letterhead slot-rewrite feature; re-synthesize to enable per-slot header/footer drafting and style-aware prompts."
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onSynthesize(t);
+                }}
+                style={{
+                  marginLeft: '0.25rem',
+                  background: '#fff3cd',
+                  border: '1px solid #ffeeba',
+                  color: '#856404',
+                }}
+              >
+                re-synthesize
+              </button>
+            )}
             <button
               type="button"
               className="btn-secondary btn-sm"
