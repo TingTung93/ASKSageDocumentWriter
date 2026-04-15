@@ -47,12 +47,12 @@ export function mergeSemanticIntoSchema(
   const renumberedDocParts = docPartSections.map((s, i): BodyFillRegion => {
     const base: BodyFillRegion = { ...s, order: llmAuthored.length + i };
     if (base.fill_region.kind !== 'document_part') return base;
+    const fr = base.fill_region;
     const llmPart = (semantic.document_parts ?? []).find(
-      (dp) => dp.part_path === base.fill_region.part_path &&
-        base.fill_region.kind === 'document_part',
+      (dp) => dp.part_path === fr.part_path,
     );
     if (!llmPart) return base;
-    const details = base.fill_region.paragraph_details;
+    const details = fr.paragraph_details;
     for (const slot of llmPart.slots) {
       const detail = details.find((d) => d.slot_index === slot.slot_index);
       if (!detail) {
@@ -73,7 +73,7 @@ export function mergeSemanticIntoSchema(
       }
     }
     base.fill_region = {
-      ...base.fill_region,
+      ...fr,
       slots: llmPart.slots.map((s2) => ({
         slot_index: s2.slot_index,
         intent: s2.intent,
