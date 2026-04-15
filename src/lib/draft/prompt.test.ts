@@ -222,3 +222,41 @@ describe('buildDraftingPrompt', () => {
     expect(built.message).toContain('must_not_exceed_words');
   });
 });
+
+describe('buildDraftingPrompt — style_notes + visual_style', () => {
+  it('includes STYLE NOTES and VISUAL STYLE blocks when present', () => {
+    const section = makeSection();
+    section.style_notes = 'ALL CAPS titles only';
+    section.visual_style = {
+      font_family: 'Times New Roman',
+      font_size_pt: 12,
+      alignment: 'justify',
+      numbering_convention: 'manual_numeric',
+    };
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section,
+      project_description: 'X',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.message).toContain('STYLE NOTES:');
+    expect(built.message).toContain('ALL CAPS titles only');
+    expect(built.message).toContain('VISUAL STYLE:');
+    expect(built.message).toContain('font: Times New Roman 12pt');
+    expect(built.message).toContain('alignment: justify');
+    expect(built.message).toContain('numbering: manual_numeric');
+  });
+
+  it('omits STYLE NOTES block when style_notes is empty or absent', () => {
+    const section = makeSection();
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section,
+      project_description: 'X',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.message).not.toContain('STYLE NOTES:');
+  });
+});

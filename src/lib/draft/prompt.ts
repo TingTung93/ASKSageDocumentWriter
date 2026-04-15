@@ -330,6 +330,29 @@ export function buildDraftingPrompt(args: BuildDraftingPromptArgs): BuiltDraftin
   }
   const allowed = section.fill_region.permitted_roles ?? ['body'];
   lines.push(`permitted_roles: ${allowed.join(', ')}`);
+  if (section.style_notes && section.style_notes.trim().length > 0) {
+    lines.push(``);
+    lines.push(`STYLE NOTES:`);
+    lines.push(`  ${section.style_notes.trim()}`);
+  }
+  if (section.visual_style) {
+    const vs = section.visual_style;
+    const vsLines: string[] = [];
+    if (vs.font_family || vs.font_size_pt) {
+      vsLines.push(
+        `font: ${vs.font_family ?? 'default'}${vs.font_size_pt ? ` ${vs.font_size_pt}pt` : ''}`.trim(),
+      );
+    }
+    if (vs.alignment) vsLines.push(`alignment: ${vs.alignment}`);
+    if (vs.numbering_convention && vs.numbering_convention !== 'none') {
+      vsLines.push(`numbering: ${vs.numbering_convention}`);
+    }
+    if (vsLines.length > 0) {
+      lines.push(``);
+      lines.push(`VISUAL STYLE:`);
+      for (const l of vsLines) lines.push(`  ${l}`);
+    }
+  }
   lines.push(`=== END SECTION TO DRAFT ===`);
 
   // ─── 8. PRIOR SECTION SUMMARIES (for context, not repetition) ─────
