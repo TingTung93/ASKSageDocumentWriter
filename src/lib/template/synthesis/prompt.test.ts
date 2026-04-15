@@ -208,6 +208,57 @@ describe('buildSynthesisPrompt', () => {
     expect(built.message).toContain('END FULL TEMPLATE BODY');
   });
 
+  it('includes a DOCUMENT_PARTS block with slot indices, text, and drawing flags', () => {
+    const schema = makeSchema();
+    schema.sections.push({
+      id: 'header_header1',
+      name: 'Page Header (header1)',
+      order: 1,
+      required: false,
+      fill_region: {
+        kind: 'document_part',
+        part_path: 'word/header1.xml',
+        placement: 'header',
+        original_text_lines: ['DEPARTMENT OF THE ARMY'],
+        permitted_roles: ['body', 'heading'],
+        paragraph_details: [
+          {
+            slot_index: 0,
+            text: 'DEPARTMENT OF THE ARMY',
+            has_drawing: false,
+            has_complex_content: false,
+            alignment: 'center',
+            font_family: 'Arial',
+            font_size_pt: 14,
+          },
+          {
+            slot_index: 1,
+            text: '',
+            has_drawing: true,
+            has_complex_content: false,
+            alignment: 'center',
+            font_family: null,
+            font_size_pt: null,
+          },
+        ],
+      },
+    });
+    const built = buildSynthesisPrompt({
+      schema,
+      samples: [],
+      full_body: EMPTY_BODY,
+    });
+    expect(built.message).toContain('DOCUMENT_PARTS:');
+    expect(built.message).toContain('header1 (word/header1.xml):');
+    expect(built.message).toMatch(/\[0\] text="DEPARTMENT OF THE ARMY"/);
+    expect(built.message).toMatch(/align=center/);
+    expect(built.message).toMatch(/font=Arial/);
+    expect(built.message).toMatch(/sz=14/);
+    expect(built.message).toMatch(/has_drawing=false/);
+    expect(built.message).toMatch(/\[1\] text=""[^\n]*has_drawing=true/);
+    expect(built.system_prompt).toContain('document_parts');
+  });
+
   it('marks the full body as truncated when not all paragraphs fit', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),

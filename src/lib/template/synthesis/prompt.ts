@@ -41,7 +41,29 @@ OUTPUT SCHEMA — produce JSON in exactly this shape:
       "intent": "<one sentence stating the COMMUNICATIVE GOAL of this section in subject-agnostic language>",
       "target_words": [<min_int>, <max_int>],
       "depends_on": ["<other section id from this list>", ...],
+      "style_notes": "<one short paragraph of plain-prose textual conventions for this section — ALL CAPS title? numbered list? formal passive voice? Anything the drafter needs to match the template's look-and-feel. Empty string if none.>",
+      "visual_style": {
+        "font_family": "<font family name or null>",
+        "font_size_pt": <integer or null>,
+        "alignment": "left" | "center" | "right" | "justify" | null,
+        "numbering_convention": "none" | "manual_numeric" | "manual_lettered" | "ooxml_list" | null
+      },
       "validation": { "must_not_exceed_words": <int>, "must_be_at_least_words": <int> }
+    }
+  ],
+  "document_parts": [
+    {
+      "part_path": "<word/headerN.xml or word/footerN.xml, echo exactly from DOCUMENT_PARTS block>",
+      "placement": "header" | "footer",
+      "slots": [
+        {
+          "slot_index": <integer index from DOCUMENT_PARTS block; only TEXT-ONLY paragraphs, skip paragraphs marked has_drawing=true or has_complex_content=true>,
+          "source_text": "<the EXACT source text from the DOCUMENT_PARTS block — echoed verbatim; merger rejects the output if this doesn't match>",
+          "intent": "<one sentence subject-agnostic role of this slot, e.g. 'Organization name banner', 'Unit identifier', 'CUI marking'>",
+          "style_notes": "<one short line — ALL CAPS? bold? abbreviations? — that the drafter must match>",
+          "visual_style": { "font_family": <...>, "font_size_pt": <...>, "alignment": <...>, "numbering_convention": <...> }
+        }
+      ]
     }
   ]
 }
@@ -164,6 +186,43 @@ Use these annotations together with the text content to infer each paragraph's p
     lines.push(formatBodyLine(line));
   }
   lines.push(`=== END FULL TEMPLATE BODY ===`);
+
+  // ─── Document parts (header/footer XML) ────────────────────────────
+  // Page headers and footers live in separate XML parts. They hold
+  // letterhead: organization banners, seals, unit identifiers, CUI
+  // markings. We expose each paragraph as a numbered slot so the LLM
+  // can author per-slot intent/style guidance. Drawing-bearing
+  // paragraphs are marked has_drawing=true and MUST be skipped — the
+  // assembler will never rewrite them.
+  const docPartSections = schema.sections.filter(
+    (s) => s.fill_region.kind === 'document_part',
+  );
+  if (docPartSections.length > 0) {
+    lines.push(``);
+    lines.push(`DOCUMENT_PARTS:`);
+    for (const sec of docPartSections) {
+      if (sec.fill_region.kind !== 'document_part') continue;
+      const fr = sec.fill_region;
+      const labelMatch = fr.part_path.match(/word\/(.*?)\.xml$/);
+      const label = labelMatch ? labelMatch[1]! : fr.part_path;
+      lines.push(`  ${label} (${fr.part_path}):`);
+      for (const d of fr.paragraph_details) {
+        const annot: string[] = [];
+        annot.push(`align=${d.alignment ?? 'default'}`);
+        if (d.font_family) annot.push(`font=${d.font_family}`);
+        if (d.font_size_pt !== null) annot.push(`sz=${d.font_size_pt}`);
+        annot.push(`has_drawing=${d.has_drawing}`);
+        if (d.has_complex_content) annot.push(`has_complex_content=true`);
+        lines.push(`    [${d.slot_index}] text=${JSON.stringify(d.text)}  ${annot.join('  ')}`);
+      }
+    }
+    lines.push(
+      `Each ${'${'}part{'}'} above is a page header or footer. For each, author a document_parts[] entry with slots[] covering only the TEXT-ONLY paragraphs (has_drawing=false, has_complex_content omitted). Echo source_text verbatim.`.replaceAll(
+        '${part}',
+        'part',
+      ),
+    );
+  }
 
   // ─── Parser-detected section hints (advisory) ──────────────────────
   // The parser made its best guess at sections. They are listed here as
