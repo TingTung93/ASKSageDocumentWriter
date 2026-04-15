@@ -2,6 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseDocx } from './index';
+import { classifyParagraph } from './document';
+
+const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+
+function pFromXml(inner: string): Element {
+  const xml = `<w:p xmlns:w="${W_NS}">${inner}</w:p>`;
+  return new DOMParser().parseFromString(xml, 'text/xml').documentElement;
+}
 
 const FIXTURES = resolve(__dirname, '../../../test/fixtures');
 
@@ -262,6 +270,35 @@ describe('parseDocx — synthetic templates', () => {
         expect(hp.label).toMatch(/^header\d+$/i);
         expect(hp.part).toMatch(/^word\/header\d+\.xml$/);
       }
+    });
+  });
+});
+
+describe('classifyParagraph', () => {
+  it('flags drawing-bearing paragraphs', () => {
+    const p = pFromXml('<w:r><w:drawing/></w:r>');
+    expect(classifyParagraph(p)).toEqual({
+      has_drawing: true,
+      has_complex_content: false,
+    });
+  });
+
+  it('flags pict and object as drawings', () => {
+    expect(classifyParagraph(pFromXml('<w:r><w:pict/></w:r>')).has_drawing).toBe(true);
+    expect(classifyParagraph(pFromXml('<w:r><w:object/></w:r>')).has_drawing).toBe(true);
+  });
+
+  it('flags sdt, footnoteReference, endnoteReference, and fldChar as complex', () => {
+    expect(classifyParagraph(pFromXml('<w:sdt/>')).has_complex_content).toBe(true);
+    expect(classifyParagraph(pFromXml('<w:r><w:footnoteReference/></w:r>')).has_complex_content).toBe(true);
+    expect(classifyParagraph(pFromXml('<w:r><w:endnoteReference/></w:r>')).has_complex_content).toBe(true);
+    expect(classifyParagraph(pFromXml('<w:r><w:fldChar/></w:r>')).has_complex_content).toBe(true);
+  });
+
+  it('returns {false, false} for plain text paragraphs', () => {
+    expect(classifyParagraph(pFromXml('<w:r><w:t>hello</w:t></w:r>'))).toEqual({
+      has_drawing: false,
+      has_complex_content: false,
     });
   });
 });

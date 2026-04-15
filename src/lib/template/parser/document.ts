@@ -505,3 +505,41 @@ function classifyPaper(w: number | null, h: number | null): PageSetup['paper'] {
 
 // Re-export wAll for tests that want to inspect raw elements
 export { wAll };
+
+// ─── Paragraph classification ─────────────────────────────────────
+//
+// Used by the header/footer slot-rewrite path in the assembler and
+// by the synthesizer's document_parts prompt builder. A paragraph that
+// contains a drawing, picture, OLE object, SDT, or field reference is
+// treated as non-draftable: the assembler leaves it byte-stable and
+// the synthesizer omits it from the slot list sent to the LLM.
+//
+// We walk the whole paragraph tree rather than just direct children
+// because drawings are nested inside <w:r>, SDT boundaries can wrap
+// runs, and field characters live inside runs too.
+
+const DRAWING_LOCAL_NAMES = new Set(['drawing', 'pict', 'object']);
+const COMPLEX_LOCAL_NAMES = new Set([
+  'sdt',
+  'footnoteReference',
+  'endnoteReference',
+  'fldChar',
+]);
+
+export function classifyParagraph(p: Element): {
+  has_drawing: boolean;
+  has_complex_content: boolean;
+} {
+  let has_drawing = false;
+  let has_complex_content = false;
+  const walker = (el: Element): void => {
+    const ln = el.localName;
+    if (DRAWING_LOCAL_NAMES.has(ln)) has_drawing = true;
+    if (COMPLEX_LOCAL_NAMES.has(ln)) has_complex_content = true;
+    for (let n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 1 /* ELEMENT_NODE */) walker(n as Element);
+    }
+  };
+  walker(p);
+  return { has_drawing, has_complex_content };
+}
