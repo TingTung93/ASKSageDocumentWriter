@@ -100,13 +100,36 @@ export function scanSchemaForSubjectLeakage(
 ): SubjectLeakageWarning[] {
   const warnings: SubjectLeakageWarning[] = [];
   for (const section of sections) {
-    if (!section.intent) continue;
-    const flagged = flagSubjectTokens(section.intent);
+    const texts: string[] = [];
+    if (section.intent) texts.push(section.intent);
+    if (section.style_notes) texts.push(section.style_notes);
+    // document_part slots carry their own intent / style_notes; scan
+    // each slot's strings too.
+    if (section.fill_region.kind === 'document_part' && section.fill_region.slots) {
+      for (const slot of section.fill_region.slots) {
+        if (slot.intent) texts.push(slot.intent);
+        if (slot.style_notes) texts.push(slot.style_notes);
+      }
+    }
+    const all = texts.join(' ');
+    if (!all.trim()) continue;
+    const flagged = flagSubjectTokens(all);
+    if (flagged.length >= 1 && section.style_notes && flagSubjectTokens(section.style_notes).length > 0) {
+      // style_notes leaks trigger on a single flagged token (prompt
+      // promises subject-agnostic prose, so any proper noun is a tell).
+      warnings.push({
+        section_id: section.id,
+        section_name: section.name,
+        intent: section.intent ?? '',
+        flagged_tokens: flagged,
+      });
+      continue;
+    }
     if (flagged.length >= 2) {
       warnings.push({
         section_id: section.id,
         section_name: section.name,
-        intent: section.intent,
+        intent: section.intent ?? '',
         flagged_tokens: flagged,
       });
     }

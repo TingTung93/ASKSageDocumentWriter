@@ -75,6 +75,14 @@ describe('scanSchemaForSubjectLeakage', () => {
     expect(scanSchemaForSubjectLeakage(sections)).toEqual([]);
   });
 
+  it('flags style_notes containing proper nouns', () => {
+    const section = makeSection('scope', 'Define the scope.');
+    section.style_notes = 'Follow the SHARP style voice used by the unit.';
+    const warnings = scanSchemaForSubjectLeakage([section]);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]!.flagged_tokens).toContain('SHARP');
+  });
+
   it('requires at least 2 flagged tokens before warning (single proper noun is tolerable)', () => {
     // One flagged token (Sapphire) shouldn't trip the warning — could be
     // a single genuine reference. Two or more strongly suggests baked-in
