@@ -15,6 +15,8 @@ import { registerRecipe } from './lib/agent/recipe';
 import { PWS_RECIPE } from './lib/agent/recipes/pws';
 import { FREEFORM_RECIPE } from './lib/agent/recipes/freeform';
 
+import { V2Layout } from './components/v2/V2Layout';
+
 // Register agentic recipes at module load. resumeRecipeRun() looks
 // recipes up by id, so they must be registered before the user can
 // resume a paused run after a page reload.
@@ -31,21 +33,32 @@ export function App() {
     <>
       <ErrorBoundary>
         <HashRouter>
-          <Shell>
-            <div style={{ paddingBottom: 'calc(40vh + 2rem)' }}>
-              <Routes>
-                <Route path="/" element={<Welcome />} />
-                <Route path="/documents" element={<Documents />} />
-                <Route path="/templates" element={<Templates />} />
-                <Route path="/datasets" element={<Datasets />} />
-                <Route path="/projects" element={<Projects />} />
-                <Route path="/projects/:id" element={<ProjectDetail />} />
-                <Route path="/audit" element={<AuditLog />} />
-                <Route path="/settings" element={<Settings />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </div>
-          </Shell>
+          <Routes>
+            {/* V2 experience has its own sidebar layout */}
+            <Route path="/v2/:id" element={<V2Layout />} />
+            
+            {/* Legacy layout */}
+            <Route
+              path="*"
+              element={
+                <Shell>
+                  <div style={{ paddingBottom: 'calc(40vh + 2rem)' }}>
+                    <Routes>
+                      <Route path="/" element={<Welcome />} />
+                      <Route path="/documents" element={<Documents />} />
+                      <Route path="/templates" element={<Templates />} />
+                      <Route path="/datasets" element={<Datasets />} />
+                      <Route path="/projects" element={<Projects />} />
+                      <Route path="/projects/:id" element={<ProjectDetail />} />
+                      <Route path="/audit" element={<AuditLog />} />
+                      <Route path="/settings" element={<Settings />} />
+                      <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                  </div>
+                </Shell>
+              }
+            />
+          </Routes>
         </HashRouter>
       </ErrorBoundary>
       <ToastContainer />
