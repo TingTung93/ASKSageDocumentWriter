@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type ProjectRecord, type DraftRecord, type TemplateRecord, type ReferenceChunk } from '../../lib/db/schema';
 import type { DraftParagraph, PriorSectionSummary } from '../../lib/draft/types';
@@ -20,6 +20,8 @@ interface V2DraftPaneProps {
 export function V2DraftPane({ project }: V2DraftPaneProps) {
   const [showExport, setShowExport] = useState(false);
   const [previewItem, setPreviewItem] = useState<AssembleProjectResult | null>(null);
+  const [activeSecId, setActiveSecId] = useState<string | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const drafts = useLiveQuery(
     () => db.drafts.where('project_id').equals(project.id).toArray(),
@@ -30,15 +32,47 @@ export function V2DraftPane({ project }: V2DraftPaneProps) {
     [project.template_ids]
   );
 
-  if (!drafts || !templates) return <div className="pane">Loading drafts…</div>;
+  const sections = useMemo(() => {
+    if (!drafts || !templates) return [];
+    return templates.flatMap(t =>
+      t.schema_json.sections.map(s => ({
+        ...s,
+        template_id: t.id,
+        draft: drafts.find(d => d.template_id === t.id && d.section_id === s.id)
+      }))
+    );
+  }, [drafts, templates]);
 
-  const sections = templates.flatMap(t => 
-    t.schema_json.sections.map(s => ({
-      ...s,
-      template_id: t.id,
-      draft: drafts.find(d => d.template_id === t.id && d.section_id === s.id)
-    }))
-  );
+  const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+
+  useEffect(() => {
+    if (!bodyRef.current || sectionIds.length === 0) return;
+    const root = bodyRef.current;
+    const visible = new Map<string, number>();
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const id = (entry.target as HTMLElement).dataset.secId;
+        if (!id) continue;
+        if (entry.isIntersecting) {
+          visible.set(id, entry.intersectionRatio);
+        } else {
+          visible.delete(id);
+        }
+      }
+      if (visible.size > 0) {
+        const [topId] = [...visible.entries()].sort((a, b) => b[1] - a[1])[0];
+        setActiveSecId(topId);
+      }
+    }, { root, threshold: [0, 0.25, 0.5, 0.75, 1] });
+
+    const els = sectionIds
+      .map((id) => root.querySelector(`[data-sec-id="${CSS.escape(id)}"]`))
+      .filter((el): el is Element => !!el);
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [sectionIds]);
+
+  if (!drafts || !templates) return <div className="pane">Loading drafts…</div>;
 
   const allValidationIssues = drafts?.flatMap(d => d.validation_issues ?? []) ?? [];
 
@@ -69,17 +103,21 @@ export function V2DraftPane({ project }: V2DraftPaneProps) {
       </div>
 
       <div className="draft-toc">
-        {sections.map(s => (
-          <button key={`${s.template_id}-${s.id}`}
-            className={"toc-chip " + (s.draft ? (s.draft.validation_issues?.length ? "warn" : "done") : "queued")}
-            onClick={() => { const el = document.getElementById(`sec-${s.id}`); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }}>
-            <span className="dot" />
-            §{s.id} {s.name}
-          </button>
-        ))}
+        {sections.map(s => {
+          const state = s.draft ? (s.draft.validation_issues?.length ? "warn" : "done") : "queued";
+          const isActive = activeSecId === s.id;
+          return (
+            <button key={`${s.template_id}-${s.id}`}
+              className={"toc-chip " + state + (isActive ? " active" : "")}
+              onClick={() => { const el = document.getElementById(`sec-${s.id}`); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }}>
+              <span className="dot" />
+              §{s.id} {s.name}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="pane-body" style={{background: 'var(--surface)'}}>
+      <div className="pane-body" ref={bodyRef} style={{background: 'var(--surface)'}}>
         <div className="draft-doc">
           <header className="doc-header">
             <div className="doc-eyebrow">{project.mode === 'freeform' ? 'Freeform Draft' : 'Template-based Draft'}</div>
@@ -231,7 +269,7 @@ function Section({ project, template, section, draft, allDrafts }: {
   };
 
   return (
-    <article className="doc-section" id={`sec-${section.id}`}>
+    <article className="doc-section" id={`sec-${section.id}`} data-sec-id={section.id}>
       <div className="sec-num">§ {section.id} {section.name}</div>
       <h3>{section.name}</h3>
       {draft ? (
@@ -315,7 +353,6 @@ function Paragraph({ p, project }: { p: DraftParagraph, project: ProjectRecord }
 
 function Cite({ id, project }: { id: string, project: ProjectRecord }) {
   const [hover, setHover] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
 
   const chunk = useMemo(() => {
     const files = (project.context_items ?? []).filter((i): i is any => i.kind === 'file');
@@ -327,27 +364,29 @@ function Cite({ id, project }: { id: string, project: ProjectRecord }) {
     return null;
   }, [project, id]);
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    setPos({ x: e.clientX + 10, y: e.clientY + 10 });
-  };
+  const kind = chunk?.filename?.toLowerCase().endsWith('.pdf') ? 'pdf'
+    : chunk?.filename?.toLowerCase().endsWith('.docx') ? 'docx'
+    : 'ref';
 
   return (
-    <>
-      <span 
-        className="cite" 
-        onMouseEnter={() => setHover(true)} 
-        onMouseLeave={() => setHover(false)}
-        onMouseMove={handleMouseMove}
-      >
-        [cite:{id.slice(0, 4)}]
-      </span>
+    <span
+      className={"cite" + (hover ? ' active' : '')}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      [{id.slice(0, 4)}]
       {hover && chunk && (
-        <div className="cite-tooltip" style={{ left: pos.x, top: pos.y }}>
-          <div style={{ fontWeight: 600, color: 'var(--accent)', fontSize: 10 }}>SOURCE: {chunk.filename}</div>
-          <div style={{ marginTop: 4, fontWeight: 600 }}>{chunk.chunk.title}</div>
-          <div className="cite-excerpt">{chunk.chunk.text.slice(0, 200)}...</div>
-        </div>
+        <span className="cite-hover" role="tooltip">
+          <span className="cite-hover-head">
+            <span className="cite-hover-kind">{kind}</span>
+            <span className="cite-hover-title">{chunk.chunk.title || chunk.filename}</span>
+          </span>
+          <span className="cite-hover-excerpt" style={{ display: 'block' }}>
+            {chunk.chunk.text.slice(0, 240)}{chunk.chunk.text.length > 240 ? '…' : ''}
+          </span>
+          <span className="cite-hover-meta" style={{ display: 'block' }}>{chunk.filename}</span>
+        </span>
       )}
-    </>
+    </span>
   );
 }

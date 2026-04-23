@@ -1,12 +1,20 @@
 import { useState, useEffect } from 'react';
 import { V2Sidebar } from './V2Sidebar';
 import { V2ProjectWorkspace } from './V2ProjectWorkspace';
+import { V2ExportModal } from './V2ExportModal';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useParams } from 'react-router-dom';
 import { db } from '../../lib/db/schema';
 import '../../v2.css';
 import { RecipeProvider, useRecipe } from './RecipeContext';
 import { V2CommandPalette } from './V2CommandPalette';
+import { V2FirstRun } from './V2FirstRun';
+import { V2IngestModal } from './V2IngestModal';
+import { V2LibraryView } from './V2LibraryView';
+import { useAuth } from '../../lib/state/auth';
+import { toast } from '../../lib/state/toast';
+
+const FIRST_RUN_DISMISSED_KEY = 'asksage:v2:first-run-dismissed';
 
 export function V2Layout() {
   return (
@@ -19,6 +27,17 @@ export function V2Layout() {
 function V2LayoutInner() {
   const [view, setView] = useState("workspace");
   const [showCP, setShowCP] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [showIngest, setShowIngest] = useState(false);
+  const apiKey = useAuth((s) => s.apiKey);
+  const [firstRunDismissed, setFirstRunDismissed] = useState<boolean>(() => {
+    try { return sessionStorage.getItem(FIRST_RUN_DISMISSED_KEY) === '1'; } catch { return false; }
+  });
+  const showFirstRun = !apiKey && !firstRunDismissed;
+  const dismissFirstRun = () => {
+    try { sessionStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1'); } catch { /* noop */ }
+    setFirstRunDismissed(true);
+  };
   const { id } = useParams<{ id: string }>();
   const project = useLiveQuery(() => (id ? db.projects.get(id) : undefined), [id]);
   const allTemplates = useLiveQuery(() => db.templates.toArray(), []);
@@ -30,10 +49,46 @@ function V2LayoutInner() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setShowCP(true);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
+        e.preventDefault();
+        setShowExport(true);
+        return;
       }
     };
+    const openExport = () => setShowExport(true);
+    const regen = () => toast.info('Regenerating active section…');
+    const accept = () => toast.success('Findings applied');
+    const openIngest = () => setShowIngest(true);
+    const slashRegen = () => toast.info('↻ Regenerating active section…');
+    const slashExpand = () => toast.info('⇱ Expanding active section…');
+    const slashTighten = () => toast.info('⇲ Tightening active section…');
+    const slashCite = () => toast.info('⁂ Strengthening citations…');
+    const slashRewrite = () => toast.info('✎ Rewrite — pick a target tone');
+
     window.addEventListener('keydown', handleK);
-    return () => window.removeEventListener('keydown', handleK);
+    window.addEventListener('v2:open-export', openExport);
+    window.addEventListener('v2:regen-active', regen);
+    window.addEventListener('v2:accept-findings', accept);
+    window.addEventListener('v2:open-ingest', openIngest);
+    window.addEventListener('v2:slash-regen', slashRegen);
+    window.addEventListener('v2:slash-expand', slashExpand);
+    window.addEventListener('v2:slash-tighten', slashTighten);
+    window.addEventListener('v2:slash-cite', slashCite);
+    window.addEventListener('v2:slash-rewrite', slashRewrite);
+    return () => {
+      window.removeEventListener('keydown', handleK);
+      window.removeEventListener('v2:open-export', openExport);
+      window.removeEventListener('v2:regen-active', regen);
+      window.removeEventListener('v2:accept-findings', accept);
+      window.removeEventListener('v2:open-ingest', openIngest);
+      window.removeEventListener('v2:slash-regen', slashRegen);
+      window.removeEventListener('v2:slash-expand', slashExpand);
+      window.removeEventListener('v2:slash-tighten', slashTighten);
+      window.removeEventListener('v2:slash-cite', slashCite);
+      window.removeEventListener('v2:slash-rewrite', slashRewrite);
+    };
   }, []);
 
   const handleStart = async () => {
@@ -85,7 +140,7 @@ function V2LayoutInner() {
                   <button className="btn btn-accent" onClick={handleStart}>✦ Auto-draft</button>
                 )}
                 <button className="btn btn-ghost" onClick={() => setShowCP(true)}>⌘K Palette</button>
-                <button className="btn btn-ghost">⏵ Share</button>
+                <button className="btn btn-ghost" onClick={() => setShowExport(true)}>⇣ Export</button>
                 <button className="btn">⎘ Duplicate</button>
               </>
             )}
@@ -95,7 +150,7 @@ function V2LayoutInner() {
         {view === "settings" ? (
           <div style={{padding: 40}}>Settings View Placeholder</div>
         ) : view === "library" ? (
-          <div style={{padding: 40}}>Library View Placeholder</div>
+          <V2LibraryView onOpenIngest={() => setShowIngest(true)} />
         ) : view === "audit" ? (
           <div style={{padding: 40}}>Audit View Placeholder</div>
         ) : (
@@ -104,9 +159,18 @@ function V2LayoutInner() {
       </main>
 
       {showCP && (
-        <V2CommandPalette 
-          onClose={() => setShowCP(false)} 
-          setView={setView} 
+        <V2CommandPalette
+          onClose={() => setShowCP(false)}
+          setView={setView}
+        />
+      )}
+      {showFirstRun && <V2FirstRun onDismiss={dismissFirstRun} />}
+      {showIngest && <V2IngestModal onClose={() => setShowIngest(false)} />}
+      {showExport && project && allTemplates && (
+        <V2ExportModal
+          project={project}
+          templates={allTemplates.filter((t) => project.template_ids.includes(t.id))}
+          onClose={() => setShowExport(false)}
         />
       )}
     </div>

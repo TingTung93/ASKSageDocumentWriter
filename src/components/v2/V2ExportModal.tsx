@@ -39,8 +39,8 @@ export function V2ExportModal({ project, templates, onClose }: V2ExportModalProp
   };
 
   return (
-    <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={e => e.stopPropagation()} style={{ width: 450 }}>
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal-card" onClick={e => e.stopPropagation()} style={{ width: 520 }}>
         <div style={{ padding: 20 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <h3 style={{ margin: 0 }}>Export to Word</h3>

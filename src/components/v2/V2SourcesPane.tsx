@@ -59,7 +59,7 @@ export function V2SourcesPane({ project, activeSectionId }: V2SourcesPaneProps) 
           return (
             <div
               key={idx}
-              className={"src " + (isCited ? "is-cited" : "")}
+              className={"src " + (isCited ? "cited" : "")}
             >
               <div className="src-head">
                 <span className={"src-kind " + kind}>{kind}</span>
