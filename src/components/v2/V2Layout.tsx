@@ -11,6 +11,8 @@ import { V2CommandPalette } from './V2CommandPalette';
 import { V2FirstRun } from './V2FirstRun';
 import { V2IngestModal } from './V2IngestModal';
 import { V2LibraryView } from './V2LibraryView';
+import { V2AuditView } from './V2AuditView';
+import { V2SettingsView } from './V2SettingsView';
 import { useAuth } from '../../lib/state/auth';
 import { toast } from '../../lib/state/toast';
 
@@ -148,11 +150,11 @@ function V2LayoutInner() {
         </div>
 
         {view === "settings" ? (
-          <div style={{padding: 40}}>Settings View Placeholder</div>
+          <V2SettingsView />
         ) : view === "library" ? (
           <V2LibraryView onOpenIngest={() => setShowIngest(true)} />
         ) : view === "audit" ? (
-          <div style={{padding: 40}}>Audit View Placeholder</div>
+          <V2AuditView />
         ) : (
           <V2ProjectWorkspace />
         )}

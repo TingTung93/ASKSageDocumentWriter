@@ -128,24 +128,52 @@ export async function draftFreeformDocument(
   const effectiveModel = model ?? DEFAULT_DRAFTING_MODEL;
   const userMessage = `Write the complete ${style.name} now. Follow the outline exactly, cite all sources inline, and include a References section at the end with full URLs for any web sources used.`;
 
-  const queryInput: QueryInput = {
-    message: userMessage,
-    model: effectiveModel,
-    system_prompt: systemPrompt,
-    temperature: 0.3,
-    usage: true,
-    ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
-    ...(live ? { live } : {}),
-  };
+  async function runQuery(extraInstruction: string | null): Promise<{ rawText: string; rawReferences: string; tokens_in: number; tokens_out: number }> {
+    const augmentedMessage = extraInstruction
+      ? `${userMessage}\n\nADDITIONAL CONSTRAINT (previous attempt violated this — retry): ${extraInstruction}`
+      : userMessage;
+    const queryInput: QueryInput = {
+      message: augmentedMessage,
+      model: effectiveModel,
+      system_prompt: systemPrompt,
+      temperature: 0.3,
+      usage: true,
+      ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
+      ...(live ? { live } : {}),
+    };
+    const r = await client.query(queryInput);
+    return {
+      rawText: typeof r.response === 'string' ? r.response : String(r.response),
+      rawReferences: r.references ?? '',
+      tokens_in: r.usage?.prompt_tokens ?? 0,
+      tokens_out: r.usage?.completion_tokens ?? 0,
+    };
+  }
 
-  const response = await client.query(queryInput);
+  let run = await runQuery(null);
+  let totalTokensIn = run.tokens_in;
+  let totalTokensOut = run.tokens_out;
 
-  // ── Parse response into DraftParagraphs ──────────────────────
-  const rawText = typeof response.response === 'string'
-    ? response.response
-    : String(response.response);
+  const fillerRejection = detectFillerRejection(run.rawText, style.id);
+  if (fillerRejection) {
+    const retry = await runQuery(fillerRejection);
+    totalTokensIn += retry.tokens_in;
+    totalTokensOut += retry.tokens_out;
+    // Prefer the retry if it's also not worse; otherwise fall back to
+    // the original (avoids returning an even worse second pass).
+    const retryRejection = detectFillerRejection(retry.rawText, style.id);
+    if (!retryRejection) {
+      run = retry;
+    } else {
+      // Keep the better of the two by offender count.
+      const firstCount = countFillerOffenses(run.rawText, style.id);
+      const retryCount = countFillerOffenses(retry.rawText, style.id);
+      if (retryCount < firstCount) run = retry;
+    }
+  }
 
-  const rawReferences = response.references ?? '';
+  const rawText = run.rawText;
+  const rawReferences = run.rawReferences;
   const paragraphs = parseMarkdownToParagraphs(rawText);
 
   // ── Extract sources ──────────────────────────────────────────
@@ -172,14 +200,11 @@ export async function draftFreeformDocument(
     }
   }
 
-  const tokens_in = response.usage?.prompt_tokens ?? 0;
-  const tokens_out = response.usage?.completion_tokens ?? 0;
-
   return {
     paragraphs,
     model: effectiveModel,
-    tokens_in,
-    tokens_out,
+    tokens_in: totalTokensIn,
+    tokens_out: totalTokensOut,
     prompt_sent: systemPrompt,
     raw_references: rawReferences,
     sources,
@@ -364,6 +389,105 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
 
   return paragraphs;
 }
+
+/**
+ * Bullet-heavy styles (point paper, award bullets) are ruined by
+ * throat-clearing openers and filler verbs. We scan the model's output
+ * for those patterns and, if we find enough of them, trigger a single
+ * retry with an explicit constraint pointing at the offense.
+ *
+ * Returns the retry-instruction string if the output should be
+ * regenerated, or null to accept it.
+ */
+function detectFillerRejection(rawText: string, styleId: string): string | null {
+  if (styleId !== 'point_paper' && styleId !== 'award_bullets') return null;
+
+  const offenders = findFillerOffenses(rawText, styleId);
+  // Threshold: retry if at least 2 bullets or one of the first two
+  // bullets opens with filler. Keeps cost predictable (worst case: one
+  // retry) while catching the most visible quality issues.
+  const firstTwoOffended = offenders.some((o) => o.bulletIndex < 2);
+  if (offenders.length === 0) return null;
+  if (!firstTwoOffended && offenders.length < 2) return null;
+
+  const examples = offenders.slice(0, 3).map((o) => `"${o.opener}…"`).join(', ');
+  if (styleId === 'point_paper') {
+    return `Rewrite every bullet to start with a concrete noun, fact, number, date, or action verb. The previous attempt opened bullets with throat-clearing phrases (${examples}). Those phrases are BANNED. Do not use "This paper", "The purpose of", "In order to", "It is important to note", or any variation. Every bullet must be a quotable line the principal can read aloud.`;
+  }
+  return `Rewrite every bullet to start with a strong past-tense action verb (Led, Drove, Delivered, Architected, Authored, Spearheaded, Championed, Executed, Mentored, Saved). The previous attempt opened bullets with filler verbs (${examples}). "Was", "Served as", "Responsible for", "Helped", "Assisted", "Performed", "Supported", "Worked on", and "Participated in" are BANNED. Every bullet must include at least one hard metric (dollar amount, count, percentage, or time) and tie to a mission-level outcome.`;
+}
+
+interface FillerOffense {
+  bulletIndex: number;
+  opener: string;
+}
+
+function findFillerOffenses(rawText: string, styleId: string): FillerOffense[] {
+  const bullets = extractBulletOpeners(rawText);
+  const banned = styleId === 'point_paper' ? POINT_PAPER_BANNED_OPENERS : AWARD_BANNED_OPENERS;
+  const offenses: FillerOffense[] = [];
+  bullets.forEach(({ opener }, i) => {
+    const lower = opener.toLowerCase();
+    for (const pattern of banned) {
+      if (lower.startsWith(pattern)) {
+        offenses.push({ bulletIndex: i, opener: opener.slice(0, 60) });
+        break;
+      }
+    }
+  });
+  return offenses;
+}
+
+function countFillerOffenses(rawText: string, styleId: string): number {
+  return findFillerOffenses(rawText, styleId).length;
+}
+
+function extractBulletOpeners(rawText: string): { opener: string }[] {
+  const bullets: { opener: string }[] = [];
+  for (const rawLine of rawText.split('\n')) {
+    const m = rawLine.match(/^\s*[-*]\s+(.+)$/);
+    if (m) {
+      // Strip leading markdown emphasis for matching.
+      const opener = m[1]!
+        .replace(/^\*\*(.+?)\*\*/, '$1')
+        .replace(/^__(.+?)__/, '$1')
+        .trim();
+      bullets.push({ opener });
+    }
+  }
+  return bullets;
+}
+
+const POINT_PAPER_BANNED_OPENERS = [
+  'this paper',
+  'this document',
+  'this point paper',
+  'this briefing',
+  'the purpose of',
+  'in order to',
+  'it is important to note',
+  'it should be noted',
+  'it is worth noting',
+  'please note',
+  'as noted above',
+  'as stated',
+];
+
+const AWARD_BANNED_OPENERS = [
+  'was ',
+  'served as',
+  'responsible for',
+  'helped ',
+  'assisted ',
+  'performed ',
+  'supported ',
+  'worked on',
+  'worked with',
+  'participated in',
+  'was responsible for',
+  'i ',
+  'my ',
+];
 
 /** Strip markdown inline formatting (**bold**, *italic*, etc.) for the text field */
 function stripInlineFormatting(text: string): string {
