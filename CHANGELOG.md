@@ -5,9 +5,11 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and
 this project aims to follow [semantic versioning](https://semver.org/)
 once the V2 workspace stabilizes.
 
-## [0.1.0] — 2026-04-23
+## [0.2.0] — 2026-04-23
 
-First tagged cut. The V2 three-pane workspace (Sources · Chat · Draft)
+First tagged cut on this branch. (An earlier `v0.1.0` tag exists on
+`c808de5` from the letterhead-slot work; this release is sequenced after
+it.) The V2 three-pane workspace (Sources · Chat · Draft)
 is now the primary UI, matching the Claude Design handoff bundle in
 `Version2/`. The classic per-route UI (`/projects`, `/templates`,
 `/documents`, `/audit`, `/settings`) remains available as an escape
