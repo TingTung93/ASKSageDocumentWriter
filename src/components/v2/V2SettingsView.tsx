@@ -42,7 +42,7 @@ export function V2SettingsView() {
   const settings = useLiveQuery(() => loadSettings(), []);
   const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
   useEffect(() => {
-    if (settings) {
+    if (settings?.models) {
       setModelDrafts({
         drafting: settings.models.drafting ?? '',
         critic: settings.models.critic ?? '',

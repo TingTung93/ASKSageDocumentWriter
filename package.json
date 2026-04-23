@@ -1,7 +1,7 @@
 {
   "name": "asksage-document-writer",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Zero-backend SPA that parses DOCX templates into JSON schemas and generates long-form documents via the Ask Sage API",
   "scripts": {
