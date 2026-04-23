@@ -5,7 +5,7 @@ import { V2ExportModal } from './V2ExportModal';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useParams } from 'react-router-dom';
 import { db } from '../../lib/db/schema';
-import '../../v2.css';
+// v2.css is loaded globally from main.tsx; no per-mount import needed.
 import { RecipeProvider, useRecipe } from './RecipeContext';
 import { V2CommandPalette } from './V2CommandPalette';
 import { V2FirstRun } from './V2FirstRun';

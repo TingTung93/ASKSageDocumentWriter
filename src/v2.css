@@ -44,7 +44,10 @@
 
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: var(--font-sans); font-size: 13.5px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
-    body { overflow: hidden; }
+    /* V2's three-pane layout is viewport-sized; each pane scrolls on its
+       own. Lock body scroll ONLY when the V2 shell is mounted so legacy
+       routes (Welcome, Projects, Templates, Settings) can still scroll. */
+    body:has(.app) { overflow: hidden; }
 
     button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
     button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }

@@ -1,31 +1,37 @@
 :root {
-  /* ─── Color tokens ────────────────────────────────────────────── */
-  --color-bg: #f6f7f9;
-  --color-surface: #ffffff;
-  --color-surface-alt: #f5f6fa;
-  --color-border: #d8dbe2;
-  --color-border-strong: #b6bcc7;
+  /* ─── Color tokens ─────────────────────────────────────────────
+   * v0.2.0: aliased to the V2 design system (loaded first from
+   * main.tsx via v2.css). Legacy routes now share V2's warm
+   * neutrals + restrained deep-blue accent without needing markup
+   * changes. The V2 tokens (--bg, --ink, --accent, etc.) are the
+   * source of truth; --color-* names remain only for compatibility
+   * with existing rules below. */
+  --color-bg: var(--bg);
+  --color-surface: var(--paper);
+  --color-surface-alt: var(--surface);
+  --color-border: var(--line);
+  --color-border-strong: var(--line-strong);
 
-  --color-text: #15171c;
-  --color-text-muted: #5b6271;
-  --color-text-subtle: #7f8694;
+  --color-text: var(--ink);
+  --color-text-muted: var(--ink-2);
+  --color-text-subtle: var(--ink-3);
 
-  --color-primary: #2050a0;
-  --color-primary-hover: #1a4286;
-  --color-primary-soft: #e7eef9;
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-soft: var(--accent-soft);
 
-  --color-success: #1f7a3a;
-  --color-success-hover: #186230;
-  --color-success-soft: #e1f3e7;
+  --color-success: var(--sage);
+  --color-success-hover: oklch(0.52 0.10 155);
+  --color-success-soft: var(--sage-soft);
 
-  --color-danger: #b1273a;
-  --color-danger-hover: #921c2e;
-  --color-danger-soft: #fbe6e9;
+  --color-danger: var(--rose);
+  --color-danger-hover: oklch(0.48 0.14 25);
+  --color-danger-soft: var(--rose-soft);
 
-  --color-warning: #b4760a;
-  --color-warning-soft: #fbf2dc;
+  --color-warning: var(--gold);
+  --color-warning-soft: var(--gold-soft);
 
-  --color-info: #335a7a;
+  --color-info: var(--accent-ink);
 
   /* ─── Spacing / radii / shadows ───────────────────────────────── */
   --space-1: 0.25rem;
@@ -44,11 +50,14 @@
   --shadow-lg: 0 6px 18px rgba(20, 25, 35, 0.12);
 
   /* ─── Type ────────────────────────────────────────────────────── */
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+  /* Aliased to the V2 design system. Legacy routes pick up IBM Plex
+   * Sans/Mono automatically; the --font-sans/--font-mono names remain
+   * for any downstream rule that reads them. */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
 
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.5;
   color-scheme: light;
   color: var(--color-text);
