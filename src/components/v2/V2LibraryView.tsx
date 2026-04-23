@@ -1,31 +1,10 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type TemplateRecord } from '../../lib/db/schema';
+import { db } from '../../lib/db/schema';
+import { inferTemplateKind, summarizeTemplateChips } from './helpers';
 
 interface V2LibraryViewProps {
   onOpenIngest: () => void;
-}
-
-function summarizeTemplate(t: TemplateRecord): string[] {
-  const sectionCount = t.schema_json.sections.length;
-  const ingested = t.ingested_at ? new Date(t.ingested_at).toLocaleDateString() : '—';
-  const hasSemantic = t.schema_json.source.semantic_synthesizer !== null;
-  return [
-    `${sectionCount} section${sectionCount === 1 ? '' : 's'}`,
-    `ingested ${ingested}`,
-    hasSemantic ? 'analyzed' : 'structural',
-  ];
-}
-
-function inferKind(t: TemplateRecord): string {
-  const name = `${t.name} ${t.filename}`.toLowerCase();
-  if (name.includes('pws')) return 'PWS';
-  if (name.includes('j&a') || name.includes('justification')) return 'J&A';
-  if (name.includes('market')) return 'Market research';
-  if (name.includes('memo')) return 'Memo';
-  if (name.includes('sow') || name.includes('statement of work')) return 'SOW';
-  if (name.includes('igce') || name.includes('cost estimate')) return 'IGCE';
-  return 'Template';
 }
 
 export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
@@ -59,10 +38,10 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
         </div>
         <div className="lib-grid">
           {tab === 'templates' && (templates ?? []).map((t) => {
-            const meta = summarizeTemplate(t);
+            const meta = summarizeTemplateChips(t);
             return (
               <div key={t.id} className="lib-card">
-                <div className="lc-kind">{inferKind(t)}</div>
+                <div className="lc-kind">{inferTemplateKind(t)}</div>
                 <div className="lc-title">{t.name}</div>
                 <div className="lc-desc">{t.filename}</div>
                 <div className="lc-meta">{meta.map((m, j) => <span key={j}>{m}</span>)}</div>

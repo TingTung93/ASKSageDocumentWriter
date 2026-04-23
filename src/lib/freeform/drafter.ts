@@ -399,7 +399,7 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
  * Returns the retry-instruction string if the output should be
  * regenerated, or null to accept it.
  */
-function detectFillerRejection(rawText: string, styleId: string): string | null {
+export function detectFillerRejection(rawText: string, styleId: string): string | null {
   if (styleId !== 'point_paper' && styleId !== 'award_bullets') return null;
 
   const offenders = findFillerOffenses(rawText, styleId);
@@ -417,12 +417,12 @@ function detectFillerRejection(rawText: string, styleId: string): string | null 
   return `Rewrite every bullet to start with a strong past-tense action verb (Led, Drove, Delivered, Architected, Authored, Spearheaded, Championed, Executed, Mentored, Saved). The previous attempt opened bullets with filler verbs (${examples}). "Was", "Served as", "Responsible for", "Helped", "Assisted", "Performed", "Supported", "Worked on", and "Participated in" are BANNED. Every bullet must include at least one hard metric (dollar amount, count, percentage, or time) and tie to a mission-level outcome.`;
 }
 
-interface FillerOffense {
+export interface FillerOffense {
   bulletIndex: number;
   opener: string;
 }
 
-function findFillerOffenses(rawText: string, styleId: string): FillerOffense[] {
+export function findFillerOffenses(rawText: string, styleId: string): FillerOffense[] {
   const bullets = extractBulletOpeners(rawText);
   const banned = styleId === 'point_paper' ? POINT_PAPER_BANNED_OPENERS : AWARD_BANNED_OPENERS;
   const offenses: FillerOffense[] = [];
@@ -442,7 +442,7 @@ function countFillerOffenses(rawText: string, styleId: string): number {
   return findFillerOffenses(rawText, styleId).length;
 }
 
-function extractBulletOpeners(rawText: string): { opener: string }[] {
+export function extractBulletOpeners(rawText: string): { opener: string }[] {
   const bullets: { opener: string }[] = [];
   for (const rawLine of rawText.split('\n')) {
     const m = rawLine.match(/^\s*[-*]\s+(.+)$/);

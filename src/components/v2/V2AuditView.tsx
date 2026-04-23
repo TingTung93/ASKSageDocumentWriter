@@ -1,33 +1,13 @@
 import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, type AuditRecord } from '../../lib/db/schema';
+import { db } from '../../lib/db/schema';
 import { toast } from '../../lib/state/toast';
-
-type KindPill = 'draft' | 'critic' | 'review' | 'embed';
-
-function inferKind(endpoint: string): KindPill {
-  const e = endpoint.toLowerCase();
-  if (e.includes('embed')) return 'embed';
-  if (e.includes('critic') || e.includes('critique')) return 'critic';
-  if (e.includes('models') || e.includes('synthes')) return 'review';
-  return 'draft';
-}
-
-function formatTime(ts: string): string {
-  try {
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  } catch {
-    return ts;
-  }
-}
-
-function summaryLine(r: AuditRecord): string {
-  const parts: string[] = [];
-  parts.push(r.endpoint);
-  if (r.model) parts.push(r.model);
-  if (r.prompt_excerpt) parts.push(r.prompt_excerpt.slice(0, 80).replace(/\s+/g, ' '));
-  return parts.join(' · ');
-}
+import {
+  inferAuditKind,
+  auditSummaryLine,
+  formatAuditTime,
+  type AuditKind,
+} from './helpers';
 
 export function V2AuditView() {
   const records = useLiveQuery(
@@ -35,14 +15,14 @@ export function V2AuditView() {
     [],
   );
   const [search, setSearch] = useState('');
-  const [kindFilter, setKindFilter] = useState<'all' | KindPill>('all');
+  const [kindFilter, setKindFilter] = useState<'all' | AuditKind>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'ok' | 'err'>('all');
 
   const filtered = useMemo(() => {
     if (!records) return [];
     const q = search.trim().toLowerCase();
     return records.filter((r) => {
-      const kind = inferKind(r.endpoint);
+      const kind = inferAuditKind(r.endpoint);
       if (kindFilter !== 'all' && kind !== kindFilter) return false;
       if (statusFilter === 'ok' && !r.ok) return false;
       if (statusFilter === 'err' && r.ok) return false;
@@ -88,7 +68,7 @@ export function V2AuditView() {
           <select
             className="btn"
             value={kindFilter}
-            onChange={(e) => setKindFilter(e.target.value as 'all' | KindPill)}
+            onChange={(e) => setKindFilter(e.target.value as 'all' | AuditKind)}
           >
             <option value="all">All kinds</option>
             <option value="draft">Draft</option>
@@ -124,14 +104,14 @@ export function V2AuditView() {
             </div>
           )}
           {filtered.map((r) => {
-            const kind = inferKind(r.endpoint);
+            const kind = inferAuditKind(r.endpoint);
             const tokens = (r.tokens_in ?? 0) + (r.tokens_out ?? 0);
             return (
               <div key={r.id} className="audit-row">
-                <span className="time">{formatTime(r.ts)}</span>
+                <span className="time">{formatAuditTime(r.ts)}</span>
                 <span><span className={"kind-pill " + kind}>{kind}</span></span>
-                <span className="summary" title={r.error ?? summaryLine(r)}>
-                  {r.error ? `ERROR · ${r.error}` : summaryLine(r)}
+                <span className="summary" title={r.error ?? auditSummaryLine(r)}>
+                  {r.error ? `ERROR · ${r.error}` : auditSummaryLine(r)}
                 </span>
                 <span className="tok">{tokens ? tokens.toLocaleString() : '—'}</span>
                 <span className="cost">{r.ms}ms</span>
