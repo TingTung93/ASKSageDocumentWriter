@@ -61,6 +61,22 @@ Tracker for findings from the V2 audit. File:line refs were captured at audit ti
 - [x] `aria-modal="true"` + focus trap via shared `<Modal>` on all scrim modals.
 - [x] Verified WCAG contrast for `--ink-4` on `--paper` — was 1.99:1 (fails). Darkened to oklch(0.66 0.010 260) ≈ 2.65:1. Still below strict 3:1 (would collide with `--ink-3`); CSS comment directs body-size text to prefer `--ink-3`.
 
+## Shipped in the same PR (outside the original audit scope)
+
+PR #7 also bundled pre-existing WIP that was entangled with polish-touched files. Noting it here for future blame/bisect:
+
+- Freeform workspace feature (`FreeformDraftView` + `FreeformBlock` in `V2DraftPane.tsx`; `chunkFreeformByH1` helper).
+- `redraftFreeformSection` + `paragraphsToMarkdown` in `src/lib/freeform/drafter.ts` for per-section regen.
+- LLM response-field bugfix (`r.response` → `r.message`) with matching test stub update.
+- `assembleDocxStage` removed from the freeform recipe — export now happens via the Export button only, not auto-download.
+- DOCX `<w:document>` namespace simplification in `src/lib/freeform/assemble.ts`.
+
+## Follow-up fixes (post-review of PR #7)
+
+- [x] **Freeform regen passes `file_extracts`** — built from cached `ProjectContextFile.extracted_text` in `V2DraftPane.tsx` `handleRegen`. Regen no longer silently drops attached-file context.
+- [x] **`V2ProviderCard.onArrowNav` direction-aware** — provider list driven by array + callback-ref map; `dir === 'next'` / `'prev'` wraps via modulo. Ready for 3+ providers.
+- [x] **`Modal` focus trap hardened** — switched visibility check from `offsetParent !== null` to computed-style + `getClientRects`, now covers `position: fixed` focusables. Focus restore checks `isConnected` so a trigger unmounted while the modal was open no longer throws.
+
 ## Deferred to future work
 
 - **V2DraftPane full component split** (SectionBlock/ParagraphBlock/FreeformBlock) — 669→still ~600 lines. Needs E2E test coverage before aggressive decomposition.

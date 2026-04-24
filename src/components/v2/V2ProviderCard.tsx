@@ -1,4 +1,4 @@
-import type { KeyboardEvent, RefObject } from 'react';
+import type { KeyboardEvent, Ref } from 'react';
 import type { ProviderId } from '../../lib/provider/types';
 
 export interface V2ProviderCardProps {
@@ -10,7 +10,7 @@ export interface V2ProviderCardProps {
   selected: boolean;
   onSelect: (provider: ProviderId) => void;
   onArrowNav?: (direction: 'prev' | 'next') => void;
-  inputRef?: RefObject<HTMLDivElement>;
+  inputRef?: Ref<HTMLDivElement>;
 }
 
 export function V2ProviderCard({

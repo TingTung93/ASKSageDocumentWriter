@@ -33,8 +33,30 @@ export function V2SettingsView() {
     clear,
   } = useAuth();
 
-  const askSageCardRef = useRef<HTMLDivElement>(null);
-  const openRouterCardRef = useRef<HTMLDivElement>(null);
+  const providerOptions = useMemo(
+    () =>
+      [
+        {
+          provider: 'asksage' as ProviderId,
+          mark: 'S',
+          name: 'Ask Sage',
+          url: 'api.asksage.health.mil',
+          features: ['CUI', 'DHA tenant', 'RAG'],
+        },
+        {
+          provider: 'openrouter' as ProviderId,
+          mark: 'O',
+          name: 'OpenRouter',
+          url: 'openrouter.ai/api/v1',
+          features: ['non-CUI', 'commercial'],
+        },
+      ],
+    [],
+  );
+  const providerRefs = useRef<Record<ProviderId, HTMLDivElement | null>>({
+    asksage: null,
+    openrouter: null,
+  });
 
   const [draftProvider, setDraftProvider] = useState<ProviderId>(provider);
   const [draftKey, setDraftKey] = useState(apiKey ?? '');
@@ -134,34 +156,25 @@ export function V2SettingsView() {
 
           <form onSubmit={onValidate}>
             <div className="provider-cards" role="radiogroup" aria-label="AI provider">
-              <V2ProviderCard
-                provider="asksage"
-                mark="S"
-                name="Ask Sage"
-                url="api.asksage.health.mil"
-                features={['CUI', 'DHA tenant', 'RAG']}
-                selected={draftProvider === 'asksage'}
-                onSelect={onPickProvider}
-                inputRef={askSageCardRef}
-                onArrowNav={() => {
-                  onPickProvider('openrouter');
-                  openRouterCardRef.current?.focus();
-                }}
-              />
-              <V2ProviderCard
-                provider="openrouter"
-                mark="O"
-                name="OpenRouter"
-                url="openrouter.ai/api/v1"
-                features={['non-CUI', 'commercial']}
-                selected={draftProvider === 'openrouter'}
-                onSelect={onPickProvider}
-                inputRef={openRouterCardRef}
-                onArrowNav={() => {
-                  onPickProvider('asksage');
-                  askSageCardRef.current?.focus();
-                }}
-              />
+              {providerOptions.map((opt, i) => (
+                <V2ProviderCard
+                  key={opt.provider}
+                  provider={opt.provider}
+                  mark={opt.mark}
+                  name={opt.name}
+                  url={opt.url}
+                  features={opt.features}
+                  selected={draftProvider === opt.provider}
+                  onSelect={onPickProvider}
+                  inputRef={(el) => { providerRefs.current[opt.provider] = el; }}
+                  onArrowNav={(dir) => {
+                    const step = dir === 'next' ? 1 : -1;
+                    const target = providerOptions[(i + step + providerOptions.length) % providerOptions.length];
+                    onPickProvider(target.provider);
+                    providerRefs.current[target.provider]?.focus();
+                  }}
+                />
+              ))}
             </div>
 
             <div className="s-row two">

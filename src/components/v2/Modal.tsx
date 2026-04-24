@@ -18,6 +18,17 @@ interface ModalProps {
 const FOCUSABLE =
   'a[href], area[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), iframe, object, embed, [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 
+// offsetParent is null for display:none AND for position:fixed elements, so
+// it can't be used alone to test visibility inside a modal. Check the
+// computed style + client rect instead.
+function isVisible(el: HTMLElement): boolean {
+  if (el.hidden) return false;
+  const style = el.ownerDocument.defaultView?.getComputedStyle(el);
+  if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+  const rect = el.getClientRects();
+  return rect.length > 0;
+}
+
 export function Modal({
   onClose,
   children,
@@ -36,9 +47,8 @@ export function Modal({
     const card = cardRef.current;
     if (!card) return;
 
-    const focusables = card.querySelectorAll<HTMLElement>(FOCUSABLE);
-    const first = focusables[0] ?? card;
-    first.focus();
+    const initial = Array.from(card.querySelectorAll<HTMLElement>(FOCUSABLE)).find(isVisible);
+    (initial ?? card).focus();
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -49,7 +59,7 @@ export function Modal({
       if (e.key !== 'Tab') return;
       const nodes = Array.from(
         card.querySelectorAll<HTMLElement>(FOCUSABLE),
-      ).filter((n) => !n.hasAttribute('disabled') && n.offsetParent !== null);
+      ).filter((n) => !n.hasAttribute('disabled') && isVisible(n));
       if (nodes.length === 0) {
         e.preventDefault();
         card.focus();
@@ -70,7 +80,10 @@ export function Modal({
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      triggerRef.current?.focus?.();
+      // Trigger may have been unmounted (e.g. route change) while the modal
+      // was open; only restore focus if it's still in the document.
+      const trigger = triggerRef.current;
+      if (trigger && trigger.isConnected) trigger.focus();
     };
   }, [onClose]);
 
