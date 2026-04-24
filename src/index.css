@@ -1,33 +1,42 @@
 :root {
-  /* ─── Color tokens ────────────────────────────────────────────── */
-  --color-bg: #f6f7f9;
-  --color-surface: #ffffff;
-  --color-surface-alt: #f5f6fa;
-  --color-border: #d8dbe2;
-  --color-border-strong: #b6bcc7;
+  /* ─── Color tokens ─────────────────────────────────────────────
+   * v0.2.0: aliased to the V2 design system (loaded first from
+   * main.tsx via v2.css). Legacy routes now share V2's warm
+   * neutrals + restrained deep-blue accent without needing markup
+   * changes. The V2 tokens (--bg, --ink, --accent, etc.) are the
+   * source of truth; --color-* names remain only for compatibility
+   * with existing rules below. */
+  --color-bg: var(--bg);
+  --color-surface: var(--paper);
+  --color-surface-alt: var(--surface);
+  --color-border: var(--line);
+  --color-border-strong: var(--line-strong);
 
-  --color-text: #15171c;
-  --color-text-muted: #5b6271;
-  --color-text-subtle: #7f8694;
+  --color-text: var(--ink);
+  --color-text-muted: var(--ink-2);
+  --color-text-subtle: var(--ink-3);
 
-  --color-primary: #2050a0;
-  --color-primary-hover: #1a4286;
-  --color-primary-soft: #e7eef9;
+  --color-primary: var(--accent);
+  --color-primary-hover: var(--accent-hover);
+  --color-primary-soft: var(--accent-soft);
 
-  --color-success: #1f7a3a;
-  --color-success-hover: #186230;
-  --color-success-soft: #e1f3e7;
+  --color-success: var(--sage);
+  --color-success-hover: oklch(0.52 0.10 155);
+  --color-success-soft: var(--sage-soft);
 
-  --color-danger: #b1273a;
-  --color-danger-hover: #921c2e;
-  --color-danger-soft: #fbe6e9;
+  --color-danger: var(--rose);
+  --color-danger-hover: oklch(0.48 0.14 25);
+  --color-danger-soft: var(--rose-soft);
 
-  --color-warning: #b4760a;
-  --color-warning-soft: #fbf2dc;
+  --color-warning: var(--gold);
+  --color-warning-soft: var(--gold-soft);
 
-  --color-info: #335a7a;
+  --color-info: var(--accent-ink);
 
-  /* ─── Spacing / radii / shadows ───────────────────────────────── */
+  /* ─── Spacing ──────────────────────────────────────────────────
+   * Space scale is legacy-only; v2.css composes with raw pixel/rem
+   * values. Radii, shadows, and fonts now live in v2.css (loaded
+   * first from main.tsx) — this file only references them. */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -35,20 +44,8 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 10px;
-
-  --shadow-sm: 0 1px 2px rgba(20, 25, 35, 0.05);
-  --shadow-md: 0 2px 6px rgba(20, 25, 35, 0.08);
-  --shadow-lg: 0 6px 18px rgba(20, 25, 35, 0.12);
-
-  /* ─── Type ────────────────────────────────────────────────────── */
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
-
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.5;
   color-scheme: light;
   color: var(--color-text);
@@ -64,35 +61,41 @@ body {
   min-height: 100vh;
 }
 
-main {
+/* Legacy route container. V2's shell uses <main class="workspace"> as
+   a full-viewport grid cell, so exclude it from this centered column. */
+main:not(.workspace) {
   max-width: 960px;
   margin: 0 auto;
   padding: var(--space-5) var(--space-4) calc(var(--space-6) * 2);
 }
 
 /* ─── Headings ──────────────────────────────────────────────────── */
+/* All bare-element rules below are scoped to legacy routes via
+   body:not(:has(.app)). V2's shell (marked by the .app element) has
+   its own typography/form/button resets in v2.css; without this scope,
+   these rules would load after v2.css and override V2 styles. */
 
-h1 {
+body:not(:has(.app)) h1 {
   font-size: 1.5rem;
   margin: 0 0 var(--space-2);
   letter-spacing: -0.01em;
   color: var(--color-text);
 }
 
-h2 {
+body:not(:has(.app)) h2 {
   font-size: 1.05rem;
   margin: var(--space-5) 0 var(--space-2);
   letter-spacing: -0.005em;
   color: var(--color-text);
 }
 
-h3 {
+body:not(:has(.app)) h3 {
   font-size: 0.95rem;
   margin: var(--space-4) 0 var(--space-2);
   color: var(--color-text);
 }
 
-p {
+body:not(:has(.app)) p {
   margin: var(--space-1) 0 var(--space-4);
   color: var(--color-text-muted);
 }
@@ -117,7 +120,7 @@ code {
 
 /* ─── Forms ─────────────────────────────────────────────────────── */
 
-label {
+body:not(:has(.app)) label {
   display: block;
   font-weight: 600;
   font-size: 12px;
@@ -127,13 +130,13 @@ label {
   letter-spacing: 0.01em;
 }
 
-input[type='text'],
-input[type='password'],
-input[type='number'],
-input[type='date'],
-input[type='email'],
-select,
-textarea {
+body:not(:has(.app)) input[type='text'],
+body:not(:has(.app)) input[type='password'],
+body:not(:has(.app)) input[type='number'],
+body:not(:has(.app)) input[type='date'],
+body:not(:has(.app)) input[type='email'],
+body:not(:has(.app)) select,
+body:not(:has(.app)) textarea {
   width: 100%;
   padding: 0.5rem 0.65rem;
   font: inherit;
@@ -144,28 +147,28 @@ textarea {
   transition: border-color 0.12s, box-shadow 0.12s;
 }
 
-input[type='text'].mono,
-input[type='password'],
-input.mono,
-textarea.mono {
+body:not(:has(.app)) input[type='text'].mono,
+body:not(:has(.app)) input[type='password'],
+body:not(:has(.app)) input.mono,
+body:not(:has(.app)) textarea.mono {
   font-family: var(--font-mono);
 }
 
-input[type='text']:focus,
-input[type='password']:focus,
-input[type='number']:focus,
-input[type='date']:focus,
-select:focus,
-textarea:focus {
+body:not(:has(.app)) input[type='text']:focus,
+body:not(:has(.app)) input[type='password']:focus,
+body:not(:has(.app)) input[type='number']:focus,
+body:not(:has(.app)) input[type='date']:focus,
+body:not(:has(.app)) select:focus,
+body:not(:has(.app)) textarea:focus {
   outline: none;
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px var(--color-primary-soft);
 }
 
-input[type='text']:disabled,
-input[type='password']:disabled,
-select:disabled,
-textarea:disabled {
+body:not(:has(.app)) input[type='text']:disabled,
+body:not(:has(.app)) input[type='password']:disabled,
+body:not(:has(.app)) select:disabled,
+body:not(:has(.app)) textarea:disabled {
   background: var(--color-surface-alt);
   color: var(--color-text-subtle);
   cursor: not-allowed;
@@ -173,7 +176,7 @@ textarea:disabled {
 
 /* ─── Buttons ───────────────────────────────────────────────────── */
 
-button {
+body:not(:has(.app)) button {
   margin-top: var(--space-3);
   padding: 0.5rem 0.9rem;
   font: inherit;
@@ -187,21 +190,21 @@ button {
   transition: background 0.12s, border-color 0.12s, box-shadow 0.12s, transform 0.05s;
 }
 
-button:hover:not(:disabled) {
+body:not(:has(.app)) button:hover:not(:disabled) {
   background: var(--color-primary-hover);
   border-color: var(--color-primary-hover);
 }
 
-button:active:not(:disabled) {
+body:not(:has(.app)) button:active:not(:disabled) {
   transform: translateY(1px);
 }
 
-button:focus-visible {
+body:not(:has(.app)) button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--color-primary-soft);
 }
 
-button:disabled {
+body:not(:has(.app)) button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -787,6 +790,22 @@ nav.shell a:focus-visible {
   background: var(--color-primary-soft);
   border-color: var(--color-primary);
   border-left-color: var(--color-primary);
+}
+
+/* ─── Model override row (Settings) ─────────────────────────────
+ * Legacy Settings page uses a select + free-form input on each model
+ * stage row. v2.css's .model-row has a different layout (grid of
+ * name/role/cost/swap), so we keep this rule local to legacy. */
+.model-override-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.model-override-row > select {
+  flex: 0 0 18rem;
+}
+.model-override-row > input {
+  flex: 1;
 }
 
 .diff-insert {

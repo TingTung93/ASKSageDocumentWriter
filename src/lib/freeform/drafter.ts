@@ -128,24 +128,60 @@ export async function draftFreeformDocument(
   const effectiveModel = model ?? DEFAULT_DRAFTING_MODEL;
   const userMessage = `Write the complete ${style.name} now. Follow the outline exactly, cite all sources inline, and include a References section at the end with full URLs for any web sources used.`;
 
-  const queryInput: QueryInput = {
-    message: userMessage,
-    model: effectiveModel,
-    system_prompt: systemPrompt,
-    temperature: 0.3,
-    usage: true,
-    ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
-    ...(live ? { live } : {}),
-  };
+  async function runQuery(extraInstruction: string | null): Promise<{ rawText: string; rawReferences: string; tokens_in: number; tokens_out: number }> {
+    const augmentedMessage = extraInstruction
+      ? `${userMessage}\n\nADDITIONAL CONSTRAINT (previous attempt violated this — retry): ${extraInstruction}`
+      : userMessage;
+    const queryInput: QueryInput = {
+      message: augmentedMessage,
+      model: effectiveModel,
+      system_prompt: systemPrompt,
+      temperature: 0.3,
+      usage: true,
+      ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
+      ...(live ? { live } : {}),
+    };
+    const r = await client.query(queryInput);
+    // The LLM completion lives in `message` on both providers.
+    // Ask Sage's `/server/query` uses `response` for a status marker
+    // ("OK"/"Failed") and `message` for the text; the OpenRouter client
+    // mirrors that (hardcoded `response: 'OK'`, content in `message`).
+    // Reading `response` here produces a DOCX containing only "OK".
+    const rawText = typeof r.message === 'string' && r.message.length > 0
+      ? r.message
+      : typeof r.response === 'string' ? r.response : String(r.response);
+    return {
+      rawText,
+      rawReferences: r.references ?? '',
+      tokens_in: r.usage?.prompt_tokens ?? 0,
+      tokens_out: r.usage?.completion_tokens ?? 0,
+    };
+  }
 
-  const response = await client.query(queryInput);
+  let run = await runQuery(null);
+  let totalTokensIn = run.tokens_in;
+  let totalTokensOut = run.tokens_out;
 
-  // ── Parse response into DraftParagraphs ──────────────────────
-  const rawText = typeof response.response === 'string'
-    ? response.response
-    : String(response.response);
+  const fillerRejection = detectFillerRejection(run.rawText, style.id);
+  if (fillerRejection) {
+    const retry = await runQuery(fillerRejection);
+    totalTokensIn += retry.tokens_in;
+    totalTokensOut += retry.tokens_out;
+    // Prefer the retry if it's also not worse; otherwise fall back to
+    // the original (avoids returning an even worse second pass).
+    const retryRejection = detectFillerRejection(retry.rawText, style.id);
+    if (!retryRejection) {
+      run = retry;
+    } else {
+      // Keep the better of the two by offender count.
+      const firstCount = countFillerOffenses(run.rawText, style.id);
+      const retryCount = countFillerOffenses(retry.rawText, style.id);
+      if (retryCount < firstCount) run = retry;
+    }
+  }
 
-  const rawReferences = response.references ?? '';
+  const rawText = run.rawText;
+  const rawReferences = run.rawReferences;
   const paragraphs = parseMarkdownToParagraphs(rawText);
 
   // ── Extract sources ──────────────────────────────────────────
@@ -172,14 +208,11 @@ export async function draftFreeformDocument(
     }
   }
 
-  const tokens_in = response.usage?.prompt_tokens ?? 0;
-  const tokens_out = response.usage?.completion_tokens ?? 0;
-
   return {
     paragraphs,
     model: effectiveModel,
-    tokens_in,
-    tokens_out,
+    tokens_in: totalTokensIn,
+    tokens_out: totalTokensOut,
     prompt_sent: systemPrompt,
     raw_references: rawReferences,
     sources,
@@ -363,6 +396,250 @@ export function parseMarkdownToParagraphs(markdown: string): DraftParagraph[] {
   if (inTable) flushTable();
 
   return paragraphs;
+}
+
+/**
+ * Bullet-heavy styles (point paper, award bullets) are ruined by
+ * throat-clearing openers and filler verbs. We scan the model's output
+ * for those patterns and, if we find enough of them, trigger a single
+ * retry with an explicit constraint pointing at the offense.
+ *
+ * Returns the retry-instruction string if the output should be
+ * regenerated, or null to accept it.
+ */
+export function detectFillerRejection(rawText: string, styleId: string): string | null {
+  if (styleId !== 'point_paper' && styleId !== 'award_bullets') return null;
+
+  const offenders = findFillerOffenses(rawText, styleId);
+  // Threshold: retry if at least 2 bullets or one of the first two
+  // bullets opens with filler. Keeps cost predictable (worst case: one
+  // retry) while catching the most visible quality issues.
+  const firstTwoOffended = offenders.some((o) => o.bulletIndex < 2);
+  if (offenders.length === 0) return null;
+  if (!firstTwoOffended && offenders.length < 2) return null;
+
+  const examples = offenders.slice(0, 3).map((o) => `"${o.opener}…"`).join(', ');
+  if (styleId === 'point_paper') {
+    return `Rewrite every bullet to start with a concrete noun, fact, number, date, or action verb. The previous attempt opened bullets with throat-clearing phrases (${examples}). Those phrases are BANNED. Do not use "This paper", "The purpose of", "In order to", "It is important to note", or any variation. Every bullet must be a quotable line the principal can read aloud.`;
+  }
+  return `Rewrite every bullet to start with a strong past-tense action verb (Led, Drove, Delivered, Architected, Authored, Spearheaded, Championed, Executed, Mentored, Saved). The previous attempt opened bullets with filler verbs (${examples}). "Was", "Served as", "Responsible for", "Helped", "Assisted", "Performed", "Supported", "Worked on", and "Participated in" are BANNED. Every bullet must include at least one hard metric (dollar amount, count, percentage, or time) and tie to a mission-level outcome.`;
+}
+
+export interface FillerOffense {
+  bulletIndex: number;
+  opener: string;
+}
+
+export function findFillerOffenses(rawText: string, styleId: string): FillerOffense[] {
+  const bullets = extractBulletOpeners(rawText);
+  const banned = styleId === 'point_paper' ? POINT_PAPER_BANNED_OPENERS : AWARD_BANNED_OPENERS;
+  const offenses: FillerOffense[] = [];
+  bullets.forEach(({ opener }, i) => {
+    const lower = opener.toLowerCase();
+    for (const pattern of banned) {
+      if (lower.startsWith(pattern)) {
+        offenses.push({ bulletIndex: i, opener: opener.slice(0, 60) });
+        break;
+      }
+    }
+  });
+  return offenses;
+}
+
+function countFillerOffenses(rawText: string, styleId: string): number {
+  return findFillerOffenses(rawText, styleId).length;
+}
+
+export function extractBulletOpeners(rawText: string): { opener: string }[] {
+  const bullets: { opener: string }[] = [];
+  for (const rawLine of rawText.split('\n')) {
+    const m = rawLine.match(/^\s*[-*]\s+(.+)$/);
+    if (m) {
+      // Strip leading markdown emphasis for matching.
+      const opener = m[1]!
+        .replace(/^\*\*(.+?)\*\*/, '$1')
+        .replace(/^__(.+?)__/, '$1')
+        .trim();
+      bullets.push({ opener });
+    }
+  }
+  return bullets;
+}
+
+const POINT_PAPER_BANNED_OPENERS = [
+  'this paper',
+  'this document',
+  'this point paper',
+  'this briefing',
+  'the purpose of',
+  'in order to',
+  'it is important to note',
+  'it should be noted',
+  'it is worth noting',
+  'please note',
+  'as noted above',
+  'as stated',
+];
+
+const AWARD_BANNED_OPENERS = [
+  'was ',
+  'served as',
+  'responsible for',
+  'helped ',
+  'assisted ',
+  'performed ',
+  'supported ',
+  'worked on',
+  'worked with',
+  'participated in',
+  'was responsible for',
+  'i ',
+  'my ',
+];
+
+/**
+ * Inverse of parseMarkdownToParagraphs: render DraftParagraph[] back to
+ * a markdown string suitable for round-trip editing. Only emits the
+ * roles the drafter's parser can round-trip — unknown roles degrade to
+ * plain body paragraphs. Inline formatting is not preserved (the parser
+ * strips it), so this is a lossy round-trip for emphasis.
+ */
+export function paragraphsToMarkdown(paragraphs: DraftParagraph[]): string {
+  const lines: string[] = [];
+  for (const p of paragraphs) {
+    const text = p.text ?? '';
+    switch (p.role) {
+      case 'heading': {
+        const level = Math.max(1, Math.min(4, (p.level ?? 0) + 1));
+        lines.push(`${'#'.repeat(level)} ${text}`, '');
+        break;
+      }
+      case 'bullet': {
+        const indent = '  '.repeat(Math.max(0, p.level ?? 0));
+        lines.push(`${indent}- ${text}`);
+        break;
+      }
+      case 'step': {
+        const indent = '  '.repeat(Math.max(0, p.level ?? 0));
+        lines.push(`${indent}1. ${text}`);
+        break;
+      }
+      case 'quote':
+        lines.push(`> ${text}`, '');
+        break;
+      case 'table_row': {
+        const cells = p.cells ?? [text];
+        lines.push(`| ${cells.join(' | ')} |`);
+        if (p.is_header) {
+          lines.push(`| ${cells.map(() => '---').join(' | ')} |`);
+        }
+        break;
+      }
+      default:
+        lines.push(text, '');
+    }
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export interface FreeformSectionRedraftArgs {
+  client: LLMClient;
+  style: FreeformStyle;
+  project_description: string;
+  context_items: ProjectContextItem[];
+  file_extracts?: Map<string, string>;
+  model?: string;
+  dataset?: string;
+  live?: 0 | 1 | 2;
+  limit_references?: number;
+  /** The whole current draft, used to give the model full context. */
+  current_draft: DraftParagraph[];
+  /** Heading text of the section to rewrite (matched case-insensitively). */
+  section_heading: string;
+  /** Optional extra instruction from the user (e.g. "tighten", "add more detail on X"). */
+  instruction?: string;
+}
+
+export interface FreeformSectionRedraftResult {
+  paragraphs: DraftParagraph[];
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+/**
+ * Rewrite a single H1 section of an existing freeform draft. The model
+ * sees the full current draft for context but is instructed to reply
+ * with ONLY the markdown for the target section. Used for per-chunk
+ * regen in V2DraftPane.
+ */
+export async function redraftFreeformSection(
+  args: FreeformSectionRedraftArgs,
+): Promise<FreeformSectionRedraftResult> {
+  const {
+    client, style, project_description, context_items, file_extracts,
+    model, dataset, live, limit_references,
+    current_draft, section_heading, instruction,
+  } = args;
+
+  const contextParts: string[] = [];
+  const notes = context_items.filter((c) => c.kind === 'note');
+  if (notes.length > 0) {
+    contextParts.push('=== PROJECT NOTES ===');
+    for (const note of notes) contextParts.push(`[${note.role}]: ${note.text}`);
+  }
+  const files = context_items.filter((c) => c.kind === 'file');
+  if (files.length > 0 && file_extracts) {
+    const fileTexts: string[] = [];
+    for (const f of files) {
+      const text = file_extracts.get(f.id);
+      if (text) fileTexts.push(`--- ${f.filename} ---\n${text}`);
+    }
+    if (fileTexts.length > 0) {
+      contextParts.push('\n=== ATTACHED REFERENCE FILES ===');
+      contextParts.push(fileTexts.join('\n\n'));
+    }
+  }
+  const contextBlock = contextParts.length > 0
+    ? contextParts.join('\n')
+    : '(No additional context provided.)';
+
+  const numberedOutline = style.outline.map((item, i) => `${i + 1}. ${item}`).join('\n');
+  const systemPrompt = style.system_prompt
+    .replace('{{STYLE_NAME}}', style.name)
+    .replace('{{OUTLINE}}', numberedOutline)
+    .replace('{{TONE}}', style.tone_guidance)
+    .replace('{{PROJECT_DESCRIPTION}}', project_description || '(not provided)')
+    .replace('{{CONTEXT}}', contextBlock);
+
+  const currentMarkdown = paragraphsToMarkdown(current_draft);
+  const userMessage =
+    `You previously drafted this document:\n\n\`\`\`markdown\n${currentMarkdown}\n\`\`\`\n\n` +
+    `Rewrite ONLY the section whose top-level (H1) heading matches "${section_heading}". ` +
+    `Keep every other section untouched — do not repeat them in your reply. ` +
+    `Reply with ONLY the markdown for the rewritten section, starting with its \`# ${section_heading}\` heading.` +
+    (instruction ? `\n\nAdditional instruction: ${instruction}` : '');
+
+  const effectiveModel = model ?? DEFAULT_DRAFTING_MODEL;
+  const queryInput: QueryInput = {
+    message: userMessage,
+    model: effectiveModel,
+    system_prompt: systemPrompt,
+    temperature: 0.3,
+    usage: true,
+    ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
+    ...(live ? { live } : {}),
+  };
+  const r = await client.query(queryInput);
+  const rawText = typeof r.message === 'string' && r.message.length > 0
+    ? r.message
+    : typeof r.response === 'string' ? r.response : String(r.response);
+  return {
+    paragraphs: parseMarkdownToParagraphs(rawText),
+    model: effectiveModel,
+    tokens_in: r.usage?.prompt_tokens ?? 0,
+    tokens_out: r.usage?.completion_tokens ?? 0,
+  };
 }
 
 /** Strip markdown inline formatting (**bold**, *italic*, etc.) for the text field */

@@ -1,4 +1,4 @@
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Shell } from './components/Shell';
 import { Welcome } from './routes/Welcome';
 import { Templates } from './routes/Templates';
@@ -16,6 +16,14 @@ import { PWS_RECIPE } from './lib/agent/recipes/pws';
 import { FREEFORM_RECIPE } from './lib/agent/recipes/freeform';
 
 import { V2Layout } from './components/v2/V2Layout';
+
+// /projects/:id is the legacy per-project workspace. V2 is now the
+// primary workspace, so redirect there — the legacy view stays
+// available at /legacy/projects/:id as an escape hatch.
+function ProjectDetailRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={`/v2/${id}`} replace />;
+}
 
 // Register agentic recipes at module load. resumeRecipeRun() looks
 // recipes up by id, so they must be registered before the user can
@@ -42,14 +50,17 @@ export function App() {
               path="*"
               element={
                 <Shell>
-                  <div style={{ paddingBottom: 'calc(40vh + 2rem)' }}>
+                  {/* DebugPanel is a fixed 40vh overlay at the bottom; pad
+                      so the last of page content clears it. */}
+                  <div style={{ paddingBottom: '40vh' }}>
                     <Routes>
                       <Route path="/" element={<Welcome />} />
                       <Route path="/documents" element={<Documents />} />
                       <Route path="/templates" element={<Templates />} />
                       <Route path="/datasets" element={<Datasets />} />
                       <Route path="/projects" element={<Projects />} />
-                      <Route path="/projects/:id" element={<ProjectDetail />} />
+                      <Route path="/projects/:id" element={<ProjectDetailRedirect />} />
+                      <Route path="/legacy/projects/:id" element={<ProjectDetail />} />
                       <Route path="/audit" element={<AuditLog />} />
                       <Route path="/settings" element={<Settings />} />
                       <Route path="*" element={<Navigate to="/" replace />} />

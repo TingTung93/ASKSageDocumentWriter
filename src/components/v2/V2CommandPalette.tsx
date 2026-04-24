@@ -1,77 +1,122 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Modal } from './Modal';
 
 interface V2CommandPaletteProps {
   onClose: () => void;
   setView: (view: string) => void;
 }
 
+type Cmd = {
+  group: string;
+  ic: string;
+  label: string;
+  desc?: string;
+  trail?: string;
+  run: () => void;
+};
+
 export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
   const [query, setQuery] = useState('');
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [idx, setIdx] = useState(0);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const commands = [
-    { id: 'workspace', label: 'Go to Workspace', action: () => { setView('workspace'); onClose(); } },
-    { id: 'library', label: 'Go to Library', action: () => { setView('library'); onClose(); } },
-    { id: 'audit', label: 'Go to Activity Log', action: () => { setView('audit'); onClose(); } },
-    { id: 'settings', label: 'Go to Settings', action: () => { setView('settings'); onClose(); } },
-    { id: 'projects', label: 'Switch Project', action: () => { navigate('/projects'); onClose(); } },
-    { id: 'export', label: 'Export to Word', action: () => { /* Triggered in Layout */ onClose(); } },
-  ];
+  const baseItems = useMemo<Cmd[]>(() => [
+    { group: 'Navigate', ic: '▸', label: 'Draft workspace', desc: 'Three-pane co-writer view', trail: 'G D', run: () => setView('workspace') },
+    { group: 'Navigate', ic: '▸', label: 'Library', desc: 'Templates & datasets', trail: 'G L', run: () => setView('library') },
+    { group: 'Navigate', ic: '▸', label: 'Activity log', desc: 'Audit trail of model calls', trail: 'G A', run: () => setView('audit') },
+    { group: 'Navigate', ic: '▸', label: 'Settings', desc: 'Connection, models, privacy', trail: 'G ,', run: () => setView('settings') },
+    { group: 'Navigate', ic: '▸', label: 'Switch project', desc: 'Back to project list', trail: '', run: () => navigate('/projects') },
+    { group: 'Actions', ic: '⇣', label: 'Export document…', desc: 'Word, PDF, or Markdown', trail: '⌘E', run: () => window.dispatchEvent(new CustomEvent('v2:open-export')) },
+    { group: 'Actions', ic: '＋', label: 'Upload DOCX template', desc: 'Parse structure and placeholders', trail: '', run: () => { setView('library'); setTimeout(() => window.dispatchEvent(new CustomEvent('v2:open-ingest')), 100); } },
+    { group: 'Actions', ic: '↻', label: 'Regenerate active section', desc: 'Re-draft with current context', trail: '⌘R', run: () => window.dispatchEvent(new CustomEvent('v2:regen-active')) },
+    { group: 'Actions', ic: '✓', label: 'Accept all findings', desc: 'Apply cross-section review fixes', trail: '', run: () => window.dispatchEvent(new CustomEvent('v2:accept-findings')) },
+  ], [navigate, setView]);
 
-  const filtered = commands.filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
+  const items = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    return q
+      ? baseItems.filter(i => (i.label + ' ' + (i.desc || '') + ' ' + i.group).toLowerCase().includes(q))
+      : baseItems;
+  }, [query, baseItems]);
 
-  useEffect(() => {
-    inputRef.current?.focus();
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onClose]);
+  const groups = useMemo(() => {
+    const g: Record<string, Cmd[]> = {};
+    items.forEach(i => { (g[i.group] = g[i.group] || []).push(i); });
+    return g;
+  }, [items]);
+  const flat = useMemo(() => Object.values(groups).flat(), [groups]);
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      setActiveIndex(i => (i + 1) % filtered.length);
-    } else if (e.key === 'ArrowUp') {
-      setActiveIndex(i => (i - 1 + filtered.length) % filtered.length);
-    } else if (e.key === 'Enter') {
-      filtered[activeIndex]?.action();
-    }
+  const runIdx = (i: number) => { flat[i]?.run?.(); onClose(); };
+
+  useEffect(() => { setIdx(0); }, [query]);
+
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, flat.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); runIdx(idx); }
+    else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
   };
 
+  let cursor = 0;
+
   return (
-    <div className="command-palette-overlay" onClick={onClose}>
-      <div className="command-palette" onClick={e => e.stopPropagation()}>
-        <div className="cp-head">
+    <Modal
+      onClose={onClose}
+      ariaLabel="Command palette"
+      scrimClassName="cmdk-scrim"
+      cardClassName="cmdk-card"
+    >
+        <div className="cmdk-input-wrap">
+          <span style={{ fontSize: 18, color: 'var(--ink-3)' }}>⌕</span>
           <input
             ref={inputRef}
-            type="text"
-            placeholder="Search commands..."
+            className="cmdk-input"
+            placeholder="Jump to section, run a command, or search…"
             value={query}
-            onChange={e => { setQuery(e.target.value); setActiveIndex(0); }}
-            onKeyDown={onKeyDown}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={onKey}
+            aria-label="Search commands"
+            aria-activedescendant={`cmdk-item-${idx}`}
           />
+          <span className="cmdk-kbd">esc</span>
         </div>
-        <div className="cp-body">
-          {filtered.map((c, i) => (
-            <div
-              key={c.id}
-              className={"cp-item " + (i === activeIndex ? "active" : "")}
-              onMouseEnter={() => setActiveIndex(i)}
-              onClick={c.action}
-            >
-              {c.label}
+        <div className="cmdk-list" role="listbox" aria-label={`${flat.length} result${flat.length === 1 ? '' : 's'}`}>
+          {Object.entries(groups).map(([g, rows]) => (
+            <div key={g}>
+              <div className="cmdk-group-label">{g}</div>
+              {rows.map((r) => {
+                const myIdx = cursor++;
+                return (
+                  <div
+                    key={myIdx}
+                    id={`cmdk-item-${myIdx}`}
+                    role="option"
+                    aria-selected={myIdx === idx}
+                    className={"cmdk-item" + (myIdx === idx ? ' on' : '')}
+                    onMouseEnter={() => setIdx(myIdx)}
+                    onClick={() => runIdx(myIdx)}
+                  >
+                    <span className="ic">{r.ic}</span>
+                    <span>{r.label}{r.desc && <span className="desc">{r.desc}</span>}</span>
+                    <span className="trail">{r.trail}</span>
+                  </div>
+                );
+              })}
             </div>
           ))}
-          {filtered.length === 0 && <div className="cp-empty">No commands found</div>}
+          {items.length === 0 && (
+            <div style={{ padding: '28px 18px', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
+              No matches for "{query}"
+            </div>
+          )}
         </div>
-        <div className="cp-foot">
-          <span className="kbd">↑↓</span> to navigate <span className="kbd">↵</span> to select <span className="kbd">esc</span> to close
+        <div className="cmdk-foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+          <span><kbd>↵</kbd> select</span>
+          <span><kbd>esc</kbd> close</span>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

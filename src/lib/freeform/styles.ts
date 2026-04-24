@@ -135,7 +135,66 @@ const POINT_PAPER = makeStyle({
     'Background (if needed)',
     'Anticipated Questions & Responses',
   ],
-  tone_guidance: `Bullet-driven format. Each point should be one sentence or a short clause. Write as if preparing a principal for a meeting — direct, factual, no filler. Use sub-bullets for supporting detail. Keep to a single page.`,
+  tone_guidance: `Bullet-driven format for a principal preparing to speak.
+
+Every bullet MUST:
+- Start with a concrete noun, fact, number, date, or action verb — NOT with "This paper…", "The purpose of…", "In order to…", "It is important to note…", or any throat-clearing.
+- Stand on its own as a quotable line a principal could read aloud mid-conversation.
+- Be one sentence or a short clause. No conjunctions chaining two ideas.
+- Include specifics where available: dates, numbers, dollar amounts, named authorities, case references.
+
+Every bullet MUST NOT:
+- Hedge ("may", "could potentially", "it is believed that") unless the source explicitly hedges.
+- Repeat information already given in a previous bullet.
+- Use filler adjectives ("significant", "important", "various", "numerous") without a specific number.
+
+Format: Use "- " for top-level bullets and "  - " (two-space indent) for supporting sub-bullets. No prose paragraphs except in Background (if present, keep under 4 sentences).
+
+Example of acceptable Key Points style:
+- FY26 DHA budget for MHS GENESIS sustainment: $412M, down 7% from FY25 (DHA J-8, 12 Mar 26).
+  - Delta driven by completion of Wave 6 deployment; no mission capability reduction.
+- Contract bridge expires 30 Sep 26; follow-on RFP released to industry 14 Apr 26.
+- Two bidders flagged FedRAMP High accreditation as a schedule risk (industry day transcript, 18 Apr 26).
+
+Keep the whole paper to one page. Third person, present tense.`,
+});
+
+const AWARD_BULLETS = makeStyle({
+  id: 'award_bullets',
+  name: 'Award Bullets (PCS / MSM / AAM / Commendation)',
+  category: 'administrative',
+  description: 'Single-line achievement bullets for military or civilian awards (PCS, MSM, AAM, CCM, NAM, civilian equivalents).',
+  typical_pages: '1',
+  outline: [
+    'Award Header (award name, recipient, period of service)',
+    'Achievement Bullets',
+    'Summary Citation (optional, one paragraph)',
+  ],
+  tone_guidance: `Military / civilian award bullet format — "bang-bang-bang" style. This is NOT a narrative; each bullet is a standalone achievement line.
+
+Every achievement bullet MUST follow this structure:
+  [Action verb in past tense] [specific what] [quantifiable result or impact] [higher-order benefit to mission / unit / DHA]
+
+Every bullet MUST:
+- Start with a strong past-tense action verb: Led, Drove, Delivered, Architected, Executed, Championed, Streamlined, Saved, Secured, Deployed, Mentored, Authored, Spearheaded. Do NOT start with "Was", "Served as", "Responsible for", "Helped", or "Assisted".
+- Include at least one hard metric: dollar amount, percentage, count, time saved, number of personnel, scope (e.g., "$2.3M", "17 facilities", "340 beneficiaries", "reduced processing time 62%").
+- Tie the action to a mission or unit-level outcome — answer "so what?" in the same line.
+- Be a single line (target ≤ 2 lines when rendered at 10-pt font).
+
+Every bullet MUST NOT:
+- Use first person ("I", "my").
+- Use filler verbs ("performed", "supported", "worked on", "participated in").
+- Combine two unrelated achievements with "and".
+- Exceed one sentence.
+
+Format: Use "- " for each achievement bullet. No sub-bullets unless citing sub-metrics that directly support the parent bullet.
+
+Example of acceptable bullets (PCS award for a contracting officer):
+- Led $47M MHS GENESIS sustainment recompete; 14-month acquisition cycle delivered 31 days early, averting a $1.2M bridge-contract shortfall and sustaining EHR access for 340K beneficiaries.
+- Authored DHA's first template-driven J&A package library; reduced per-package staffing burden from 22 hours to 6 hours across 47 FY25 sole-source actions.
+- Mentored 4 GS-09 contract specialists to FAC-C Level II; all 4 credentialed within 9 months, raising the J-4 Level II cohort 18%.
+
+Do NOT include a References section for award bullets unless the user provides source material that must be cited. If the Summary Citation section is included, write it as a single paragraph in third person, starting with the recipient's rank and name.`,
 });
 
 const AAR = makeStyle({
@@ -365,6 +424,7 @@ export const FREEFORM_STYLES: FreeformStyle[] = [
   MEMO,
   INFO_PAPER,
   POINT_PAPER,
+  AWARD_BULLETS,
   AAR,
   // Finance / Contracting
   MARKET_RESEARCH,

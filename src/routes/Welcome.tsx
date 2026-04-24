@@ -139,37 +139,31 @@ export function Welcome() {
       <div className="card" style={{ marginTop: 'var(--space-4)' }}>
         <form onSubmit={validate}>
 
-          {/* Provider */}
+          {/* Provider — styled to match V2's .provider-card grid. */}
           <fieldset style={{ border: 'none', padding: 0, margin: '0 0 var(--space-3) 0' }}>
-            <legend style={{ fontWeight: 600, padding: 0 }}>
+            <legend style={{ fontWeight: 600, padding: 0, marginBottom: '0.5rem' }}>
               Which AI service do you use?
             </legend>
-            <label style={{ display: 'block', marginTop: '0.5rem', fontWeight: 'normal', fontSize: 14 }}>
-              <input
-                type="radio"
-                name="provider"
-                value="asksage"
-                checked={draftProvider === 'asksage'}
-                onChange={() => onPickProvider('asksage')}
-              />{' '}
-              <strong>Ask Sage</strong>{' '}
-              <span className="note" style={{ fontSize: 12 }}>
-                — DHA health.mil tenant (recommended for CUI work)
-              </span>
-            </label>
-            <label style={{ display: 'block', marginTop: '0.35rem', fontWeight: 'normal', fontSize: 14 }}>
-              <input
-                type="radio"
-                name="provider"
-                value="openrouter"
-                checked={draftProvider === 'openrouter'}
-                onChange={() => onPickProvider('openrouter')}
-              />{' '}
-              <strong>OpenRouter</strong>{' '}
-              <span className="note" style={{ fontSize: 12 }}>
-                — commercial AI service (non-CUI only)
-              </span>
-            </label>
+            <div className="provider-cards" role="radiogroup" aria-label="AI provider">
+              <ProviderPickCard
+                provider="asksage"
+                mark="A"
+                name="Ask Sage"
+                url="DHA health.mil tenant"
+                features={['CUI-authorized', 'Full drafting']}
+                selected={draftProvider === 'asksage'}
+                onSelect={onPickProvider}
+              />
+              <ProviderPickCard
+                provider="openrouter"
+                mark="O"
+                name="OpenRouter"
+                url="openrouter.ai"
+                features={['Non-CUI only', 'Cleanup / refinement']}
+                selected={draftProvider === 'openrouter'}
+                onSelect={onPickProvider}
+              />
+            </div>
           </fieldset>
 
           {/* API key */}
@@ -338,6 +332,53 @@ export function Welcome() {
         </details>
       )}
     </main>
+  );
+}
+
+function ProviderPickCard({
+  provider,
+  mark,
+  name,
+  url,
+  features,
+  selected,
+  onSelect,
+}: {
+  provider: ProviderId;
+  mark: string;
+  name: string;
+  url: string;
+  features: string[];
+  selected: boolean;
+  onSelect: (p: ProviderId) => void;
+}) {
+  return (
+    <div
+      className={'provider-card' + (selected ? ' on' : '')}
+      role="radio"
+      aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
+      onClick={() => onSelect(provider)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(provider);
+        }
+      }}
+    >
+      <div className="pc-head">
+        <span className="pc-mark">{mark}</span>
+        <div>
+          <div className="pc-name">{name}</div>
+          <div className="pc-url">{url}</div>
+        </div>
+      </div>
+      <div className="pc-feats">
+        {features.map((f) => (
+          <span key={f}>{f}</span>
+        ))}
+      </div>
+    </div>
   );
 }
 
