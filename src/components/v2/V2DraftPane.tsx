@@ -549,11 +549,21 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
         apiKey: auth.apiKey,
       });
       const settings = await loadSettings();
+      const contextItems = getContextItems(project);
+      // Reuse text cached on ProjectContextFile from the initial draft's
+      // extract stage; without this, regen silently loses file context.
+      const fileExtracts = new Map<string, string>();
+      for (const item of contextItems) {
+        if (item.kind === 'file' && item.extracted_text) {
+          fileExtracts.set(item.id, item.extracted_text);
+        }
+      }
       const result = await redraftFreeformSection({
         client,
         style,
         project_description: project.description,
-        context_items: getContextItems(project),
+        context_items: contextItems,
+        file_extracts: fileExtracts,
         model: settings.models.drafting ?? undefined,
         dataset: project.reference_dataset_names[0],
         live: project.live_search || undefined,
