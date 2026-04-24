@@ -142,8 +142,16 @@ export async function draftFreeformDocument(
       ...(live ? { live } : {}),
     };
     const r = await client.query(queryInput);
+    // The LLM completion lives in `message` on both providers.
+    // Ask Sage's `/server/query` uses `response` for a status marker
+    // ("OK"/"Failed") and `message` for the text; the OpenRouter client
+    // mirrors that (hardcoded `response: 'OK'`, content in `message`).
+    // Reading `response` here produces a DOCX containing only "OK".
+    const rawText = typeof r.message === 'string' && r.message.length > 0
+      ? r.message
+      : typeof r.response === 'string' ? r.response : String(r.response);
     return {
-      rawText: typeof r.response === 'string' ? r.response : String(r.response),
+      rawText,
       rawReferences: r.references ?? '',
       tokens_in: r.usage?.prompt_tokens ?? 0,
       tokens_out: r.usage?.completion_tokens ?? 0,
@@ -488,6 +496,151 @@ const AWARD_BANNED_OPENERS = [
   'i ',
   'my ',
 ];
+
+/**
+ * Inverse of parseMarkdownToParagraphs: render DraftParagraph[] back to
+ * a markdown string suitable for round-trip editing. Only emits the
+ * roles the drafter's parser can round-trip — unknown roles degrade to
+ * plain body paragraphs. Inline formatting is not preserved (the parser
+ * strips it), so this is a lossy round-trip for emphasis.
+ */
+export function paragraphsToMarkdown(paragraphs: DraftParagraph[]): string {
+  const lines: string[] = [];
+  for (const p of paragraphs) {
+    const text = p.text ?? '';
+    switch (p.role) {
+      case 'heading': {
+        const level = Math.max(1, Math.min(4, (p.level ?? 0) + 1));
+        lines.push(`${'#'.repeat(level)} ${text}`, '');
+        break;
+      }
+      case 'bullet': {
+        const indent = '  '.repeat(Math.max(0, p.level ?? 0));
+        lines.push(`${indent}- ${text}`);
+        break;
+      }
+      case 'step': {
+        const indent = '  '.repeat(Math.max(0, p.level ?? 0));
+        lines.push(`${indent}1. ${text}`);
+        break;
+      }
+      case 'quote':
+        lines.push(`> ${text}`, '');
+        break;
+      case 'table_row': {
+        const cells = p.cells ?? [text];
+        lines.push(`| ${cells.join(' | ')} |`);
+        if (p.is_header) {
+          lines.push(`| ${cells.map(() => '---').join(' | ')} |`);
+        }
+        break;
+      }
+      default:
+        lines.push(text, '');
+    }
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+export interface FreeformSectionRedraftArgs {
+  client: LLMClient;
+  style: FreeformStyle;
+  project_description: string;
+  context_items: ProjectContextItem[];
+  file_extracts?: Map<string, string>;
+  model?: string;
+  dataset?: string;
+  live?: 0 | 1 | 2;
+  limit_references?: number;
+  /** The whole current draft, used to give the model full context. */
+  current_draft: DraftParagraph[];
+  /** Heading text of the section to rewrite (matched case-insensitively). */
+  section_heading: string;
+  /** Optional extra instruction from the user (e.g. "tighten", "add more detail on X"). */
+  instruction?: string;
+}
+
+export interface FreeformSectionRedraftResult {
+  paragraphs: DraftParagraph[];
+  model: string;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+/**
+ * Rewrite a single H1 section of an existing freeform draft. The model
+ * sees the full current draft for context but is instructed to reply
+ * with ONLY the markdown for the target section. Used for per-chunk
+ * regen in V2DraftPane.
+ */
+export async function redraftFreeformSection(
+  args: FreeformSectionRedraftArgs,
+): Promise<FreeformSectionRedraftResult> {
+  const {
+    client, style, project_description, context_items, file_extracts,
+    model, dataset, live, limit_references,
+    current_draft, section_heading, instruction,
+  } = args;
+
+  const contextParts: string[] = [];
+  const notes = context_items.filter((c) => c.kind === 'note');
+  if (notes.length > 0) {
+    contextParts.push('=== PROJECT NOTES ===');
+    for (const note of notes) contextParts.push(`[${note.role}]: ${note.text}`);
+  }
+  const files = context_items.filter((c) => c.kind === 'file');
+  if (files.length > 0 && file_extracts) {
+    const fileTexts: string[] = [];
+    for (const f of files) {
+      const text = file_extracts.get(f.id);
+      if (text) fileTexts.push(`--- ${f.filename} ---\n${text}`);
+    }
+    if (fileTexts.length > 0) {
+      contextParts.push('\n=== ATTACHED REFERENCE FILES ===');
+      contextParts.push(fileTexts.join('\n\n'));
+    }
+  }
+  const contextBlock = contextParts.length > 0
+    ? contextParts.join('\n')
+    : '(No additional context provided.)';
+
+  const numberedOutline = style.outline.map((item, i) => `${i + 1}. ${item}`).join('\n');
+  const systemPrompt = style.system_prompt
+    .replace('{{STYLE_NAME}}', style.name)
+    .replace('{{OUTLINE}}', numberedOutline)
+    .replace('{{TONE}}', style.tone_guidance)
+    .replace('{{PROJECT_DESCRIPTION}}', project_description || '(not provided)')
+    .replace('{{CONTEXT}}', contextBlock);
+
+  const currentMarkdown = paragraphsToMarkdown(current_draft);
+  const userMessage =
+    `You previously drafted this document:\n\n\`\`\`markdown\n${currentMarkdown}\n\`\`\`\n\n` +
+    `Rewrite ONLY the section whose top-level (H1) heading matches "${section_heading}". ` +
+    `Keep every other section untouched — do not repeat them in your reply. ` +
+    `Reply with ONLY the markdown for the rewritten section, starting with its \`# ${section_heading}\` heading.` +
+    (instruction ? `\n\nAdditional instruction: ${instruction}` : '');
+
+  const effectiveModel = model ?? DEFAULT_DRAFTING_MODEL;
+  const queryInput: QueryInput = {
+    message: userMessage,
+    model: effectiveModel,
+    system_prompt: systemPrompt,
+    temperature: 0.3,
+    usage: true,
+    ...(dataset ? { dataset, limit_references: limit_references ?? 6 } : { dataset: 'none' }),
+    ...(live ? { live } : {}),
+  };
+  const r = await client.query(queryInput);
+  const rawText = typeof r.message === 'string' && r.message.length > 0
+    ? r.message
+    : typeof r.response === 'string' ? r.response : String(r.response);
+  return {
+    paragraphs: parseMarkdownToParagraphs(rawText),
+    model: effectiveModel,
+    tokens_in: r.usage?.prompt_tokens ?? 0,
+    tokens_out: r.usage?.completion_tokens ?? 0,
+  };
+}
 
 /** Strip markdown inline formatting (**bold**, *italic*, etc.) for the text field */
 function stripInlineFormatting(text: string): string {

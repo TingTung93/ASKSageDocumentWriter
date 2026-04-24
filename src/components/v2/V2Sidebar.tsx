@@ -59,9 +59,21 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
 
       <div className="rail-section" style={{ marginTop: 8 }}>Workspace</div>
       <div className="rail-nav">
-        <button onClick={() => setView('library')} className={view==='library'?'on':''} style={{background: view==='library'?'var(--paper)':'transparent'}}><span className="dot" style={{background: view==='library'?'var(--accent)':'var(--ink-4)', width:7,height:7,borderRadius:999,display:'inline-block'}}/><span>Library</span><span className="kbd">L</span></button>
-        <button onClick={() => setView('audit')} className={view==='audit'?'on':''} style={{background: view==='audit'?'var(--paper)':'transparent'}}><span className="dot" style={{background: view==='audit'?'var(--accent)':'var(--ink-4)', width:7,height:7,borderRadius:999,display:'inline-block'}}/><span>Activity log</span><span className="kbd">A</span></button>
-        <button onClick={() => setView('settings')} className={view==='settings'?'on':''} style={{background: view==='settings'?'var(--paper)':'transparent'}}><span className="dot" style={{background: view==='settings'?'var(--accent)':'var(--ink-4)', width:7,height:7,borderRadius:999,display:'inline-block'}}/><span>Settings</span><span className="kbd">,</span></button>
+        {([
+          { key: 'library', label: 'Library', kbd: 'L' },
+          { key: 'audit', label: 'Activity log', kbd: 'A' },
+          { key: 'settings', label: 'Settings', kbd: ',' },
+        ] as const).map((item) => (
+          <button
+            key={item.key}
+            onClick={() => setView(item.key)}
+            className={view === item.key ? 'on' : ''}
+          >
+            <span className="nav-dot" />
+            <span>{item.label}</span>
+            <span className="kbd">{item.kbd}</span>
+          </button>
+        ))}
       </div>
 
       <div className="rail-foot">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Modal } from './Modal';
 
 interface V2CommandPaletteProps {
   onClose: () => void;
@@ -21,10 +22,6 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    setTimeout(() => inputRef.current?.focus(), 20);
-  }, []);
-
   const baseItems = useMemo<Cmd[]>(() => [
     { group: 'Navigate', ic: '▸', label: 'Draft workspace', desc: 'Three-pane co-writer view', trail: 'G D', run: () => setView('workspace') },
     { group: 'Navigate', ic: '▸', label: 'Library', desc: 'Templates & datasets', trail: 'G L', run: () => setView('library') },
@@ -37,14 +34,19 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
     { group: 'Actions', ic: '✓', label: 'Accept all findings', desc: 'Apply cross-section review fixes', trail: '', run: () => window.dispatchEvent(new CustomEvent('v2:accept-findings')) },
   ], [navigate, setView]);
 
-  const q = query.toLowerCase().trim();
-  const items = q
-    ? baseItems.filter(i => (i.label + ' ' + (i.desc || '') + ' ' + i.group).toLowerCase().includes(q))
-    : baseItems;
+  const items = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    return q
+      ? baseItems.filter(i => (i.label + ' ' + (i.desc || '') + ' ' + i.group).toLowerCase().includes(q))
+      : baseItems;
+  }, [query, baseItems]);
 
-  const groups: Record<string, Cmd[]> = {};
-  items.forEach(i => { (groups[i.group] = groups[i.group] || []).push(i); });
-  const flat = Object.values(groups).flat();
+  const groups = useMemo(() => {
+    const g: Record<string, Cmd[]> = {};
+    items.forEach(i => { (g[i.group] = g[i.group] || []).push(i); });
+    return g;
+  }, [items]);
+  const flat = useMemo(() => Object.values(groups).flat(), [groups]);
 
   const runIdx = (i: number) => { flat[i]?.run?.(); onClose(); };
 
@@ -60,8 +62,12 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
   let cursor = 0;
 
   return (
-    <div className="cmdk-scrim" onClick={onClose}>
-      <div className="cmdk-card" onClick={e => e.stopPropagation()}>
+    <Modal
+      onClose={onClose}
+      ariaLabel="Command palette"
+      scrimClassName="cmdk-scrim"
+      cardClassName="cmdk-card"
+    >
         <div className="cmdk-input-wrap">
           <span style={{ fontSize: 18, color: 'var(--ink-3)' }}>⌕</span>
           <input
@@ -71,10 +77,12 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
             value={query}
             onChange={e => setQuery(e.target.value)}
             onKeyDown={onKey}
+            aria-label="Search commands"
+            aria-activedescendant={`cmdk-item-${idx}`}
           />
           <span className="cmdk-kbd">esc</span>
         </div>
-        <div className="cmdk-list">
+        <div className="cmdk-list" role="listbox" aria-label={`${flat.length} result${flat.length === 1 ? '' : 's'}`}>
           {Object.entries(groups).map(([g, rows]) => (
             <div key={g}>
               <div className="cmdk-group-label">{g}</div>
@@ -83,6 +91,9 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
                 return (
                   <div
                     key={myIdx}
+                    id={`cmdk-item-${myIdx}`}
+                    role="option"
+                    aria-selected={myIdx === idx}
                     className={"cmdk-item" + (myIdx === idx ? ' on' : '')}
                     onMouseEnter={() => setIdx(myIdx)}
                     onClick={() => runIdx(myIdx)}
@@ -106,7 +117,6 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
           <span><kbd>↵</kbd> select</span>
           <span><kbd>esc</kbd> close</span>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

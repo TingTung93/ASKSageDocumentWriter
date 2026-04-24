@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { parseDocx } from '../../lib/template/parser';
 import { db, type TemplateRecord } from '../../lib/db/schema';
 import { toast } from '../../lib/state/toast';
+import { Modal } from './Modal';
 
 interface V2IngestModalProps {
   onClose: () => void;
@@ -81,11 +82,10 @@ export function V2IngestModal({ onClose, onIngested }: V2IngestModalProps) {
   };
 
   return (
-    <div className="modal-scrim" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose} ariaLabelledBy="v2-ingest-title">
         <div className="modal-head">
           <div className="modal-eye">Template ingest</div>
-          <div className="modal-title">Add DOCX template</div>
+          <div className="modal-title" id="v2-ingest-title">Add DOCX template</div>
           <div className="modal-sub">Parse structure and placeholders locally — the file never leaves this browser.</div>
         </div>
         <div className="modal-body">
@@ -149,7 +149,6 @@ export function V2IngestModal({ onClose, onIngested }: V2IngestModalProps) {
             )}
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

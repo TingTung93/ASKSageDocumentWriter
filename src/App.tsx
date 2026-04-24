@@ -50,7 +50,9 @@ export function App() {
               path="*"
               element={
                 <Shell>
-                  <div style={{ paddingBottom: 'calc(40vh + 2rem)' }}>
+                  {/* DebugPanel is a fixed 40vh overlay at the bottom; pad
+                      so the last of page content clears it. */}
+                  <div style={{ paddingBottom: '40vh' }}>
                     <Routes>
                       <Route path="/" element={<Welcome />} />
                       <Route path="/documents" element={<Documents />} />

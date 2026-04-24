@@ -131,6 +131,7 @@ export function V2InterventionCard({
           changedByNormalizer = out.changed;
         } catch (err) {
           console.warn('[V2InterventionCard] normalize failed; using raw values:', err);
+          toast.info('Normalization skipped — using raw values');
         }
       }
 
@@ -242,17 +243,18 @@ export function V2InterventionCard({
                   <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.7, marginBottom: 6 }}>{group.section_name}</div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {group.uniques.map((u) => (
-                      <div key={u.inputKey} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                        <div style={{ flex: '0 0 100px', fontSize: 11, paddingTop: 6, color: 'var(--ink-4)' }}>{u.description}</div>
+                      <label key={u.inputKey} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                        <span style={{ flex: '0 0 100px', fontSize: 11, paddingTop: 6, color: 'var(--ink-4)' }}>{u.description}</span>
                         <input
                           type="text"
-                          className="src-attach"
-                          style={{ flex: 1, textAlign: 'left', padding: '6px 8px', minHeight: 0, cursor: 'text' }}
+                          className="intervention-input"
+                          style={{ flex: 1 }}
                           value={values[u.inputKey] ?? ''}
                           onChange={(e) => setValues((prev) => ({ ...prev, [u.inputKey]: e.target.value }))}
                           placeholder="Type fact..."
+                          aria-label={u.description}
                         />
-                      </div>
+                      </label>
                     ))}
                   </div>
                 </div>

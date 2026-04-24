@@ -1,19 +1,18 @@
-import { useState, useEffect, useMemo, type FormEvent } from 'react';
+import { useState, useMemo, useRef, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/state/auth';
-import { createLLMClient, defaultBaseUrlFor, providerLabel } from '../../lib/provider/factory';
+import { createLLMClient, defaultBaseUrlFor, defaultModelFor, providerLabel } from '../../lib/provider/factory';
 import type { ProviderId } from '../../lib/provider/types';
 import { toast } from '../../lib/state/toast';
 import { loadSettings, saveSettings } from '../../lib/settings/store';
-import { DEFAULT_MODEL_OVERRIDES, type ModelStage } from '../../lib/settings/types';
-import { DEFAULT_DRAFTING_MODEL } from '../../lib/draft/drafter';
-import { DEFAULT_SYNTHESIS_MODEL } from '../../lib/template/synthesis/synthesize';
+import type { ModelStage } from '../../lib/settings/types';
+import { V2ProviderCard } from './V2ProviderCard';
 
-const STAGES: { stage: ModelStage; label: string; role: 'primary' | 'critic' | 'embed'; default: string }[] = [
-  { stage: 'drafting', label: 'Drafting', role: 'primary', default: DEFAULT_DRAFTING_MODEL },
-  { stage: 'critic', label: 'Critic', role: 'critic', default: DEFAULT_DRAFTING_MODEL },
-  { stage: 'synthesis', label: 'Template analysis', role: 'embed', default: DEFAULT_SYNTHESIS_MODEL },
+const STAGE_META: { stage: ModelStage; label: string; role: 'primary' | 'critic' | 'embed' }[] = [
+  { stage: 'drafting', label: 'Drafting', role: 'primary' },
+  { stage: 'critic', label: 'Critic', role: 'critic' },
+  { stage: 'synthesis', label: 'Template analysis', role: 'embed' },
 ];
 
 export function V2SettingsView() {
@@ -34,22 +33,23 @@ export function V2SettingsView() {
     clear,
   } = useAuth();
 
+  const askSageCardRef = useRef<HTMLDivElement>(null);
+  const openRouterCardRef = useRef<HTMLDivElement>(null);
+
   const [draftProvider, setDraftProvider] = useState<ProviderId>(provider);
   const [draftKey, setDraftKey] = useState(apiKey ?? '');
   const [draftBase, setDraftBase] = useState(baseUrl);
   const [showKey, setShowKey] = useState(false);
 
   const settings = useLiveQuery(() => loadSettings(), []);
-  const [modelDrafts, setModelDrafts] = useState<Record<string, string>>({});
-  useEffect(() => {
-    if (settings?.models) {
-      setModelDrafts({
-        drafting: settings.models.drafting ?? '',
-        critic: settings.models.critic ?? '',
-        synthesis: settings.models.synthesis ?? '',
-      });
-    }
-  }, [settings]);
+  // Track only user-pending edits; derive the displayed value from the
+  // persisted settings otherwise. A useEffect mirror of settings.models
+  // would clobber in-flight edits every time Dexie re-emits.
+  const [modelEdits, setModelEdits] = useState<Partial<Record<ModelStage, string>>>({});
+  function modelValueFor(stage: ModelStage): string {
+    if (modelEdits[stage] !== undefined) return modelEdits[stage] ?? '';
+    return settings?.models?.[stage] ?? '';
+  }
 
   const connectionStatus = useMemo<'connected' | 'unverified' | 'none'>(() => {
     if (!apiKey) return 'none';
@@ -99,12 +99,13 @@ export function V2SettingsView() {
   async function onSaveModels() {
     const patch = {
       models: {
-        drafting: modelDrafts.drafting?.trim() || undefined,
-        critic: modelDrafts.critic?.trim() || undefined,
-        synthesis: modelDrafts.synthesis?.trim() || undefined,
+        drafting: modelValueFor('drafting').trim() || undefined,
+        critic: modelValueFor('critic').trim() || undefined,
+        synthesis: modelValueFor('synthesis').trim() || undefined,
       },
     };
     await saveSettings(patch);
+    setModelEdits({});
     toast.success('Model routing saved');
   }
 
@@ -132,56 +133,57 @@ export function V2SettingsView() {
           </div>
 
           <form onSubmit={onValidate}>
-            <div className="provider-cards">
-              <div
-                className={"provider-card" + (draftProvider === 'asksage' ? ' on' : '')}
-                onClick={() => onPickProvider('asksage')}
-                role="button"
-                tabIndex={0}
-              >
-                <div className="pc-head">
-                  <span className="pc-mark">S</span>
-                  <div>
-                    <div className="pc-name">Ask Sage</div>
-                    <div className="pc-url">api.asksage.health.mil</div>
-                  </div>
-                </div>
-                <div className="pc-feats">
-                  <span>CUI</span><span>DHA tenant</span><span>RAG</span>
-                </div>
-              </div>
-              <div
-                className={"provider-card" + (draftProvider === 'openrouter' ? ' on' : '')}
-                onClick={() => onPickProvider('openrouter')}
-                role="button"
-                tabIndex={0}
-              >
-                <div className="pc-head">
-                  <span className="pc-mark">O</span>
-                  <div>
-                    <div className="pc-name">OpenRouter</div>
-                    <div className="pc-url">openrouter.ai/api/v1</div>
-                  </div>
-                </div>
-                <div className="pc-feats">
-                  <span>non-CUI</span><span>commercial</span>
-                </div>
-              </div>
+            <div className="provider-cards" role="radiogroup" aria-label="AI provider">
+              <V2ProviderCard
+                provider="asksage"
+                mark="S"
+                name="Ask Sage"
+                url="api.asksage.health.mil"
+                features={['CUI', 'DHA tenant', 'RAG']}
+                selected={draftProvider === 'asksage'}
+                onSelect={onPickProvider}
+                inputRef={askSageCardRef}
+                onArrowNav={() => {
+                  onPickProvider('openrouter');
+                  openRouterCardRef.current?.focus();
+                }}
+              />
+              <V2ProviderCard
+                provider="openrouter"
+                mark="O"
+                name="OpenRouter"
+                url="openrouter.ai/api/v1"
+                features={['non-CUI', 'commercial']}
+                selected={draftProvider === 'openrouter'}
+                onSelect={onPickProvider}
+                inputRef={openRouterCardRef}
+                onArrowNav={() => {
+                  onPickProvider('asksage');
+                  askSageCardRef.current?.focus();
+                }}
+              />
             </div>
 
             <div className="s-row two">
               <div className="s-field">
-                <label>API key</label>
+                <label htmlFor="v2-settings-api-key">API key</label>
                 <div className="input-row">
                   <input
+                    id="v2-settings-api-key"
                     className="mono"
                     type={showKey ? 'text' : 'password'}
                     value={draftKey}
                     onChange={(e) => setDraftKey(e.target.value)}
                     placeholder="paste your key here"
                     autoComplete="off"
+                    aria-label="API key"
                   />
-                  <button type="button" onClick={() => setShowKey((v) => !v)}>
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                    aria-pressed={showKey}
+                  >
                     {showKey ? 'Hide' : 'Show'}
                   </button>
                 </div>
@@ -229,32 +231,37 @@ export function V2SettingsView() {
               <div className="s-desc">Pick a specific model per stage, or leave blank to use the compiled-in default.</div>
             </div>
           </div>
-          {STAGES.map((s) => (
-            <div key={s.stage} className="model-row">
-              <div>
-                <div className="mr-name">{s.label}</div>
-                <div style={{ fontSize: 11, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
-                  default: {s.default}
+          {STAGE_META.map((s) => {
+            const suggested = defaultModelFor(draftProvider, s.stage);
+            return (
+              <div key={s.stage} className="model-row">
+                <div>
+                  <div className="mr-name">{s.label}</div>
+                  <div style={{ fontSize: 11, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
+                    {draftProvider === 'openrouter' ? 'suggested: ' : 'default: '}{suggested}
+                  </div>
                 </div>
+                <span className={"mr-role " + s.role}>{s.role}</span>
+                <input
+                  className="mono"
+                  style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
+                  value={modelValueFor(s.stage)}
+                  onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
+                  placeholder={suggested}
+                  aria-label={`${s.label} model override`}
+                />
               </div>
-              <span className={"mr-role " + s.role}>{s.role}</span>
-              <input
-                className="mono"
-                style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
-                value={modelDrafts[s.stage] ?? ''}
-                onChange={(e) => setModelDrafts((d) => ({ ...d, [s.stage]: e.target.value }))}
-                placeholder={s.default}
-              />
+            );
+          })}
+          {draftProvider === 'openrouter' && (
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 8 }}>
+              OpenRouter has no universal fallback — the suggestions above are just hints. Save an explicit model per stage before running a recipe.
             </div>
-          ))}
+          )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>
             <button
               className="btn"
-              onClick={() => setModelDrafts({
-                drafting: '',
-                critic: '',
-                synthesis: DEFAULT_MODEL_OVERRIDES.synthesis ?? '',
-              })}
+              onClick={() => setModelEdits({ drafting: '', critic: '', synthesis: '' })}
             >
               Reset to defaults
             </button>

@@ -16,10 +16,8 @@ import {
   type ModelOverrides,
   type ModelStage,
 } from '../lib/settings/types';
-import { DEFAULT_SYNTHESIS_MODEL } from '../lib/template/synthesis/synthesize';
-import { DEFAULT_DRAFTING_MODEL } from '../lib/draft/drafter';
-import { DEFAULT_DOCUMENT_EDIT_MODEL } from '../lib/document/edit';
-import { DEFAULT_EDIT_MODEL } from '../lib/edit/schema-edit';
+import { defaultModelFor } from '../lib/provider/factory';
+import type { ProviderId } from '../lib/provider/types';
 import { EmptyState } from '../components/EmptyState';
 import {
   STAGE_REQUIREMENTS,
@@ -33,38 +31,41 @@ interface StageMeta {
   default: string;
 }
 
-const STAGES: StageMeta[] = [
+// Static copy (stage, label, description). Per-stage default is
+// derived from the active provider at render time via defaultModelFor —
+// keeping it in state here would go stale when the user switches
+// providers on the Connection tab.
+const STAGE_COPY: Omit<StageMeta, 'default'>[] = [
   {
     stage: 'synthesis',
     label: 'Template analysis',
     description: 'Reads a DOCX template and identifies sections, structure, and writing guidance.',
-    default: DEFAULT_SYNTHESIS_MODEL,
   },
   {
     stage: 'drafting',
     label: 'Section drafting',
     description: 'Generates content for each section when running a project.',
-    default: DEFAULT_DRAFTING_MODEL,
   },
   {
     stage: 'critic',
     label: 'Quality reviewer',
     description: 'Reviews each drafted section for errors and suggests improvements.',
-    default: DEFAULT_DRAFTING_MODEL,
   },
   {
     stage: 'cleanup',
     label: 'Document cleanup',
     description: 'Reviews and polishes an uploaded DOCX on the Documents page.',
-    default: DEFAULT_DOCUMENT_EDIT_MODEL,
   },
   {
     stage: 'schema_edit',
     label: 'Template refinement',
     description: 'AI-assisted edits to a template\'s section definitions and writing rules.',
-    default: DEFAULT_EDIT_MODEL,
   },
 ];
+
+function stagesFor(provider: ProviderId): StageMeta[] {
+  return STAGE_COPY.map((c) => ({ ...c, default: defaultModelFor(provider, c.stage) }));
+}
 
 type PricingFilter = 'all' | 'free' | 'paid';
 
@@ -147,6 +148,7 @@ export function Settings() {
         models={settings.models}
         availableModels={filteredModels}
         compatibilityFilter={compatibilityFilter}
+        provider={provider}
       />
 
       <h2>Quality review loop (automated review)</h2>
@@ -314,14 +316,16 @@ function ModelOverridesSection({
   models,
   availableModels,
   compatibilityFilter,
+  provider,
 }: {
   models: ModelOverrides;
   availableModels: ModelInfo[];
   compatibilityFilter: boolean;
+  provider: ProviderId;
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-      {STAGES.map((meta) => (
+      {stagesFor(provider).map((meta) => (
         <ModelOverrideRow
           key={meta.stage}
           meta={meta}
@@ -428,11 +432,10 @@ function ModelOverrideRow({
           <> {hiddenIncompatibleCount.toLocaleString()} incompatible model{hiddenIncompatibleCount === 1 ? '' : 's'} hidden.</>
         )}
       </p>
-      <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+      <div className="model-override-row">
         <select
           value={draft}
           onChange={onSelect}
-          style={{ flex: '0 0 18rem' }}
           disabled={saving}
         >
           <option value="">default — {meta.default}</option>
@@ -451,7 +454,6 @@ function ModelOverrideRow({
             if ((draft || null) !== current) void commit(draft);
           }}
           placeholder="Or type a model name…"
-          style={{ flex: 1 }}
           disabled={saving}
         />
       </div>

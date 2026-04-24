@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { V2Sidebar } from './V2Sidebar';
 import { V2ProjectWorkspace } from './V2ProjectWorkspace';
 import { V2ExportModal } from './V2ExportModal';
@@ -32,12 +32,18 @@ function V2LayoutInner() {
   const [showExport, setShowExport] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
   const apiKey = useAuth((s) => s.apiKey);
+  const storageWarnedRef = useRef(false);
+  const warnStorageOnce = () => {
+    if (storageWarnedRef.current) return;
+    storageWarnedRef.current = true;
+    toast.info('Session storage unavailable — first-run state will not persist this session');
+  };
   const [firstRunDismissed, setFirstRunDismissed] = useState<boolean>(() => {
     try { return sessionStorage.getItem(FIRST_RUN_DISMISSED_KEY) === '1'; } catch { return false; }
   });
   const showFirstRun = !apiKey && !firstRunDismissed;
   const dismissFirstRun = () => {
-    try { sessionStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1'); } catch { /* noop */ }
+    try { sessionStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1'); } catch { warnStorageOnce(); }
     setFirstRunDismissed(true);
   };
   const { id } = useParams<{ id: string }>();
@@ -143,7 +149,6 @@ function V2LayoutInner() {
                 )}
                 <button className="btn btn-ghost" onClick={() => setShowCP(true)}>⌘K Palette</button>
                 <button className="btn btn-ghost" onClick={() => setShowExport(true)}>⇣ Export</button>
-                <button className="btn">⎘ Duplicate</button>
               </>
             )}
           </div>

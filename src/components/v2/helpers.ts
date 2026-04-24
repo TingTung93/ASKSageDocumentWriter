@@ -3,6 +3,57 @@
 // React Router, etc.).
 
 import type { TemplateRecord, AuditRecord } from '../../lib/db/schema';
+import type { DraftParagraph } from '../../lib/draft/types';
+
+export interface FreeformChunk {
+  /** Stable id for React keys / scroll targets. */
+  id: string;
+  /** Heading text if this chunk starts with an H1, else a synthetic label. */
+  heading: string;
+  /** Paragraphs belonging to this chunk, including the H1 itself (if any). */
+  paragraphs: DraftParagraph[];
+  /** Index into the source `freeform_draft` where this chunk starts. */
+  start: number;
+  /** Exclusive end index. */
+  end: number;
+}
+
+/**
+ * Split a freeform draft into H1-bounded chunks. The first chunk covers
+ * any preamble paragraphs before the first H1 (or the entire draft if
+ * no H1 is present).
+ */
+export function chunkFreeformByH1(paragraphs: DraftParagraph[]): FreeformChunk[] {
+  if (paragraphs.length === 0) return [];
+  const chunks: FreeformChunk[] = [];
+  let start = 0;
+  let heading = 'Preamble';
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i]!;
+    const isH1 = p.role === 'heading' && (p.level ?? 0) === 0;
+    if (isH1 && i !== start) {
+      chunks.push({
+        id: `chunk-${chunks.length}`,
+        heading,
+        paragraphs: paragraphs.slice(start, i),
+        start,
+        end: i,
+      });
+      start = i;
+      heading = p.text ?? 'Section';
+    } else if (isH1 && i === start) {
+      heading = p.text ?? 'Section';
+    }
+  }
+  chunks.push({
+    id: `chunk-${chunks.length}`,
+    heading,
+    paragraphs: paragraphs.slice(start),
+    start,
+    end: paragraphs.length,
+  });
+  return chunks;
+}
 
 export type AuditKind = 'draft' | 'critic' | 'review' | 'embed';
 

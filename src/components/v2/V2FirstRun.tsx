@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface V2FirstRunProps {
@@ -6,6 +7,24 @@ interface V2FirstRunProps {
 
 export function V2FirstRun({ onDismiss }: V2FirstRunProps) {
   const navigate = useNavigate();
+  const primaryRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    triggerRef.current = (document.activeElement as HTMLElement) ?? null;
+    primaryRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onDismiss();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      triggerRef.current?.focus?.();
+    };
+  }, [onDismiss]);
 
   const openSettings = () => {
     onDismiss();
@@ -28,7 +47,7 @@ export function V2FirstRun({ onDismiss }: V2FirstRunProps) {
         </ol>
         <div className="fr-actions">
           <button className="btn" onClick={onDismiss}>Skip tour</button>
-          <button className="btn btn-accent" onClick={openSettings}>Open Settings →</button>
+          <button ref={primaryRef} className="btn btn-accent" onClick={openSettings}>Open Settings →</button>
         </div>
       </div>
     </div>

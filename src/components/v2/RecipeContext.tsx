@@ -48,6 +48,16 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   const effectiveDraftingModelId = draftingModelOverride ?? (onAskSage ? ASK_SAGE_DEFAULT_DRAFTING_MODEL : null);
   const draftingPricing = resolveModelPricing(availableModels, effectiveDraftingModelId);
 
+  const onStageStart = useCallback((stage: RecipeStage, index: number, total: number) => {
+    setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
+  }, []);
+  const onStageProgress = useCallback((_stage: RecipeStage, message: string) => {
+    setRecipeStageMessage(message);
+  }, []);
+  const onStageError = useCallback((stage: RecipeStage, err: Error) => {
+    toast.error(`${stage.name}: ${err.message}`);
+  }, []);
+
   const startRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
     if (!apiKey) {
       toast.error('Connect a provider on the Connection tab first.');
@@ -68,15 +78,9 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
         recipe,
         display_name: `Auto-draft · ${project.name || 'Untitled project'}`,
         callbacks: {
-          onStageStart: (stage: RecipeStage, index, total) => {
-            setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
-          },
-          onStageProgress: (_stage, message) => {
-            setRecipeStageMessage(message);
-          },
-          onError: (stage, err) => {
-            toast.error(`${stage.name}: ${err.message}`);
-          },
+          onStageStart,
+          onStageProgress,
+          onError: onStageError,
         },
       });
       setCurrentRun(run);
@@ -100,7 +104,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [apiKey, provider, baseUrl, availableModels, draftingPricing]);
+  }, [apiKey, provider, baseUrl, availableModels, draftingPricing, onStageStart, onStageProgress, onStageError]);
 
   const resumeRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
     if (!currentRun || !apiKey) return;
@@ -113,12 +117,8 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
         templates,
         run_id: currentRun.id,
         callbacks: {
-          onStageStart: (stage: RecipeStage, index, total) => {
-            setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
-          },
-          onStageProgress: (_stage, message) => {
-            setRecipeStageMessage(message);
-          },
+          onStageStart,
+          onStageProgress,
         },
       });
       setCurrentRun(run);
@@ -127,7 +127,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [currentRun, apiKey, provider, baseUrl]);
+  }, [currentRun, apiKey, provider, baseUrl, onStageStart, onStageProgress]);
 
   const cancelRecipe = useCallback(async () => {
     if (!currentRun) return;
@@ -151,12 +151,8 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
         templates,
         run_id: currentRun.id,
         callbacks: {
-          onStageStart: (stage: RecipeStage, index, total) => {
-            setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
-          },
-          onStageProgress: (_stage, message) => {
-            setRecipeStageMessage(message);
-          },
+          onStageStart,
+          onStageProgress,
         },
       });
       setCurrentRun(run);
@@ -165,7 +161,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [currentRun, apiKey, provider, baseUrl]);
+  }, [currentRun, apiKey, provider, baseUrl, onStageStart, onStageProgress]);
 
   return (
     <RecipeContext.Provider value={{

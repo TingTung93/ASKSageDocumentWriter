@@ -30,10 +30,6 @@ export function V2SourcesPane({ project, activeSectionId }: V2SourcesPaneProps) 
           <h2>Sources</h2>
           <span className="count">{attached.length + rag.length}</span>
         </div>
-        <div className="pane-actions">
-          <button className="icon-btn" title="Search">⌕</button>
-          <button className="icon-btn" title="More">⋯</button>
-        </div>
       </div>
 
       <div className="sources-subnav">
@@ -43,7 +39,6 @@ export function V2SourcesPane({ project, activeSectionId }: V2SourcesPaneProps) 
         <button className={tab === "rag" ? "active" : ""} onClick={() => setTab("rag")}>
           RAG & web <span style={{opacity:0.6,marginLeft:2,fontFamily:'var(--font-mono)',fontSize:10}}>{rag.length}</span>
         </button>
-        <button style={{marginLeft:'auto'}}>Citations</button>
       </div>
 
       <div className="pane-body">
@@ -73,13 +68,6 @@ export function V2SourcesPane({ project, activeSectionId }: V2SourcesPaneProps) 
           );
         })}
 
-        {tab === "attached" && (
-          <button className="src-attach">
-            <div className="big">＋</div>
-            <div style={{marginTop:4}}>Drop .docx, .pdf, .md</div>
-            <div style={{fontSize:10.5,color:'var(--ink-4)',fontFamily:'var(--font-mono)',marginTop:3}}>or paste a link</div>
-          </button>
-        )}
       </div>
     </section>
   );

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { ProjectRecord, ProjectContextNote } from '../../lib/db/schema';
 import { addProjectNote } from '../../lib/project/context';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -35,7 +35,10 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
   const { currentRun, isRunning, resumeRecipe } = useRecipe();
   const allTemplates = useLiveQuery(() => db.templates.toArray(), []);
   
-  const notes = (project.context_items ?? []).filter((item): item is ProjectContextNote => item.kind === 'note');
+  const notes = useMemo(
+    () => (project.context_items ?? []).filter((item): item is ProjectContextNote => item.kind === 'note'),
+    [project.context_items],
+  );
 
   useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -55,9 +58,10 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
     : null;
 
   const slashQuery = input.startsWith('/') ? input.slice(1).split(/\s/)[0].toLowerCase() : null;
-  const filteredSlash = slashQuery !== null
-    ? SLASH_COMMANDS.filter((c) => c.label.startsWith(slashQuery))
-    : [];
+  const filteredSlash = useMemo(
+    () => (slashQuery !== null ? SLASH_COMMANDS.filter((c) => c.label.startsWith(slashQuery)) : []),
+    [slashQuery],
+  );
   const showSlash = slashQuery !== null && filteredSlash.length > 0;
 
   useEffect(() => { setSlashIdx(0); }, [slashQuery]);
@@ -111,11 +115,6 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
         <div className="pane-title">
           <h2>Chat</h2>
           <span className="count">{notes.length} turns</span>
-        </div>
-        <div className="pane-actions">
-          <button className="icon-btn" title="Branch">⎇</button>
-          <button className="icon-btn" title="Clear">⌫</button>
-          <button className="icon-btn" title="More">⋯</button>
         </div>
       </div>
 

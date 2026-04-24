@@ -23,9 +23,13 @@ function stubClient(responses: { response: string; tokens_in?: number; tokens_ou
       calls.push({ input });
       const r = responses[i++];
       if (!r) throw new Error(`stubClient exhausted after ${i - 1} calls`);
+      // LLM completion goes in `message` on both providers; `response`
+      // is the status marker ("OK"/"Failed"). The stub mirrors the real
+      // Ask Sage / OpenRouter shape — the fixture field is still called
+      // `response` at the call sites below to keep churn small.
       return {
-        message: 'ok',
-        response: r.response,
+        message: r.response,
+        response: 'OK',
         status: 200,
         uuid: `stub-${i}`,
         references: '',

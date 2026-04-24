@@ -5,7 +5,11 @@
  * Stages:
  *   1. Extract references — pull text from attached files
  *   2. Draft document — single LLM call to produce the whole document
- *   3. Assemble DOCX — build a clean Word file from the drafted content
+ *
+ * The drafted paragraphs are saved to `project.freeform_draft` so the
+ * workspace can render a semantic-block preview and allow per-block
+ * edits. DOCX assembly is explicit — triggered from the Export button,
+ * not from the recipe pipeline.
  */
 
 import type { Recipe, RecipeStage, RecipeStageResult, RecipeRunContext } from '../recipe';
@@ -13,7 +17,6 @@ import { getContextItems } from '../../project/context';
 import { extractFileLocally, cacheExtractedText } from '../../project/local_extract';
 import { blobToFile, extractedTextFromRet } from '../../asksage/extract';
 import { draftFreeformDocument } from '../../freeform/drafter';
-import { assembleFreeformDocx } from '../../freeform/assemble';
 import { getFreeformStyle } from '../../freeform/styles';
 import { loadSettings } from '../../settings/store';
 import { db } from '../../db/schema';
@@ -150,51 +153,6 @@ const draftDocumentStage: RecipeStage = {
   },
 };
 
-// ─── Stage 3: Assemble DOCX ─────────────────────────────────────
-
-const assembleDocxStage: RecipeStage = {
-  id: 'assemble-freeform-docx',
-  name: 'Building Word document',
-  description: 'Assemble the drafted content into a downloadable Word (.docx) file.',
-  required: true,
-  intervention_point: false,
-  async run(ctx: RecipeRunContext): Promise<RecipeStageResult> {
-    ctx.callbacks?.onStageProgress?.(this, 'Assembling Word document…');
-
-    // Read the paragraphs from the draft stage output
-    const draftOutput = ctx.state['draft-freeform-document'] as
-      | { paragraphs: import('../../draft/types').DraftParagraph[] }
-      | undefined;
-
-    if (!draftOutput?.paragraphs || draftOutput.paragraphs.length === 0) {
-      return { kind: 'failed', error: 'No drafted content to assemble.' };
-    }
-
-    const result = await assembleFreeformDocx(draftOutput.paragraphs);
-
-    // Trigger download
-    const safeName = ctx.project.name.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
-    const filename = `${safeName}_${Date.now()}.docx`;
-    triggerDownload(result.blob, filename);
-
-    return {
-      kind: 'ok',
-      output: { filename, paragraph_count: result.paragraph_count },
-    };
-  },
-};
-
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
 // ─── Recipe definition ───────────────────────────────────────────
 
 export const FREEFORM_RECIPE: Recipe = {
@@ -209,6 +167,5 @@ export const FREEFORM_RECIPE: Recipe = {
   stages: [
     extractReferencesStage,
     draftDocumentStage,
-    assembleDocxStage,
   ],
 };

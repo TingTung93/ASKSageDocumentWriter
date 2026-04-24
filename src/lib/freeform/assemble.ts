@@ -206,17 +206,13 @@ function buildDocumentXml(paragraphs: DraftParagraph[]): string {
     <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
   </w:sectPr>`;
 
+  // Only declare namespaces we actually use. Previously this element
+  // set mc:Ignorable="w14 wp14" without declaring xmlns:w14 /
+  // xmlns:wp14 — Word flagged the document as containing unreadable
+  // content when opening. We don't emit any w14/wp14 extensions, so
+  // the whole mc:Ignorable machinery can go.
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
-  xmlns:mc="${NS.mc}"
-  xmlns:o="urn:schemas-microsoft-com:office:office"
-  xmlns:r="${NS.r}"
-  xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
-  xmlns:v="urn:schemas-microsoft-com:vml"
-  xmlns:wp="${NS.wp}"
-  xmlns:w="${NS.w}"
-  xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"
-  mc:Ignorable="w14 wp14">
+<w:document xmlns:w="${NS.w}" xmlns:r="${NS.r}">
   <w:body>${body}${sectPr}</w:body>
 </w:document>`;
 }
