@@ -20,42 +20,39 @@ vi.mock('../template/parser', () => ({
 describe('local_extract', () => {
   describe('extractFileLocally', () => {
     it('extracts DOCX files correctly', async () => {
-      const file: ProjectContextFile = {
+      const file = {
         kind: 'file',
         id: '1',
         filename: 'test.docx',
         mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         bytes: new Blob(['a'.repeat(123)]), // size 123
-        uploaded_at: ''
-      };
+      } as unknown as ProjectContextFile;
       const res = await extractFileLocally(file);
       expect(res.text).toBe('Mocked DOCX text');
       expect(res.error).toBeUndefined();
     });
 
     it('returns error if DOCX contains no text', async () => {
-      const file: ProjectContextFile = {
+      const file = {
         kind: 'file',
         id: '2',
         filename: 'empty.docx',
         mime_type: '',
         bytes: new Blob([]), // size 0
-        uploaded_at: ''
-      };
+      } as unknown as ProjectContextFile;
       const res = await extractFileLocally(file);
       expect(res.text).toBeNull();
       expect(res.error).toContain('DOCX parsed but contained no text');
     });
 
     it('extracts plain text files correctly (utf-8)', async () => {
-      const file: ProjectContextFile = {
+      const file = {
         kind: 'file',
         id: '3',
         filename: 'test.txt',
         mime_type: 'text/plain',
         bytes: new Blob([new TextEncoder().encode('Hello txt')]),
-        uploaded_at: ''
-      };
+      } as unknown as ProjectContextFile;
       
       // We need to mock Blob.arrayBuffer for testing environment if it doesn't have it
       file.bytes.arrayBuffer = async () => new TextEncoder().encode('Hello txt').buffer;
@@ -66,14 +63,13 @@ describe('local_extract', () => {
     });
 
     it('returns error for unsupported file type', async () => {
-      const file: ProjectContextFile = {
+      const file = {
         kind: 'file',
         id: '4',
         filename: 'image.png',
         mime_type: 'image/png',
         bytes: new Blob(['binary']),
-        uploaded_at: ''
-      };
+      } as unknown as ProjectContextFile;
       const res = await extractFileLocally(file);
       expect(res.text).toBeNull();
       expect(res.error).toContain('local extraction not supported');
@@ -82,14 +78,14 @@ describe('local_extract', () => {
 
   describe('cacheExtractedText', () => {
     it('updates text and writes to DB', async () => {
-      const file = { kind: 'file', id: 'f1', filename: 'test', bytes: new Blob(), uploaded_at: '' } as ProjectContextFile;
-      const project: ProjectRecord = {
+      const file = { kind: 'file', id: 'f1', filename: 'test', bytes: new Blob() } as any;
+      const project = {
         id: 'p1',
         name: 'proj',
         created_at: '',
         updated_at: '',
         context_items: [file]
-      };
+      } as unknown as ProjectRecord;
       
       vi.mocked(db.projects.put).mockResolvedValueOnce('p1');
       await cacheExtractedText(project, 'f1', 'new extracted text');
@@ -102,14 +98,14 @@ describe('local_extract', () => {
     });
     
     it('does nothing if text is same', async () => {
-      const file = { kind: 'file', id: 'f1', extracted_text: 'same text', filename: 'test', bytes: new Blob(), uploaded_at: '' } as any;
-      const project: ProjectRecord = {
+      const file = { kind: 'file', id: 'f1', extracted_text: 'same text', filename: 'test', bytes: new Blob() } as any;
+      const project = {
         id: 'p2',
         name: 'proj2',
         created_at: '',
         updated_at: '',
         context_items: [file]
-      };
+      } as unknown as ProjectRecord;
       
       vi.mocked(db.projects.put).mockClear();
       await cacheExtractedText(project, 'f1', 'same text');

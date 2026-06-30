@@ -1,59 +1,61 @@
 import { describe, it, expect, vi } from 'vitest';
 import { draftSection } from './drafter';
 import type { LLMClient } from '../provider/types';
-import type { QueryInput, QueryResponse, OpenAIToolCall } from '../asksage/types';
-import type { BodyFillRegion, TemplateSchema } from '../template/types';
+import type { QueryInput, QueryResponse } from '../asksage/types';
 import type { PriorSectionSummary } from './types';
 
 function makeClient(
-  queries: Array<Omit<QueryResponse, 'usage' | 'references'> & { usage?: any, references?: string }>
+  queries: Array<Partial<QueryResponse>>
 ): LLMClient {
   let callCount = 0;
   return {
     provider: 'asksage',
-    capabilities: { dataset: true, liveSearch: false },
-    query: vi.fn().mockImplementation(async (input: QueryInput) => {
+    capabilities: { dataset: true, liveSearch: false, fileUpload: false },
+    query: vi.fn().mockImplementation(async (_input: QueryInput) => {
       const q = queries[callCount++];
       if (!q) throw new Error(`Unexpected query call ${callCount}`);
       return {
+        status: 200,
+        response: 'OK',
+        uuid: 'test',
         message: q.message || '',
         tool_calls: q.tool_calls || [],
         usage: q.usage || { prompt_tokens: 10, completion_tokens: 10 },
         references: q.references || '',
         web_search_results: [],
+        embedding_down: false,
+        vectors_down: false,
+        ...q
       } as QueryResponse;
     }),
     getModels: vi.fn().mockResolvedValue([{ id: 'google-claude-46-sonnet' }]),
-  };
+  } as unknown as LLMClient;
 }
 
-const mockTemplate: TemplateSchema = {
-  $schema: 'test',
-  id: 'tpl',
-  name: 'Test',
-  version: 1,
-  source: { filename: 'f.docx', ingested_at: '', structural_parser_version: '', semantic_synthesizer: '', docx_blob_id: '' },
-  formatting: {
-    page_setup: { paper: 'letter', orientation: 'portrait', margins_twips: { top: 0, right: 0, bottom: 0, left: 0 }, header_distance: 0, footer_distance: 0 },
-    default_font: { family: null, size_pt: null },
-    theme: null,
-    named_styles: [], numbering_definitions: [], headers: [], footers: []
-  },
-  metadata_fill_regions: [],
-  sections: [],
-  style: {},
-  structure: { ordered_dependencies: [], graph: [] }
-};
+const mockTemplate = {
+  id: 'tmpl',
+  name: 'Test Template',
+  description: 'A template',
+  global_instructions: '',
+  fill_regions: [],
+  shared_inputs: [],
+  visual_style: {},
+  style: {
+    voice: '',
+    tense: '',
+    register: '',
+    jargon_policy: '',
+    banned_phrases: []
+  }
+} as any;
 
-const mockSection: BodyFillRegion = {
-  id: 'sec1',
-  name: 'Section 1',
-  path: ['Section 1'],
-  instructions: 'Write section 1',
-  original_paragraphs: [],
-  depends_on: [],
-  fill_region: { permitted_roles: ['body'] } as any
-};
+const mockSection = {
+  name: 'Intro',
+  description: 'Write an intro',
+  fill_region: {
+    permitted_roles: ['body']
+  }
+} as any;
 
 describe('drafter tools', () => {
   it('executes calculate_math', async () => {
@@ -130,7 +132,7 @@ describe('drafter tools', () => {
       }
     ]);
 
-    const prior: PriorSectionSummary[] = [{ name: 'Background Info', summary: 'This is background context.' }];
+    const prior: PriorSectionSummary[] = [{ section_id: 'prev', name: 'Background Info', summary: 'This is background context.' }];
 
     await draftSection(client, {
       template: mockTemplate,

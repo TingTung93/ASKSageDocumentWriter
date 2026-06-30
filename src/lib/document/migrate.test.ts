@@ -15,9 +15,8 @@ describe('document migration', () => {
   });
 
   it('leaves already-migrated edits untouched', () => {
-    const doc: DocumentRecord = {
+    const doc = {
       id: '1',
-      project_id: 'p1',
       template_id: 't1',
       name: 'test',
       status: 'drafting',
@@ -26,9 +25,9 @@ describe('document migration', () => {
       drafts: {},
       assembled_paragraphs: [],
       edits: [
-        { op: { op: 'replace_paragraph_text' }, id: 'edit1', status: 'pending', created_at: '' } as StoredEdit
+        { op: { op: 'replace_paragraph_text' }, id: 'edit1', status: 'pending', created_at: '' } as unknown as StoredEdit
       ]
-    };
+    } as unknown as DocumentRecord;
     
     expect(migrateDocumentEdits(doc).edits[0].id).toBe('edit1');
   });

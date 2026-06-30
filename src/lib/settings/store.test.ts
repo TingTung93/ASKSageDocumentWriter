@@ -42,9 +42,9 @@ describe('settings store', () => {
   describe('saveSettings', () => {
     it('patches existing settings and updates timestamp', async () => {
       vi.mocked(db.settings.get).mockResolvedValue(undefined); // load defaults
-      const saved = await saveSettings({ cost: { daily_rate: 1000 } });
+      const saved = await saveSettings({ cost: { chars_per_token: 10 } });
       
-      expect(saved.cost.daily_rate).toBe(1000);
+      expect(saved.cost.chars_per_token).toBe(10);
       expect(db.settings.put).toHaveBeenCalledWith(saved);
       expect(saved.updated_at).not.toBe(new Date(0).toISOString());
     });
@@ -65,10 +65,10 @@ describe('settings store', () => {
   describe('setCostAssumptions', () => {
     it('updates cost settings', async () => {
       vi.mocked(db.settings.get).mockResolvedValue(undefined);
-      await setCostAssumptions({ gs_level: 'GS-13' });
+      await setCostAssumptions({ usd_per_1k_in: 0.05 });
       expect(db.settings.put).toHaveBeenCalledWith(
         expect.objectContaining({
-          cost: expect.objectContaining({ gs_level: 'GS-13' })
+          cost: expect.objectContaining({ usd_per_1k_in: 0.05 })
         })
       );
     });
@@ -76,11 +76,11 @@ describe('settings store', () => {
 
   describe('resolveModel', () => {
     it('returns override if present', () => {
-      expect(resolveModel({ drafting: 'x', critic: null, style_review: null, extract: null, preflight: null }, 'drafting', 'fallback')).toBe('x');
+      expect(resolveModel({ drafting: 'x', critic: null, cleanup: null, synthesis: null, schema_edit: null }, 'drafting', 'fallback')).toBe('x');
     });
 
     it('returns fallback if override is missing', () => {
-      expect(resolveModel({ drafting: null, critic: null, style_review: null, extract: null, preflight: null }, 'drafting', 'fallback')).toBe('fallback');
+      expect(resolveModel({ drafting: null, critic: null, cleanup: null, synthesis: null, schema_edit: null }, 'drafting', 'fallback')).toBe('fallback');
       expect(resolveModel(null, 'drafting', 'fallback')).toBe('fallback');
     });
   });
