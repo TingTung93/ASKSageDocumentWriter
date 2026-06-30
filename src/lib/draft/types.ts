@@ -31,6 +31,16 @@ export interface DraftRun {
   italic?: boolean;
   underline?: boolean;
   strike?: boolean;
+  /** Hex color without the hash, e.g. "FF0000" for red. "auto" for default. */
+  color?: string;
+  /** Background highlight color name, e.g. "yellow", "cyan", "green", "magenta". */
+  highlight?: string;
+  /** Exact font family name, e.g. "Arial", "Times New Roman". */
+  font_family?: string;
+  /** Font size in points. */
+  font_size_pt?: number;
+  superscript?: boolean;
+  subscript?: boolean;
 }
 
 export interface DraftParagraph {
@@ -59,6 +69,24 @@ export interface DraftParagraph {
    * needs a hard page break (cover page, signature page, etc.).
    */
   page_break_before?: boolean;
+  /**
+   * Paragraph alignment. Overrides the style's default alignment.
+   */
+  alignment?: 'left' | 'center' | 'right' | 'justify' | 'both';
+  /** Custom left indent in points. Overrides the style's default indent. */
+  indent_left_pt?: number;
+  /** Custom spacing before the paragraph in points. */
+  spacing_before_pt?: number;
+  /** Custom spacing after the paragraph in points. */
+  spacing_after_pt?: number;
+  
+  /** For table_row: background color (hex) for each cell in the row. Length must match cells array. */
+  cell_shading?: string[];
+  /** For table_row: column spans for each cell in the row. Length must match cells array. */
+  cell_colspans?: number[];
+  /** For table_row: precise width percentage (0-100) for each cell. Length must match cells array. */
+  cell_widths_pct?: number[];
+
   /**
    * Optional nesting / indent level. 0 (the default) means top-level
    * with no extra indent. Higher values mean deeper nesting; the

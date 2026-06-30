@@ -90,10 +90,17 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
       "role": "<role>",
       "text": "<paragraph text>",
       "level": <0..3, optional>,
-      "runs": [ { "text": "...", "bold": true, "italic": false, "underline": false, "strike": false } ],   // optional, see INLINE FORMATTING below
+      "runs": [ { "text": "...", "bold": true, "italic": false, "underline": false, "strike": false, "color": "FF0000", "highlight": "yellow", "font_family": "Arial", "font_size_pt": 14, "superscript": false, "subscript": false } ],   // optional, see INLINE FORMATTING below
       "page_break_before": false,                                                                             // optional
+      "alignment": "left",                                                                                    // optional (left, center, right, justify, both)
+      "indent_left_pt": 0,                                                                                    // optional custom indent in points
+      "spacing_before_pt": 12,                                                                                // optional spacing before in points
+      "spacing_after_pt": 12,                                                                                 // optional spacing after in points
       "cells": ["c1","c2"],                                                                                   // table_row only
-      "is_header": false                                                                                      // table_row only
+      "is_header": false,                                                                                     // table_row only
+      "cell_shading": ["F2F2F2", null],                                                                       // table_row only, hex background colors
+      "cell_colspans": [1, 2],                                                                                // table_row only, column spans
+      "cell_widths_pct": [33.33, 66.67]                                                                       // table_row only, percentage widths (0-100)
     }
   ],
   "self_summary": "<one short sentence summarizing what you wrote, used to feed forward to dependent sections>"
@@ -113,9 +120,12 @@ Available roles:
 
 Use the role that matches the writer's intent. Do NOT use markdown formatting (no **bold**, no _italic_, no - bullets) — those are role-encoded or run-encoded, not text-encoded.
 
-INLINE FORMATTING — bold, italic, underline, strike:
+PARAGRAPH STYLING — alignment, indents, spacing:
+You can explicitly override paragraph layouts using 'alignment' (left, center, right, justify), 'indent_left_pt' (in points), and 'spacing_before_pt' / 'spacing_after_pt'. Most of the time, the default style will handle this properly, but you can override it when you need precise control.
 
-Most paragraphs should leave inline formatting alone — the template's run properties already produce the right look. When a paragraph needs MIXED formatting (a single bold term inside an otherwise normal sentence, an italicized standard reference, an underlined defined term), supply a "runs" array INSTEAD OF the "text" field. Each run is a contiguous span of text with optional toggles. The toggles layer onto whatever bold/italic/etc. the template's run style already had — so you only flip what you want to change.
+INLINE FORMATTING — bold, italic, underline, strike, color, highlight, fonts, sub/superscript:
+
+Most paragraphs should leave inline formatting alone — the template's run properties already produce the right look. When a paragraph needs MIXED formatting (a single bold term inside an otherwise normal sentence, an italicized standard reference, an underlined defined term, or colored text for emphasis), supply a "runs" array INSTEAD OF the "text" field. Each run is a contiguous span of text with optional toggles. The toggles layer onto whatever the template's run style already had — so you only flip what you want to change.
 
   Example — one bold term inside a body paragraph:
     { "role": "body", "runs": [
@@ -124,10 +134,18 @@ Most paragraphs should leave inline formatting alone — the template's run prop
       { "text": " for all CUI handling." }
     ] }
 
-  Example — underlined defined term followed by its definition:
-    { "role": "definition", "runs": [
-      { "text": "Performance Work Statement", "underline": true },
-      { "text": ": A statement that describes the required results in clear, specific, measurable terms." }
+  Example — highlighted text with exact font size:
+    { "role": "body", "runs": [
+      { "text": "This clause is " },
+      { "text": "MANDATORY", "color": "FF0000", "highlight": "yellow", "font_size_pt": 16, "bold": true },
+      { "text": "." }
+    ] }
+
+  Example — superscript for a chemical formula or footnote:
+    { "role": "body", "runs": [
+      { "text": "Water is H" },
+      { "text": "2", "subscript": true },
+      { "text": "O." }
     ] }
 
 Use "text" (not "runs") for any paragraph that has uniform formatting — that's the vast majority. Only use "runs" when you genuinely need a formatting change inside one paragraph.
@@ -136,7 +154,13 @@ PAGE BREAKS:
 
 Set "page_break_before": true on a paragraph to force Word to start that paragraph on a new page. Use this ONLY when the document structure clearly demands it — typically the first paragraph after a cover page, the start of a signature page, or the first paragraph of a major appendix. Do NOT scatter page breaks for visual padding; Word handles ordinary pagination.
 
-TABLES:
+TABLES & ADVANCED TABLE FEATURES:
+When outputting a table, emit a sequence of 'table_row' roles. You can specify exact column width percentages ('cell_widths_pct'), cell background colors ('cell_shading'), and cell spans ('cell_colspans'). Length of these arrays must match the length of 'cells'.
+Example:
+[
+  { "role": "table_row", "is_header": true, "cells": ["Title", "Details"], "cell_shading": ["D9D9D9", "D9D9D9"], "cell_widths_pct": [30, 70] },
+  { "role": "table_row", "cells": ["Requirement 1", "Must meet specs"], "cell_colspans": [1, 1] }
+]
 
 Real tables are built by emitting CONSECUTIVE "table_row" paragraphs. Each row provides its column data in the "cells" array. The export pipeline collapses every run of consecutive table_row paragraphs into ONE real Word table with proper borders — column count is taken from the longest row.
 

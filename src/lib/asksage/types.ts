@@ -58,12 +58,39 @@ export interface GetModelsResponse {
 
 export type DatasetSelector = string | 'all' | 'none';
 
+export interface OpenAIFunction {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>; // JSON Schema object
+}
+
+export interface OpenAITool {
+  type: 'function';
+  function: OpenAIFunction;
+}
+
+export interface OpenAIToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string; // JSON string
+  };
+}
+
+export interface OpenAIToolChoice {
+  type: 'function';
+  function: {
+    name: string;
+  };
+}
+
 export interface QueryInput {
   /**
    * Either a string (single user message) or an array of conversation turns.
    * Ask Sage's `/server/query` accepts both shapes.
    */
-  message: string | { user: string; message: string }[];
+  message: string | { user: string; message: string; tool_calls?: OpenAIToolCall[]; tool_call_id?: string; name?: string }[];
   model?: string;
   dataset?: DatasetSelector;
   /** Maximum knowledge base references to inject. 0 disables embeddings. */
@@ -76,6 +103,10 @@ export interface QueryInput {
   live?: 0 | 1 | 2;
   /** When true, the response includes a `usage` object. */
   usage?: boolean;
+  /** Available tools the model can invoke. */
+  tools?: OpenAITool[];
+  /** Controls if and how the model uses tools. */
+  tool_choice?: 'none' | 'auto' | 'required' | OpenAIToolChoice;
 }
 
 export interface QueryUsage {
@@ -96,7 +127,7 @@ export interface QueryResponse {
   added_obj?: unknown;
   type?: string;
   usage?: QueryUsage | null;
-  tool_calls?: unknown;
+  tool_calls?: OpenAIToolCall[];
   tool_calls_unified?: unknown;
   tool_responses?: unknown;
   /**

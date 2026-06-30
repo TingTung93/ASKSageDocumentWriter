@@ -1064,12 +1064,14 @@ function buildTable(
   rows: DraftParagraph[],
   templates: FormatTemplates,
 ): Element {
-  // Column count = max cells across rows. Floor at 1 so we never
-  // produce an empty grid.
   let cols = 1;
   for (const r of rows) {
-    if (Array.isArray(r.cells) && r.cells.length > cols) {
-      cols = r.cells.length;
+    if (Array.isArray(r.cells)) {
+      let rowCols = 0;
+      for (let i = 0; i < r.cells.length; i++) {
+        rowCols += (r.cell_colspans && r.cell_colspans[i]) ? r.cell_colspans[i]! : 1;
+      }
+      if (rowCols > cols) cols = rowCols;
     }
   }
   const colWidth = Math.floor(PAGE_WIDTH_TWIPS / cols);
@@ -1136,9 +1138,21 @@ function buildTableRow(
   }
 
   const cells = Array.isArray(row.cells) ? row.cells : [];
-  for (let c = 0; c < cols; c++) {
-    const text = c < cells.length ? cells[c]! : '';
-    tr.appendChild(buildTableCell(dom, text, colWidth, templates, isHeader));
+  let gridIndex = 0;
+  for (let c = 0; c < cells.length; c++) {
+    const text = cells[c]!;
+    const colspan = (row.cell_colspans && row.cell_colspans[c]) ? row.cell_colspans[c]! : 1;
+    const shading = (row.cell_shading && row.cell_shading[c]) ? row.cell_shading[c]! : null;
+    const widthPct = (row.cell_widths_pct && row.cell_widths_pct[c]) ? row.cell_widths_pct[c]! : null;
+    
+    tr.appendChild(buildTableCell(dom, text, colWidth * colspan, templates, isHeader, colspan, shading, widthPct));
+    gridIndex += colspan;
+  }
+  
+  // Pad remaining columns with empty cells to keep the grid sound
+  while (gridIndex < cols) {
+    tr.appendChild(buildTableCell(dom, '', colWidth, templates, isHeader, 1, null, null));
+    gridIndex += 1;
   }
   return tr;
 }
@@ -1149,15 +1163,39 @@ function buildTableCell(
   colWidth: number,
   templates: FormatTemplates,
   bold: boolean,
+  colspan: number = 1,
+  shading: string | null = null,
+  widthPct: number | null = null,
 ): Element {
   const tc = dom.createElementNS(W_NS, 'w:tc');
 
-  // tcPr: width
+  // tcPr
   const tcPr = dom.createElementNS(W_NS, 'w:tcPr');
+  
   const tcW = dom.createElementNS(W_NS, 'w:tcW');
-  tcW.setAttributeNS(W_NS, 'w:w', String(colWidth));
-  tcW.setAttributeNS(W_NS, 'w:type', 'dxa');
+  if (widthPct !== null) {
+    tcW.setAttributeNS(W_NS, 'w:w', String(Math.round(widthPct * 50)));
+    tcW.setAttributeNS(W_NS, 'w:type', 'pct');
+  } else {
+    tcW.setAttributeNS(W_NS, 'w:w', String(colWidth));
+    tcW.setAttributeNS(W_NS, 'w:type', 'dxa');
+  }
   tcPr.appendChild(tcW);
+
+  if (colspan > 1) {
+    const gridSpan = dom.createElementNS(W_NS, 'w:gridSpan');
+    gridSpan.setAttributeNS(W_NS, 'w:val', String(colspan));
+    tcPr.appendChild(gridSpan);
+  }
+
+  if (shading) {
+    const shd = dom.createElementNS(W_NS, 'w:shd');
+    shd.setAttributeNS(W_NS, 'w:val', 'clear');
+    shd.setAttributeNS(W_NS, 'w:color', 'auto');
+    shd.setAttributeNS(W_NS, 'w:fill', shading);
+    tcPr.appendChild(shd);
+  }
+
   tc.appendChild(tcPr);
 
   // <w:tc> requires at least one <w:p>. Build a body-styled paragraph
@@ -1300,6 +1338,30 @@ function buildParagraph(
   // already have an explicit <w:jc>.
   applyPPrVisualStyle(dom, pPr, templates.visual_style);
 
+  // Apply explicit overrides from DraftParagraph
+  if (dp.alignment) {
+    removeChildrenByLocalName(pPr, 'jc');
+    const jc = dom.createElementNS(W_NS, 'w:jc');
+    jc.setAttributeNS(W_NS, 'w:val', dp.alignment);
+    pPr.appendChild(jc);
+  }
+  if (dp.indent_left_pt !== undefined) {
+    setLeftIndent(dom, pPr, Math.round(dp.indent_left_pt * 20)); // 1 pt = 20 twips
+  }
+  if (dp.spacing_before_pt !== undefined || dp.spacing_after_pt !== undefined) {
+    let spacing = firstChildNS(pPr, 'spacing');
+    if (!spacing) {
+      spacing = dom.createElementNS(W_NS, 'w:spacing');
+      pPr.appendChild(spacing);
+    }
+    if (dp.spacing_before_pt !== undefined) {
+      spacing.setAttributeNS(W_NS, 'w:before', String(Math.round(dp.spacing_before_pt * 20)));
+    }
+    if (dp.spacing_after_pt !== undefined) {
+      spacing.setAttributeNS(W_NS, 'w:after', String(Math.round(dp.spacing_after_pt * 20)));
+    }
+  }
+
   // Only attach pPr if it has any children — an empty pPr is legal
   // but pollutes the diff. Skipping when empty also matches the
   // original codepath's behavior when no style was available.
@@ -1417,6 +1479,53 @@ function appendRichRuns(
     applyRunToggle(dom, rPr, 'i', run.italic);
     applyRunToggle(dom, rPr, 'u', run.underline, 'single');
     applyRunToggle(dom, rPr, 'strike', run.strike);
+
+    if (run.color !== undefined) {
+      removeChildrenByLocalName(rPr, 'color');
+      if (run.color) {
+        const cEl = dom.createElementNS(W_NS, 'w:color');
+        cEl.setAttribute('w:val', run.color);
+        rPr.appendChild(cEl);
+      }
+    }
+    if (run.highlight !== undefined) {
+      removeChildrenByLocalName(rPr, 'highlight');
+      if (run.highlight) {
+        const hEl = dom.createElementNS(W_NS, 'w:highlight');
+        hEl.setAttribute('w:val', run.highlight);
+        rPr.appendChild(hEl);
+      }
+    }
+    if (run.font_family !== undefined) {
+      removeChildrenByLocalName(rPr, 'rFonts');
+      if (run.font_family) {
+        const fEl = dom.createElementNS(W_NS, 'w:rFonts');
+        fEl.setAttribute('w:ascii', run.font_family);
+        fEl.setAttribute('w:hAnsi', run.font_family);
+        rPr.appendChild(fEl);
+      }
+    }
+    if (run.font_size_pt !== undefined) {
+      removeChildrenByLocalName(rPr, 'sz');
+      removeChildrenByLocalName(rPr, 'szCs');
+      if (run.font_size_pt) {
+        const szEl = dom.createElementNS(W_NS, 'w:sz');
+        szEl.setAttribute('w:val', String(Math.round(run.font_size_pt * 2)));
+        const szCsEl = dom.createElementNS(W_NS, 'w:szCs');
+        szCsEl.setAttribute('w:val', String(Math.round(run.font_size_pt * 2)));
+        rPr.appendChild(szEl);
+        rPr.appendChild(szCsEl);
+      }
+    }
+    if (run.superscript || run.subscript) {
+      removeChildrenByLocalName(rPr, 'vertAlign');
+      const vEl = dom.createElementNS(W_NS, 'w:vertAlign');
+      vEl.setAttribute('w:val', run.superscript ? 'superscript' : 'subscript');
+      rPr.appendChild(vEl);
+    } else if (run.superscript === false && run.subscript === false) {
+      removeChildrenByLocalName(rPr, 'vertAlign');
+    }
+
     if (rPr.firstChild) {
       r.appendChild(rPr);
     }

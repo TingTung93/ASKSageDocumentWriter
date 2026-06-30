@@ -92,7 +92,11 @@ interface OpenAIChatCompletionResponse {
   object?: string;
   choices: Array<{
     index?: number;
-    message: { role: string; content: string };
+    message: { 
+      role: string; 
+      content: string; 
+      tool_calls?: import('../asksage/types').OpenAIToolCall[];
+    };
     finish_reason?: string;
   }>;
   usage?: {
@@ -115,8 +119,11 @@ interface OpenAIEmbeddingsResponse {
 }
 
 interface OpenAIChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  tool_calls?: import('../asksage/types').OpenAIToolCall[];
+  tool_call_id?: string;
+  name?: string;
 }
 
 /**
@@ -497,8 +504,12 @@ function mapQueryInputToOpenAI(input: QueryInput): {
     // Ask Sage's turn array uses `{user, message}` where `user` is
     // 'me' or 'gpt'. Map to OpenAI roles.
     for (const turn of input.message) {
-      const role: OpenAIChatMessage['role'] = turn.user === 'gpt' ? 'assistant' : 'user';
-      messages.push({ role, content: turn.message });
+      const role: OpenAIChatMessage['role'] = turn.user === 'gpt' ? 'assistant' : turn.user === 'tool' ? 'tool' : 'user';
+      const msg: OpenAIChatMessage = { role, content: turn.message };
+      if (turn.tool_calls) msg.tool_calls = turn.tool_calls;
+      if (turn.tool_call_id) msg.tool_call_id = turn.tool_call_id;
+      if (turn.name) msg.name = turn.name;
+      messages.push(msg);
     }
   }
   // Required: model. OpenRouter won't pick a default for us — caller
@@ -514,11 +525,15 @@ function mapQueryInputToOpenAI(input: QueryInput): {
     messages: OpenAIChatMessage[];
     temperature?: number;
     plugins?: OpenRouterWebPlugin[];
+    tools?: import('../asksage/types').OpenAITool[];
+    tool_choice?: 'none' | 'auto' | 'required' | import('../asksage/types').OpenAIToolChoice;
   } = {
     model: input.model,
     messages,
   };
   if (typeof input.temperature === 'number') out.temperature = input.temperature;
+  if (input.tools && input.tools.length > 0) out.tools = input.tools;
+  if (input.tool_choice) out.tool_choice = input.tool_choice;
   // Web search: Ask Sage's `live` field (0/1/2) maps to OpenRouter's
   // `plugins: [{ id: 'web' }]`. We use max_results to roughly mirror
   // the Ask Sage modes — mode 1 is "give me web hits", mode 2 is
@@ -542,6 +557,7 @@ function mapOpenAIResponseToQueryResponse(r: OpenAIChatCompletionResponse): Quer
         total_tokens: r.usage.total_tokens,
       }
     : null;
+  const tool_calls = r.choices?.[0]?.message?.tool_calls;
   return {
     message: content,
     response: 'OK',
@@ -551,6 +567,7 @@ function mapOpenAIResponseToQueryResponse(r: OpenAIChatCompletionResponse): Quer
     embedding_down: false,
     vectors_down: false,
     usage,
+    tool_calls,
   };
 }
 

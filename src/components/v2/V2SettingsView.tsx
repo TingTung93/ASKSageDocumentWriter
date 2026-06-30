@@ -1,6 +1,5 @@
 import { useState, useMemo, useRef, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/state/auth';
 import { createLLMClient, defaultBaseUrlFor, defaultModelFor, providerLabel } from '../../lib/provider/factory';
 import type { ProviderId } from '../../lib/provider/types';
@@ -8,6 +7,7 @@ import { toast } from '../../lib/state/toast';
 import { loadSettings, saveSettings } from '../../lib/settings/store';
 import type { ModelStage } from '../../lib/settings/types';
 import { V2ProviderCard } from './V2ProviderCard';
+import { V2SettingsAdvanced } from './V2SettingsAdvanced';
 
 const STAGE_META: { stage: ModelStage; label: string; role: 'primary' | 'critic' | 'embed' }[] = [
   { stage: 'drafting', label: 'Drafting', role: 'primary' },
@@ -16,7 +16,6 @@ const STAGE_META: { stage: ModelStage; label: string; role: 'primary' | 'critic'
 ];
 
 export function V2SettingsView() {
-  const navigate = useNavigate();
   const {
     provider,
     apiKey,
@@ -138,8 +137,8 @@ export function V2SettingsView() {
         <h1 className="settings-title">Connection &amp; models</h1>
         <p className="settings-lead">
           Configure your AI provider, key, and per-stage model routing. Keys live in this
-          browser's sessionStorage and never leave the workstation. For privacy, usage, and reset
-          controls, open the full settings surface.
+          browser's sessionStorage and never leave the workstation. Scroll down for advanced quality,
+          cost, and reset controls.
         </p>
 
         <div className="s-card">
@@ -282,22 +281,7 @@ export function V2SettingsView() {
           </div>
         </div>
 
-        <div className="s-card">
-          <div className="s-head">
-            <div>
-              <h3>Advanced</h3>
-              <div className="s-desc">Critic loop, cost caps, privacy controls, audit export, data reset.</div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button className="btn btn-primary" onClick={() => navigate('/settings')}>
-              Open full settings →
-            </button>
-            <button className="btn" onClick={() => navigate('/audit')}>
-              Open audit log →
-            </button>
-          </div>
-        </div>
+        {settings && <V2SettingsAdvanced settings={settings} />}
       </div>
     </div>
   );
