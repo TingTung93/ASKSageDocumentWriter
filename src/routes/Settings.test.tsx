@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import type { ModelInfo } from '../lib/asksage/types';
 
 const MOCK_SETTINGS = {
   models: { synthesis: null, drafting: null, critic: null, cleanup: null, schema_edit: null },
@@ -50,7 +51,7 @@ vi.mock('../lib/state/toast', () => ({
   toast: { success: vi.fn(), error: vi.fn(), sticky: vi.fn() },
 }));
 
-import { Settings } from './Settings';
+import { Settings, formatModelCapabilitySummary, formatModelOptionLabel } from './Settings';
 
 function renderSettings() {
   return render(
@@ -90,5 +91,55 @@ describe('Settings route', () => {
   it('renders reset button', () => {
     renderSettings();
     expect(screen.getByRole('button', { name: /reset to defaults/i })).toBeInTheDocument();
+  });
+
+  it('renders a refresh models and capabilities button', () => {
+    renderSettings();
+    expect(screen.getByRole('button', { name: /refresh models and capabilities/i })).toBeInTheDocument();
+  });
+});
+
+describe('Settings model labels', () => {
+  it('includes capability and pricing details in dropdown labels', () => {
+    const model: ModelInfo = {
+      id: 'anthropic/claude-sonnet-4.5',
+      name: 'Claude Sonnet 4.5',
+      object: 'model',
+      owned_by: 'anthropic',
+      created: 'na',
+      pricing: {
+        prompt_per_token: 0.000003,
+        completion_per_token: 0.000015,
+        is_free: false,
+      },
+      capabilities: {
+        context_length: 200000,
+        input_modalities: ['text', 'image'],
+        output_modalities: ['text'],
+        supported_parameters: ['temperature'],
+      },
+    };
+
+    expect(formatModelOptionLabel(model)).toBe(
+      'anthropic/claude-sonnet-4.5 · 200K ctx · text+image→text · $3.00 in / $15.00 out per 1M',
+    );
+    expect(formatModelCapabilitySummary(model)).toBe(
+      '200K context · input: text, image · output: text · supports: temperature',
+    );
+  });
+
+  it('marks Ask Sage models with unknown capabilities', () => {
+    const model: ModelInfo = {
+      id: 'google-claude-46-sonnet',
+      name: 'google-claude-46-sonnet',
+      object: 'model',
+      owned_by: 'asksage',
+      created: 'na',
+    };
+
+    expect(formatModelOptionLabel(model)).toBe('google-claude-46-sonnet · capabilities unknown');
+    expect(formatModelCapabilitySummary(model)).toBe(
+      'Capabilities unknown; this provider did not return context window or modality metadata.',
+    );
   });
 });

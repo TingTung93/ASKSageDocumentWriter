@@ -16,7 +16,7 @@ import {
   type ModelOverrides,
   type ModelStage,
 } from '../lib/settings/types';
-import { defaultModelFor } from '../lib/provider/factory';
+import { createLLMClient, defaultModelFor } from '../lib/provider/factory';
 import type { ProviderId } from '../lib/provider/types';
 import { EmptyState } from '../components/EmptyState';
 import {
@@ -72,13 +72,17 @@ type PricingFilter = 'all' | 'free' | 'paid';
 export function Settings() {
   const settings = useLiveQuery(() => loadSettings(), []);
   const apiKey = useAuth((s) => s.apiKey);
+  const baseUrl = useAuth((s) => s.baseUrl);
   const models = useAuth((s) => s.models);
   const provider = useAuth((s) => s.provider);
+  const setModels = useAuth((s) => s.setModels);
+  const setError = useAuth((s) => s.setError);
 
   // Pricing filter is session-only — not persisted. Defaults to "all"
   // until the user picks; on OpenRouter most users will want "paid"
   // since the free tier has aggressive rate limits.
   const [pricingFilter, setPricingFilter] = useState<PricingFilter>('all');
+  const [refreshingModels, setRefreshingModels] = useState(false);
 
   // Compatibility filter is session-only. ON by default — hides
   // OpenRouter models whose advertised context window / modalities /
@@ -97,6 +101,32 @@ export function Settings() {
     () => filterModelsByPricing(models ?? [], pricingFilter),
     [models, pricingFilter],
   );
+
+  async function refreshModels() {
+    if (!apiKey) {
+      toast.error('Connect on the Connection tab before refreshing models');
+      return;
+    }
+    setRefreshingModels(true);
+    setError(null);
+    try {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const nextModels = await client.getModels();
+      setModels(nextModels);
+      const capabilityCount = nextModels.filter((m) => m.capabilities).length;
+      toast.success(
+        `Loaded ${nextModels.length.toLocaleString()} model${nextModels.length === 1 ? '' : 's'}${
+          capabilityCount > 0 ? ` (${capabilityCount.toLocaleString()} with capabilities)` : ''
+        }`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error(`Model refresh failed: ${message}`);
+    } finally {
+      setRefreshingModels(false);
+    }
+  }
 
   if (!settings) {
     return (
@@ -143,6 +173,14 @@ export function Settings() {
           onChange={setCompatibilityFilter}
         />
       )}
+
+      <ModelCatalogRefresh
+        provider={provider}
+        models={models ?? []}
+        refreshing={refreshingModels}
+        disabled={!apiKey}
+        onRefresh={() => void refreshModels()}
+      />
 
       <ModelOverridesSection
         models={settings.models}
@@ -393,6 +431,10 @@ function ModelOverrideRow({
   }, [availableModels, meta.default, meta.stage, current, compatibilityFilter]);
 
   const stageReq = STAGE_REQUIREMENTS[meta.stage];
+  const selectedId = draft.trim() || meta.default;
+  const selectedModel =
+    options.find((m) => m.id === selectedId) ?? syntheticModelInfo(selectedId);
+  const selectedCompatibility = validateModelForStage(selectedModel, meta.stage);
 
   async function commit(value: string) {
     setSaving(true);
@@ -457,6 +499,14 @@ function ModelOverrideRow({
           disabled={saving}
         />
       </div>
+      <div className="note" style={{ marginTop: '0.45rem', fontSize: 11 }}>
+        <strong>Selected model:</strong> {selectedId} · {formatModelCapabilitySummary(selectedModel)}
+        {!selectedCompatibility.compatible && (
+          <div style={{ color: 'var(--color-danger)', marginTop: '0.25rem' }}>
+            Compatibility warning: {selectedCompatibility.reasons.join('; ')}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -473,14 +523,48 @@ function filterModelsByPricing(models: ModelInfo[], filter: PricingFilter): Mode
   return models.filter((m) => m.pricing && !m.pricing.is_free);
 }
 
-function formatModelOptionLabel(m: ModelInfo): string {
-  if (!m.pricing) return m.id;
-  if (m.pricing.is_free) return `${m.id} · free`;
+export function formatModelOptionLabel(m: ModelInfo): string {
+  const parts = [m.id];
+  const caps = m.capabilities;
+  if (caps?.context_length) {
+    parts.push(`${formatCompactTokens(caps.context_length)} ctx`);
+  }
+  if (caps?.input_modalities?.length || caps?.output_modalities?.length) {
+    const input = caps.input_modalities?.join('+') || '?';
+    const output = caps.output_modalities?.join('+') || '?';
+    parts.push(`${input}→${output}`);
+  }
+  if (!caps) {
+    parts.push('capabilities unknown');
+  }
+  if (!m.pricing) return parts.join(' · ');
+  if (m.pricing.is_free) return [...parts, 'free'].join(' · ');
   // Render price per 1M tokens — easier to scan than per-token
   // (e.g. "$3.00 / $15.00 per 1M" for Claude 3.5 Sonnet).
   const inPer1M = (m.pricing.prompt_per_token * 1_000_000).toFixed(2);
   const outPer1M = (m.pricing.completion_per_token * 1_000_000).toFixed(2);
-  return `${m.id} · $${inPer1M} in / $${outPer1M} out per 1M`;
+  return [...parts, `$${inPer1M} in / $${outPer1M} out per 1M`].join(' · ');
+}
+
+export function formatModelCapabilitySummary(m: ModelInfo): string {
+  const caps = m.capabilities;
+  if (!caps) {
+    return 'Capabilities unknown; this provider did not return context window or modality metadata.';
+  }
+  const parts: string[] = [];
+  if (caps.context_length) {
+    parts.push(`${formatCompactTokens(caps.context_length)} context`);
+  }
+  if (caps.input_modalities?.length) {
+    parts.push(`input: ${caps.input_modalities.join(', ')}`);
+  }
+  if (caps.output_modalities?.length) {
+    parts.push(`output: ${caps.output_modalities.join(', ')}`);
+  }
+  if (caps.supported_parameters?.length) {
+    parts.push(`supports: ${caps.supported_parameters.join(', ')}`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : 'Capability metadata returned, but no specific limits were listed.';
 }
 
 function syntheticModelInfo(id: string): ModelInfo {
@@ -491,6 +575,55 @@ function formatTokenFloor(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M tokens`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K tokens`;
   return `${n} tokens`;
+}
+
+function formatCompactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
+
+function ModelCatalogRefresh({
+  provider,
+  models,
+  refreshing,
+  disabled,
+  onRefresh,
+}: {
+  provider: ProviderId;
+  models: ModelInfo[];
+  refreshing: boolean;
+  disabled: boolean;
+  onRefresh: () => void;
+}) {
+  const capabilityCount = models.filter((m) => m.capabilities).length;
+  const pricingCount = models.filter((m) => m.pricing).length;
+  return (
+    <div className="card" style={{ marginBottom: 'var(--space-3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onRefresh}
+          disabled={disabled || refreshing}
+        >
+          {refreshing ? 'Refreshing models…' : 'Refresh models and capabilities'}
+        </button>
+        <span className="note">
+          {models.length.toLocaleString()} model{models.length === 1 ? '' : 's'} loaded
+          {capabilityCount > 0 && <> · {capabilityCount.toLocaleString()} with capabilities</>}
+          {pricingCount > 0 && <> · {pricingCount.toLocaleString()} with pricing</>}
+        </span>
+      </div>
+      <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0 }}>
+        The selector uses the active provider's model catalog. OpenRouter returns
+        context windows, modalities, supported parameters, and pricing. Ask Sage
+        currently returns model IDs only, so those rows are shown with unknown
+        capabilities and are not rejected by compatibility filtering.
+        {provider === 'openrouter' && ' Refresh after changing your OpenRouter account or model access.'}
+      </p>
+    </div>
+  );
 }
 
 function CompatibilityFilterControl({
