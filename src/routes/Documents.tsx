@@ -892,7 +892,7 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
     onAttach,
     onRemove,
   } = props;
-  const [open, setOpen] = useState(referenceFiles.length > 0 || dataset !== '' || live !== 0);
+  const [open, setOpen] = useState(onAskSage || referenceFiles.length > 0 || dataset !== '' || live !== 0);
 
   return (
     <details
@@ -907,7 +907,7 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
       }}
     >
       <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>
-        Context (optional) — RAG dataset · web search · reference files
+        Add context before requesting edits — RAG dataset · web search · reference files
         {(dataset || live || referenceFiles.length > 0) && (
           <span className="note" style={{ marginLeft: '0.5rem' }}>
             ·{' '}
@@ -925,16 +925,16 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
       </summary>
 
       <p className="note" style={{ marginTop: '0.5rem' }}>
-        Anything you set here is sent with every chunk of the document during the
-        cleanup pass and used as authoritative grounding context. Reference files
-        are uploaded to Ask Sage's <code>/server/file</code> extractor at edit
-        time and inlined into the prompt.
+        Set these before clicking <strong>Request cleanup edits</strong>. The cleanup
+        pass sends the selected dataset, web-search mode, and attached files with
+        every document batch as grounding context.
       </p>
 
       {!onAskSage && (
         <div className="note" style={{ marginBottom: '0.5rem' }}>
-          You're connected via OpenRouter. RAG datasets and reference-file
-          extraction are Ask-Sage-only. Switch providers on the{' '}
+          You're connected via OpenRouter. Ask Sage datasets, web search, and
+          reference-file extraction are Ask-Sage-only for cleanup edits. Switch
+          providers on the{' '}
           <Link to="/">Connection</Link> tab to use grounding context.
         </div>
       )}

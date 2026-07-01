@@ -266,6 +266,7 @@ export async function requestDocumentEdits(
     prompt_sent: string;
     tokens_in: number;
     tokens_out: number;
+    error_message?: string;
   }
 
   async function runOneChunk(i: number): Promise<ChunkResult> {
@@ -362,6 +363,7 @@ export async function requestDocumentEdits(
         tokens_out: prepassTokensOut + (usage.completion_tokens ?? 0),
       };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       // eslint-disable-next-line no-console
       console.warn(
         `[requestDocumentEdits] chunk ${i + 1}/${chunks.length} failed:`,
@@ -373,6 +375,7 @@ export async function requestDocumentEdits(
         prompt_sent: `--- CHUNK ${i + 1} / ${chunks.length} (failed) ---\n${message}`,
         tokens_in: prepassTokensIn,
         tokens_out: prepassTokensOut,
+        error_message: message,
       };
     }
   }
@@ -411,17 +414,26 @@ export async function requestDocumentEdits(
   const promptParts: string[] = [];
   let tokensIn = 0;
   let tokensOut = 0;
+  const failedResults: ChunkResult[] = [];
   for (const result of chunkResults) {
     if (!result) continue;
     promptParts.push(result.prompt_sent);
     tokensIn += result.tokens_in;
     tokensOut += result.tokens_out;
+    if (result.error_message) failedResults.push(result);
     for (const op of result.ops) {
       const key = opDedupKey(op);
       if (seenOpKeys.has(key)) continue;
       seenOpKeys.add(key);
       allOps.push(op);
     }
+  }
+
+  if (chunks.length > 0 && failedResults.length === chunks.length) {
+    const sample = failedResults[failedResults.length - 1]?.error_message ?? 'unknown error';
+    throw new Error(
+      `Document cleanup failed for all ${chunks.length} chunks. Last error: ${sample}`,
+    );
   }
 
   const valid_edits: ReplaceParagraphTextOp[] = allOps.filter(
