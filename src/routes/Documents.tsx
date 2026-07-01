@@ -26,6 +26,7 @@ import { runScopedEdit } from '../lib/document/scopedEdit';
 import {
   attachDocumentReference,
   removeDocumentReference,
+  saveDocumentResearchPack,
   updateDocumentCleanupContext,
 } from '../lib/document/references';
 import { migrateAll, migrateDocumentEdits } from '../lib/document/migrate';
@@ -39,10 +40,22 @@ import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
 import { ProgressBar } from '../components/ProgressBar';
 import { DocxSkeleton } from '../components/DocxSkeleton';
+import { runAskSageResearch } from '../lib/research/asksage';
+import { validateResearchPack } from '../lib/research/citations';
+import type { ResearchDepth, ResearchPack } from '../lib/research/types';
 
 function newId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
   return `doc_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+}
+
+export function documentResearchDefaultObjective(instruction: string): string {
+  const trimmed = instruction.trim();
+  return trimmed || 'Find authoritative references that support this document edit.';
+}
+
+export function documentResearchHasUncitedFindings(pack: ResearchPack): boolean {
+  return validateResearchPack(pack).uncited_finding_ids.length > 0;
 }
 
 export function Documents() {
@@ -231,9 +244,11 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     total: number;
   } | null>(null);
   const [attachingRef, setAttachingRef] = useState(false);
+  const [researching, setResearching] = useState(false);
 
   const onAskSage = provider === 'asksage';
   const referenceFiles = doc.reference_files ?? [];
+  const researchPacks = doc.research_packs ?? [];
   const cleanupDataset = doc.cleanup_dataset_name ?? '';
   const cleanupLive = doc.cleanup_live_search ?? 0;
   const cleanupLimit = doc.cleanup_limit_references ?? (cleanupDataset ? 5 : 0);
@@ -420,6 +435,50 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       );
     } finally {
       setAttachingRef(false);
+    }
+  }
+
+  async function onRunDocumentResearch(input: {
+    objective: string;
+    focus_questions: string;
+    depth: ResearchDepth;
+  }) {
+    if (!apiKey) {
+      toast.error('Connect on the Connection tab first.');
+      return;
+    }
+    if (!onAskSage) {
+      toast.error('Document research currently requires Ask Sage.');
+      return;
+    }
+    const objective = input.objective.trim();
+    if (!objective) {
+      toast.error('Enter a research objective.');
+      return;
+    }
+
+    setResearching(true);
+    try {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const result = await runAskSageResearch(client, {
+        project_name: doc.name,
+        project_description: [
+          `Document file: ${doc.filename}.`,
+          `Current edit instruction: ${instruction.trim() || '(none provided)'}`,
+        ].join(' '),
+        objective,
+        focus_questions: input.focus_questions,
+        depth: input.depth,
+        model: cleanupModelOverride ?? undefined,
+      });
+      const attached = await saveDocumentResearchPack(doc.id, result.pack);
+      toast.success(
+        `Research pack saved with ${result.pack.citations.length} citation${result.pack.citations.length === 1 ? '' : 's'} and attached as ${attached.filename}`,
+      );
+    } catch (err) {
+      toast.error(`Research failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setResearching(false);
     }
   }
 
@@ -639,11 +698,15 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         live={cleanupLive}
         limit={cleanupLimit}
         referenceFiles={referenceFiles}
+        researchPacks={researchPacks}
+        researchDefaultObjective={documentResearchDefaultObjective(instruction)}
+        researching={researching}
         attaching={attachingRef}
         disabled={running}
         onChange={onCleanupContextChange}
         onAttach={onAttachReference}
         onRemove={onRemoveReference}
+        onResearch={(input) => void onRunDocumentResearch(input)}
       />
 
       <div
@@ -866,6 +929,9 @@ interface CleanupContextPanelProps {
   live: 0 | 1 | 2;
   limit: number;
   referenceFiles: ProjectContextFile[];
+  researchPacks: ResearchPack[];
+  researchDefaultObjective: string;
+  researching: boolean;
   attaching: boolean;
   disabled: boolean;
   onChange: (
@@ -877,6 +943,11 @@ interface CleanupContextPanelProps {
   ) => void;
   onAttach: (file: File) => void;
   onRemove: (fileId: string) => void;
+  onResearch: (input: {
+    objective: string;
+    focus_questions: string;
+    depth: ResearchDepth;
+  }) => void;
 }
 
 function CleanupContextPanel(props: CleanupContextPanelProps) {
@@ -886,13 +957,25 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
     live,
     limit,
     referenceFiles,
+    researchPacks,
+    researchDefaultObjective,
+    researching,
     attaching,
     disabled,
     onChange,
     onAttach,
     onRemove,
+    onResearch,
   } = props;
   const [open, setOpen] = useState(onAskSage || referenceFiles.length > 0 || dataset !== '' || live !== 0);
+  const [researchObjective, setResearchObjective] = useState(researchDefaultObjective);
+  const [researchTouched, setResearchTouched] = useState(false);
+  const [researchFocus, setResearchFocus] = useState('');
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>('standard');
+
+  useEffect(() => {
+    if (!researchTouched) setResearchObjective(researchDefaultObjective);
+  }, [researchDefaultObjective, researchTouched]);
 
   return (
     <details
@@ -1018,6 +1101,137 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
                 />
               </div>
             </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: '0.75rem',
+              paddingTop: '0.75rem',
+              borderTop: '1px solid #e0e0e0',
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: '0.25rem' }}>
+              Research for this edit
+            </div>
+            <p className="note" style={{ marginTop: 0 }}>
+              Generate a cited Markdown research pack with Ask Sage live web
+              search. It will be attached as a reference file and used by the
+              next cleanup request.
+            </p>
+            <label htmlFor="document-research-objective" style={{ fontSize: 12 }}>
+              Research objective
+            </label>
+            <textarea
+              id="document-research-objective"
+              value={researchObjective}
+              onChange={(e) => {
+                setResearchTouched(true);
+                setResearchObjective(e.target.value);
+              }}
+              rows={2}
+              disabled={disabled || researching}
+              style={{
+                width: '100%',
+                padding: '0.4rem',
+                font: 'inherit',
+                border: '1px solid #ccc',
+                borderRadius: 4,
+              }}
+            />
+            <label htmlFor="document-research-focus" style={{ fontSize: 12, marginTop: '0.4rem' }}>
+              Focus questions
+            </label>
+            <textarea
+              id="document-research-focus"
+              value={researchFocus}
+              onChange={(e) => setResearchFocus(e.target.value)}
+              rows={2}
+              placeholder="Optional - one question per line"
+              disabled={disabled || researching}
+              style={{
+                width: '100%',
+                padding: '0.4rem',
+                font: 'inherit',
+                border: '1px solid #ccc',
+                borderRadius: 4,
+              }}
+            />
+            <div className="row" style={{ marginTop: '0.4rem', gap: '0.5rem', alignItems: 'center' }}>
+              <select
+                value={researchDepth}
+                onChange={(e) => setResearchDepth(e.target.value as ResearchDepth)}
+                disabled={disabled || researching}
+                style={{ flex: '0 0 14rem', padding: '0.4rem', font: 'inherit' }}
+                aria-label="Research depth"
+              >
+                <option value="quick">Quick - compact scan</option>
+                <option value="standard">Standard - broader source set</option>
+                <option value="deep">Deep - more findings and gaps</option>
+              </select>
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                disabled={disabled || researching || !researchObjective.trim()}
+                onClick={() =>
+                  onResearch({
+                    objective: researchObjective,
+                    focus_questions: researchFocus,
+                    depth: researchDepth,
+                  })
+                }
+              >
+                {researching ? 'Researching...' : 'Generate research reference'}
+              </button>
+            </div>
+
+            {researchPacks.length > 0 && (
+              <details style={{ marginTop: '0.5rem' }}>
+                <summary className="note" style={{ cursor: 'pointer' }}>
+                  Saved research packs ({researchPacks.length})
+                </summary>
+                <div style={{ marginTop: '0.4rem' }}>
+                  {researchPacks.slice().reverse().map((pack) => {
+                    const validation = validateResearchPack(pack);
+                    return (
+                      <div
+                        key={pack.id}
+                        style={{
+                          border: '1px solid #ddd',
+                          borderRadius: 4,
+                          padding: '0.4rem',
+                          marginBottom: '0.35rem',
+                          background: '#fff',
+                          fontSize: 12,
+                        }}
+                      >
+                        <strong>{pack.objective}</strong>
+                        <span className="note" style={{ marginLeft: '0.4rem' }}>
+                          {new Date(pack.generated_at).toLocaleString()} · {pack.citations.length} citation{pack.citations.length === 1 ? '' : 's'}
+                        </span>
+                        {documentResearchHasUncitedFindings(pack) && (
+                          <div className="error" style={{ marginTop: '0.3rem' }}>
+                            {validation.uncited_finding_ids.length} finding{validation.uncited_finding_ids.length === 1 ? '' : 's'} lack citations.
+                          </div>
+                        )}
+                        {pack.citations.length > 0 && (
+                          <ul style={{ margin: '0.3rem 0 0', paddingLeft: '1.2rem' }}>
+                            {pack.citations.slice(0, 6).map((citation) => (
+                              <li key={citation.id}>
+                                {citation.url ? (
+                                  <a href={citation.url} target="_blank" rel="noopener noreferrer">
+                                    {citation.title || citation.url}
+                                  </a>
+                                ) : citation.title}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
           </div>
 
           <div style={{ marginTop: '0.5rem' }}>

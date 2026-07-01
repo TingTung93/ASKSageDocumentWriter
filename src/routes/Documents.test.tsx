@@ -36,7 +36,11 @@ vi.mock('../lib/document/migrate', () => ({
   migrateDocumentEdits: (edits: unknown[]) => edits,
 }));
 
-import { Documents } from './Documents';
+import {
+  Documents,
+  documentResearchDefaultObjective,
+  documentResearchHasUncitedFindings,
+} from './Documents';
 
 function renderDocuments() {
   return render(
@@ -65,5 +69,33 @@ describe('Documents route', () => {
   it('shows stored documents count', () => {
     renderDocuments();
     expect(screen.getByText(/stored documents/i)).toBeInTheDocument();
+  });
+});
+
+describe('Documents research helpers', () => {
+  it('defaults document research to the cleanup instruction', () => {
+    expect(documentResearchDefaultObjective('Review references for accuracy.')).toBe(
+      'Review references for accuracy.',
+    );
+  });
+
+  it('falls back to a general support objective when the instruction is blank', () => {
+    expect(documentResearchDefaultObjective('   ')).toBe(
+      'Find authoritative references that support this document edit.',
+    );
+  });
+
+  it('detects uncited document research findings', () => {
+    expect(documentResearchHasUncitedFindings({
+      id: 'r1',
+      objective: 'obj',
+      depth: 'quick',
+      generated_at: '2026-07-01T00:00:00.000Z',
+      query_plan: [],
+      findings: [{ id: 'f1', text: 'Fact', citation_ids: [] }],
+      citations: [],
+      gaps: [],
+      markdown: '# Research',
+    })).toBe(true);
   });
 });

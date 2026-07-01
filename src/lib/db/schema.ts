@@ -308,6 +308,8 @@ export interface DocumentRecord {
    * context files so we can share storage helpers.
    */
   reference_files?: ProjectContextFile[];
+  /** Ask Sage live-search research packs generated for cleanup/edit support */
+  research_packs?: import('../research/types').ResearchPack[];
   /** Optional Ask Sage RAG dataset name for the cleanup pass */
   cleanup_dataset_name?: string;
   /** Web search mode for the cleanup pass (mirrors project.live_search) */

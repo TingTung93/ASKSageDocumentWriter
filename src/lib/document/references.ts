@@ -5,6 +5,7 @@
 
 import { db, type DocumentRecord, type ProjectContextFile } from '../db/schema';
 import { MAX_AV_BYTES, MAX_DOC_BYTES } from '../project/context';
+import type { ResearchPack } from '../research/types';
 
 /** Attach a reference file to a document. */
 export async function attachDocumentReference(
@@ -33,6 +34,38 @@ export async function attachDocumentReference(
 
   const next: DocumentRecord = {
     ...doc,
+    reference_files: [...(doc.reference_files ?? []), item],
+  };
+  await db.documents.put(next);
+  return item;
+}
+
+/** Save a generated research pack and attach its Markdown as cleanup context. */
+export async function saveDocumentResearchPack(
+  documentId: string,
+  pack: ResearchPack,
+): Promise<ProjectContextFile> {
+  const doc = await db.documents.get(documentId);
+  if (!doc) throw new Error(`Document not found: ${documentId}`);
+
+  const createdAt = new Date().toISOString();
+  const filename = researchPackFilename(pack);
+  const bytes = new Blob([pack.markdown], { type: 'text/markdown' });
+  const item: ProjectContextFile = {
+    kind: 'file',
+    id: newId('docresearch'),
+    filename,
+    mime_type: 'text/markdown',
+    size_bytes: bytes.size,
+    bytes,
+    extracted_text: pack.markdown,
+    extracted_at: createdAt,
+    created_at: createdAt,
+  };
+
+  const next: DocumentRecord = {
+    ...doc,
+    research_packs: [...(doc.research_packs ?? []), pack],
     reference_files: [...(doc.reference_files ?? []), item],
   };
   await db.documents.put(next);
@@ -75,6 +108,11 @@ function guessMime(filename: string): string {
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'text/markdown';
   if (lower.endsWith('.csv')) return 'text/csv';
   return 'application/octet-stream';
+}
+
+function researchPackFilename(pack: ResearchPack): string {
+  const date = pack.generated_at.slice(0, 10) || new Date().toISOString().slice(0, 10);
+  return `document-research-pack-${date}.md`;
 }
 
 function newId(prefix: string): string {
