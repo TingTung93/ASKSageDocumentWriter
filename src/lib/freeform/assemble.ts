@@ -7,221 +7,77 @@
 
 import JSZip from 'jszip';
 import type { DraftParagraph } from '../draft/types';
+import {
+  normalizeDraftParagraphs,
+} from '../docx/ir';
+import { validateStructuredBlocks } from '../docx/validate';
+import {
+  buildParagraphElement,
+  buildTableElement,
+  createWordDocument,
+  serializeXml,
+  W_NS,
+} from '../docx/ooxml';
 
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
-// ─── XML namespaces ──────────────────────────────────────────────
-
-const NS = {
-  w: 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
-  r: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
-  wp: 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
-  mc: 'http://schemas.openxmlformats.org/markup-compatibility/2006',
-};
-
-// ─── Style ID mapping ────────────────────────────────────────────
-
-function styleIdForParagraph(dp: DraftParagraph): string {
-  const level = dp.level ?? 0;
-  switch (dp.role) {
-    case 'heading':
-      // Heading1 through Heading4
-      return `Heading${Math.min(level + 1, 4)}`;
-    case 'body':
-    case 'definition':
-      return 'Normal';
-    case 'bullet':
-      return 'ListBullet';
-    case 'step':
-      return 'ListNumber';
-    case 'note':
-    case 'caution':
-    case 'warning':
-      return 'Normal';
-    case 'quote':
-      return 'Quote';
-    case 'table_row':
-      return 'Normal';
-    default:
-      return 'Normal';
-  }
-}
-
-// ─── XML builders ────────────────────────────────────────────────
-
-function escapeXml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
-function buildRunXml(text: string, bold?: boolean, italic?: boolean): string {
-  let rPr = '';
-  if (bold || italic) {
-    rPr = '<w:rPr>';
-    if (bold) rPr += '<w:b/>';
-    if (italic) rPr += '<w:i/>';
-    rPr += '</w:rPr>';
-  }
-  // Split on newlines to handle multi-line text with <w:br/>
-  const parts = text.split('\n');
-  let tElements = '';
-  for (let i = 0; i < parts.length; i++) {
-    if (i > 0) tElements += '<w:br/>';
-    tElements += `<w:t xml:space="preserve">${escapeXml(parts[i])}</w:t>`;
-  }
-  return `<w:r>${rPr}${tElements}</w:r>`;
-}
-
-function buildParagraphXml(dp: DraftParagraph): string {
-  const styleId = styleIdForParagraph(dp);
-  const level = dp.level ?? 0;
-
-  // Paragraph properties
-  let pPr = `<w:pPr><w:pStyle w:val="${styleId}"/>`;
-
-  // Page break before
-  if (dp.page_break_before) {
-    pPr += '<w:pageBreakBefore/>';
-  }
-
-  // Indentation for non-list roles
-  if (level > 0 && dp.role !== 'bullet' && dp.role !== 'step' && dp.role !== 'heading') {
-    const leftTwips = level * 720; // 0.5 inch per level
-    pPr += `<w:ind w:left="${leftTwips}"/>`;
-  }
-
-  // Numbering for bullet/step roles
-  if ((dp.role === 'bullet' || dp.role === 'step') && level > 0) {
-    // Use indentation for nested list items in the simple assembler
-    const leftTwips = level * 360; // 0.25 inch per sub-level
-    pPr += `<w:ind w:left="${leftTwips}"/>`;
-  }
-
-  pPr += '</w:pPr>';
-
-  // Runs
-  let runs = '';
-  if (dp.runs && dp.runs.length > 0) {
-    for (const run of dp.runs) {
-      runs += buildRunXml(run.text, run.bold, run.italic);
-    }
-  } else {
-    // Prefix for note/caution/warning roles
-    if (dp.role === 'note') {
-      runs += buildRunXml('NOTE: ', true);
-    } else if (dp.role === 'caution') {
-      runs += buildRunXml('CAUTION: ', true);
-    } else if (dp.role === 'warning') {
-      runs += buildRunXml('WARNING: ', true);
-    }
-    runs += buildRunXml(dp.text);
-  }
-
-  return `<w:p>${pPr}${runs}</w:p>`;
-}
-
-function buildTableXml(rows: DraftParagraph[]): string {
-  if (rows.length === 0) return '';
-
-  // Determine column count from first row
-  const colCount = Math.max(...rows.map((r) => r.cells?.length ?? 0), 1);
-
-  let xml = '<w:tbl>';
-
-  // Table properties — simple auto-fit with borders
-  xml += '<w:tblPr>';
-  xml += '<w:tblStyle w:val="TableGrid"/>';
-  xml += '<w:tblW w:w="0" w:type="auto"/>';
-  xml += `<w:tblBorders>
-    <w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-    <w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-    <w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-    <w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-    <w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-    <w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>
-  </w:tblBorders>`;
-  xml += '<w:tblLook w:val="04A0"/>';
-  xml += '</w:tblPr>';
-
-  // Grid columns
-  xml += '<w:tblGrid>';
-  for (let c = 0; c < colCount; c++) {
-    xml += '<w:gridCol/>';
-  }
-  xml += '</w:tblGrid>';
-
-  // Rows
-  for (const row of rows) {
-    xml += '<w:tr>';
-    if (row.is_header) {
-      xml += '<w:trPr><w:tblHeader/></w:trPr>';
-    }
-    const cells = row.cells ?? [row.text];
-    for (let c = 0; c < colCount; c++) {
-      const cellText = c < cells.length ? cells[c] : '';
-      const bold = row.is_header;
-      xml += `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr>`;
-      xml += `<w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr>${buildRunXml(cellText, bold)}</w:p>`;
-      xml += '</w:tc>';
-    }
-    xml += '</w:tr>';
-  }
-
-  xml += '</w:tbl>';
-  return xml;
-}
-
 // ─── Document XML ────────────────────────────────────────────────
 
 function buildDocumentXml(paragraphs: DraftParagraph[]): string {
-  let body = '';
-  let i = 0;
+  const dom = createWordDocument();
+  const body = dom.getElementsByTagNameNS(W_NS, 'body')[0];
+  if (!body) throw new Error('internal error: created Word document has no body');
 
-  while (i < paragraphs.length) {
-    const dp = paragraphs[i];
+  const validation = validateStructuredBlocks(
+    normalizeDraftParagraphs(paragraphs),
+    { repair: true },
+  );
 
-    // Collect consecutive table rows into a single table
-    if (dp.role === 'table_row') {
-      const tableRows: DraftParagraph[] = [];
-      while (i < paragraphs.length && paragraphs[i].role === 'table_row') {
-        tableRows.push(paragraphs[i]);
-        i++;
-      }
-      body += buildTableXml(tableRows);
+  let nextParagraphGetsPageBreak = false;
+  for (const block of validation.blocks) {
+    if (block.kind === 'page_break') {
+      nextParagraphGetsPageBreak = true;
       continue;
     }
-
-    body += buildParagraphXml(dp);
-    i++;
+    if (block.kind === 'table') {
+      body.appendChild(buildTableElement(dom, block));
+      nextParagraphGetsPageBreak = false;
+      continue;
+    }
+    body.appendChild(
+      buildParagraphElement(dom, {
+        ...block,
+        page_break_before: nextParagraphGetsPageBreak,
+      }),
+    );
+    nextParagraphGetsPageBreak = false;
   }
 
-  // Section properties: Letter, 1-inch margins
-  const sectPr = `<w:sectPr>
-    <w:pgSz w:w="12240" w:h="15840"/>
-    <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
-  </w:sectPr>`;
+  const sectPr = dom.createElementNS(W_NS, 'w:sectPr');
+  const pgSz = dom.createElementNS(W_NS, 'w:pgSz');
+  pgSz.setAttributeNS(W_NS, 'w:w', '12240');
+  pgSz.setAttributeNS(W_NS, 'w:h', '15840');
+  sectPr.appendChild(pgSz);
+  const pgMar = dom.createElementNS(W_NS, 'w:pgMar');
+  pgMar.setAttributeNS(W_NS, 'w:top', '1440');
+  pgMar.setAttributeNS(W_NS, 'w:right', '1440');
+  pgMar.setAttributeNS(W_NS, 'w:bottom', '1440');
+  pgMar.setAttributeNS(W_NS, 'w:left', '1440');
+  pgMar.setAttributeNS(W_NS, 'w:header', '720');
+  pgMar.setAttributeNS(W_NS, 'w:footer', '720');
+  pgMar.setAttributeNS(W_NS, 'w:gutter', '0');
+  sectPr.appendChild(pgMar);
+  body.appendChild(sectPr);
 
-  // Only declare namespaces we actually use. Previously this element
-  // set mc:Ignorable="w14 wp14" without declaring xmlns:w14 /
-  // xmlns:wp14 — Word flagged the document as containing unreadable
-  // content when opening. We don't emit any w14/wp14 extensions, so
-  // the whole mc:Ignorable machinery can go.
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="${NS.w}" xmlns:r="${NS.r}">
-  <w:body>${body}${sectPr}</w:body>
-</w:document>`;
+  return serializeXml(dom);
 }
 
 // ─── Styles XML ──────────────────────────────────────────────────
 
 function buildStylesXml(): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="${NS.w}">
+<w:styles xmlns:w="${W_NS}">
   <w:docDefaults>
     <w:rPrDefault>
       <w:rPr>
