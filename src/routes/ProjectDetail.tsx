@@ -536,10 +536,10 @@ export function ProjectDetail() {
       {!onAskSage && (
         <div className="note" style={{ marginBottom: 'var(--space-3)', padding: '0.5rem 0.75rem', background: '#f6f6fa', border: '1px solid #ddd', borderRadius: 6 }}>
           <strong>OpenRouter mode (non-CUI).</strong>{' '}
-          Reference extraction (DOCX, PDF, plain text) runs in the
-          browser. Web search is provided by the OpenRouter `web`
-          plugin. Named-dataset lookups are unavailable — use the inline
-          reference files instead.
+          Reference extraction for DOCX, PDF, and plain text runs in the
+          browser. Web search uses the OpenRouter web plugin when the
+          selected model supports it. Ask Sage datasets are unavailable in
+          this mode, so attach source files directly to the project.
         </div>
       )}
 
@@ -708,8 +708,9 @@ export function ProjectDetail() {
         Share buttons emit an <code>.asdbundle.json</code> file that bundles
         the project, every referenced template, and (optionally) the drafted
         sections. A teammate can drop it on the Projects tab to recreate the
-        whole setup. The "Export drafts as JSON" button writes the older
-        flat-JSON dump for downstream tooling.
+        whole setup. The "Export drafts as JSON" button writes a diagnostic
+        JSON dump for downstream tooling; use "Assemble drafts to DOCX" for
+        a finished Word document.
       </p>
       {progress && (
         <ProgressBar
@@ -821,7 +822,7 @@ function FreeformDraftPanel({ project }: { project: ProjectRecord }) {
         <EmptyState
           icon="📄"
           title="No draft yet"
-          body={<>Click <strong>"Generate document"</strong> above to create your {styleName}. The AI will use your project description, attached files, datasets, and web search results to write the complete document.</>}
+          body={<>Click <strong>"Generate document"</strong> above to create your {styleName}. The AI will use your project description, attached files, available datasets, and web search settings to write a structured Word-ready draft.</>}
         />
       )}
 

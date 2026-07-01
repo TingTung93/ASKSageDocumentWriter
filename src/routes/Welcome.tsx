@@ -78,29 +78,29 @@ export function Welcome() {
     <main>
       <h1>Welcome to Ask Sage Document Writer</h1>
       <p>
-        This tool helps you draft, review, and polish contracting documents
-        (PWS, market research, J&amp;A, and more) using AI. Follow the steps
-        below to get started.
+        Draft structured DOCX packages from templates, write freeform documents,
+        or clean up an existing Word file. Connect your provider, add source
+        material, and export back to Word without running a server.
       </p>
 
       {/* ── Getting started steps ────────────────────────────────── */}
       <StepIndicator
         steps={[
           {
-            label: 'Connect to Ask Sage',
-            description: 'Paste your API key below and click "Connect".',
+            label: 'Connect an AI provider',
+            description: 'Use Ask Sage for CUI work or OpenRouter for non-CUI workflows.',
             done: connected,
             active: !connected,
           },
           {
             label: 'Upload a template or document',
-            description: 'Go to Templates (to draft from scratch) or Documents (to polish an existing file).',
+            description: 'Use Templates for structured drafting or Documents to edit an existing DOCX.',
             done: false,
             active: connected,
           },
           {
             label: 'Create a project and draft',
-            description: 'Combine templates with your project details and let the AI generate content.',
+            description: 'Attach references, draft with structured DOCX output, then export to Word.',
           },
         ]}
       />
@@ -128,8 +128,9 @@ export function Welcome() {
           </div>
           {provider === 'openrouter' && (
             <p className="note" style={{ marginTop: '0.4rem', marginBottom: 0, color: 'inherit' }}>
-              <strong>Note:</strong> You're using OpenRouter (non-CUI only). Dataset listing,
-              file upload, and full project drafting are only available with Ask Sage.
+              <strong>Note:</strong> You're using OpenRouter (non-CUI only). Browser-side
+              DOCX/PDF/text extraction is available for project references, but Ask Sage
+              datasets and server-side file extraction are unavailable.
             </p>
           )}
         </div>

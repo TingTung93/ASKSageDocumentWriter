@@ -23,8 +23,8 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
             <div className="settings-eyebrow">Library</div>
             <h1 className="settings-title">Templates &amp; sources</h1>
             <p className="settings-lead">
-              Your DOCX templates and connected reference corpora. Upload a template to start a
-              new draft; connect datasets to make them available to RAG.
+              Your DOCX templates and source libraries. Upload a template to capture document
+              structure; add project references when drafting so the model has the right facts.
             </p>
           </div>
         </div>
@@ -60,10 +60,10 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
             <div>
               <div style={{ fontSize: 22, marginBottom: 6 }}>＋</div>
               <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
-                {tab === 'templates' ? 'Upload DOCX template' : 'Connect dataset'}
+                {tab === 'templates' ? 'Upload DOCX template' : 'Add source library'}
               </div>
               <div style={{ fontSize: 11, marginTop: 4, fontFamily: 'var(--font-mono)', color: 'var(--ink-4)' }}>
-                {tab === 'templates' ? 'parses structure + placeholders' : 'Ask Sage, folder, or pinned URL'}
+                {tab === 'templates' ? 'parses structure + placeholders' : 'Ask Sage datasets or project files'}
               </div>
             </div>
           </div>

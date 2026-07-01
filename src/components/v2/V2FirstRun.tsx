@@ -37,13 +37,13 @@ export function V2FirstRun({ onDismiss }: V2FirstRunProps) {
         <div className="fr-eye">First run · local workstation</div>
         <h2>Let's get you drafting</h2>
         <p>
-          The co-writer runs entirely in this browser — no account, no backend. You just need an
-          API key so it can talk to your AI provider.
+          The co-writer runs entirely in this browser with no backend. Add your provider key,
+          bring DOCX templates or reference files, and export the finished draft back to Word.
         </p>
         <ol className="fr-steps">
-          <li><span className="n">1</span><span>Paste your Ask Sage or OpenRouter key in Settings</span></li>
-          <li><span className="n">2</span><span>Drop a DOCX template to define the structure</span></li>
-          <li><span className="n">3</span><span>Start a project, attach reference docs, and draft</span></li>
+          <li><span className="n">1</span><span>Use Ask Sage for CUI work or OpenRouter for non-CUI work</span></li>
+          <li><span className="n">2</span><span>Upload a DOCX template or create a freeform project</span></li>
+          <li><span className="n">3</span><span>Attach references, draft, review, and export a DOCX</span></li>
         </ol>
         <div className="fr-actions">
           <button className="btn" onClick={onDismiss}>Skip tour</button>

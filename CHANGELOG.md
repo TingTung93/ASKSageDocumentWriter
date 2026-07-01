@@ -5,6 +5,44 @@ loosely based on [Keep a Changelog](https://keepachangelog.com/), and
 this project aims to follow [semantic versioning](https://semver.org/)
 once the V2 workspace stabilizes.
 
+## [0.4.2] — 2026-07-01
+
+Release documentation and guide cleanup for the DOCX formatting backbone.
+Typecheck clean, 530/530 tests pass.
+
+### Added
+
+- **Shared DOCX formatting backbone** with structured block IR,
+  deterministic validation/repair, formatting inventory extraction, and
+  reusable OOXML builders for paragraphs, rich runs, tables, and page
+  breaks.
+- **Safer DOCX export paths** for both template-based drafts and
+  freeform documents. Structured table rows, rich runs, page breaks, and
+  table cell formatting are normalized before assembly.
+- **Conservative edit planner** that lowers high-level role-style
+  changes into typed `DocumentEditOp` style operations.
+- **Contributor guide** in `AGENTS.md` for project structure, commands,
+  style conventions, tests, and PR expectations.
+
+### Changed
+
+- Drafting prompts now state the unified structured DOCX contract:
+  semantic roles and fields only; no raw OOXML, HTML, or Markdown-based
+  formatting instructions.
+- Finished-document cleanup prompts now classify content, formatting, and
+  structural edits before selecting the narrowest typed operation.
+- Diagnostic JSON export and deterministic validation helpers were moved
+  under names that describe their current role:
+  `src/lib/export/diagnostic_json.ts` and
+  `src/lib/draft/deterministic_validation.ts`.
+- User-facing README and onboarding copy now reflect current provider
+  behavior, artifact size, test count, and DOCX export capabilities.
+
+### Fixed
+
+- Updated a stale drafter test fixture so it includes template source
+  metadata expected by the current drafting prompt.
+
 ## [0.3.0] — 2026-04-24
 
 UI/UX audit polish pass plus the Freeform workspace feature shipped.
