@@ -35,6 +35,13 @@ function makeClient(
 const mockTemplate = {
   id: 'tmpl',
   name: 'Test Template',
+  source: {
+    filename: 'test-template.docx',
+    ingested_at: '2026-07-01T00:00:00.000Z',
+    structural_parser_version: 'test',
+    semantic_synthesizer: null,
+    docx_blob_id: 'blob',
+  },
   description: 'A template',
   global_instructions: '',
   fill_regions: [],
