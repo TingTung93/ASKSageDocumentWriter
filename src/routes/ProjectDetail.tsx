@@ -35,8 +35,8 @@ import { AskSageClient } from '../lib/asksage/client';
 import { createLLMClient } from '../lib/provider/factory';
 import { extractedTextFromRet } from '../lib/asksage/extract';
 import { draftProject } from '../lib/draft/orchestrator';
-import { runValidation } from '../lib/critique';
-import { exportProjectAsJson, downloadJsonExport } from '../lib/export';
+import { runValidation } from '../lib/draft/deterministic_validation';
+import { exportProjectAsJson, downloadJsonExport } from '../lib/export/diagnostic_json';
 import type { DraftParagraph } from '../lib/draft/types';
 import { loadSettings } from '../lib/settings/store';
 import {

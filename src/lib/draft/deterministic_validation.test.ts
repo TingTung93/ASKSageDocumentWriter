@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runValidation } from './index';
+import { runValidation } from './deterministic_validation';
 import type { BodyFillRegion } from '../template/types';
 import type { DraftParagraph } from '../draft/types';
 

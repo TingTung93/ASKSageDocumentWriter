@@ -1,6 +1,8 @@
-// Phase 4 critic STUB. Runs deterministic validation rules against a
-// drafted section and reports any issues. The LLM-based critique pass
-// is not implemented yet — this file is the structural placeholder.
+// deterministic_validation.ts
+//
+// Runs deterministic validation rules against a drafted section and
+// reports any issues. (LLM-based critique is handled by critique.ts
+// and cross_section.ts).
 
 import type { BodyFillRegion } from '../template/types';
 import type { DraftParagraph } from '../draft/types';

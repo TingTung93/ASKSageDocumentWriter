@@ -1,10 +1,8 @@
-// Phase 3 export STUB. The eventual implementation clones the
-// template's original DOCX bytes and walks the OOXML to inject each
-// drafted section's paragraphs into the matching fill region (preserving
-// every formatting node we don't touch). For now, this exports the
-// project's drafts as a JSON dump so the user can verify the data
-// pipeline end-to-end and we have a clear interface to swap the real
-// assembler into.
+// diagnostic_json.ts
+//
+// Exports the project's drafts as a JSON dump so the user can verify
+// the data pipeline end-to-end or use it for external downstream tooling.
+// (For the real DOCX assembly, see assemble.ts).
 
 import type { DraftRecord, ProjectRecord, TemplateRecord } from '../db/schema';
 
