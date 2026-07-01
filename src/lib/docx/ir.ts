@@ -64,17 +64,28 @@ export function normalizeDraftParagraphs(paragraphs: DraftParagraph[]): Structur
     const p = paragraphs[i]!;
 
     if (p.role === 'table_row') {
+      if (p.page_break_before) {
+        blocks.push({ kind: 'page_break' });
+      }
+
       const rows: StructuredTableRow[] = [];
       while (i < paragraphs.length && paragraphs[i]!.role === 'table_row') {
         const row = paragraphs[i]!;
-        const cells = (row.cells && row.cells.length > 0 ? row.cells : [row.text]).map(
-          (text, cellIndex): StructuredTableCell => ({
+        if (rows.length > 0 && row.page_break_before) {
+          break;
+        }
+
+        const cellTexts = row.cells && row.cells.length > 0 ? row.cells : [row.text];
+        const cells = cellTexts.map((text, cellIndex): StructuredTableCell => {
+          const cell: StructuredTableCell = {
             text,
             shading: row.cell_shading?.[cellIndex],
             colspan: row.cell_colspans?.[cellIndex],
             width_pct: row.cell_widths_pct?.[cellIndex],
-          }),
-        );
+          };
+          if (row.runs && cellTexts.length === 1) cell.runs = row.runs;
+          return cell;
+        });
         rows.push({ is_header: row.is_header === true, cells });
         i += 1;
       }
@@ -122,6 +133,7 @@ export function structuredBlocksToDraftParagraphs(blocks: StructuredBlock[]): Dr
         };
         if (row.is_header) draftRow.is_header = true;
         if (pendingPageBreak) draftRow.page_break_before = true;
+        if (row.cells.length === 1 && row.cells[0]!.runs) draftRow.runs = row.cells[0]!.runs;
         const shading = row.cells.map((c) => c.shading ?? '');
         if (shading.some((v) => v.length > 0)) draftRow.cell_shading = shading;
         const colspans = row.cells.map((c) => c.colspan ?? 1);
