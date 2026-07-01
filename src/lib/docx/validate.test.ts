@@ -51,6 +51,42 @@ describe('validateStructuredBlocks', () => {
     expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_removed');
   });
 
+  it('preserves empty runs when repair is disabled', () => {
+    const blocks: StructuredBlock[] = [
+      {
+        kind: 'paragraph',
+        role: 'body',
+        text: '',
+        runs: [{ text: '' }, { text: 'Keep me', bold: true }],
+      },
+    ];
+
+    const result = validateStructuredBlocks(blocks, { repair: false });
+
+    expect(result.blocks[0]).toMatchObject({
+      kind: 'paragraph',
+      runs: [{ text: '' }, { text: 'Keep me', bold: true }],
+    });
+    expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_removed');
+  });
+
+  it('reports empty visible paragraphs after removing empty runs', () => {
+    const blocks: StructuredBlock[] = [
+      {
+        kind: 'paragraph',
+        role: 'body',
+        text: '',
+        runs: [{ text: '' }],
+      },
+    ];
+
+    const result = validateStructuredBlocks(blocks, { repair: true });
+
+    expect(result.blocks[0]).toMatchObject({ kind: 'paragraph', text: '' });
+    expect(result.blocks[0]).not.toHaveProperty('runs');
+    expect(result.diagnostics.map((d) => d.message)).toContain('Paragraph has no visible text.');
+  });
+
   it('pads short table rows to the widest row', () => {
     const blocks: StructuredBlock[] = [
       {
@@ -70,6 +106,24 @@ describe('validateStructuredBlocks', () => {
         { cells: [{ text: 'A' }, { text: 'B' }] },
         { cells: [{ text: '1' }, { text: '' }] },
       ],
+    });
+  });
+
+  it('keeps empty tables and reports an error when repair is disabled', () => {
+    const blocks: StructuredBlock[] = [
+      {
+        kind: 'table',
+        rows: [],
+      },
+    ];
+
+    const result = validateStructuredBlocks(blocks, { repair: false });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocks).toEqual(blocks);
+    expect(result.diagnostics[0]).toMatchObject({
+      severity: 'error',
+      code: 'empty_table_removed',
     });
   });
 

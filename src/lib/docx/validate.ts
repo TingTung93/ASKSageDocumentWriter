@@ -45,7 +45,6 @@ export function validateStructuredBlocks(
     const block = cloneBlock(input[blockIndex]!);
 
     if (block.kind === 'paragraph') {
-      validateParagraph(block, blockIndex, options, diagnostics);
       if (options.permittedRoles && !options.permittedRoles.has(block.role)) {
         if (repair) {
           diagnostics.push({
@@ -79,9 +78,8 @@ export function validateStructuredBlocks(
       }
 
       if (block.runs) {
-        const before = block.runs.length;
-        block.runs = block.runs.filter((r) => r.text.length > 0);
-        if (block.runs.length !== before) {
+        const hasEmptyRuns = block.runs.some((r) => r.text.length === 0);
+        if (hasEmptyRuns) {
           diagnostics.push({
             severity: 'warning',
             code: 'empty_run_removed',
@@ -89,24 +87,29 @@ export function validateStructuredBlocks(
             message: 'Empty rich-text runs were removed.',
           });
         }
-        if (block.runs.length === 0) delete block.runs;
+        if (repair) {
+          block.runs = block.runs.filter((r) => r.text.length > 0);
+          if (block.runs.length === 0) delete block.runs;
+        }
       }
 
+      validateParagraph(block, blockIndex, options, diagnostics);
       blocks.push(block);
       continue;
     }
 
     if (block.kind === 'table') {
       const repaired = validateTable(block, blockIndex, repair, diagnostics);
-      if (repaired.rows.length > 0) {
-        blocks.push(repaired);
-      } else {
+      if (repaired.rows.length === 0) {
         diagnostics.push({
           severity: repair ? 'warning' : 'error',
           code: 'empty_table_removed',
           path: `blocks[${blockIndex}]`,
           message: 'Table contains no rows.',
         });
+        if (!repair) blocks.push(repaired);
+      } else {
+        blocks.push(repaired);
       }
       continue;
     }
@@ -127,7 +130,8 @@ function validateParagraph(
   _options: ValidateStructuredBlocksOptions,
   diagnostics: StructureDiagnostic[],
 ): void {
-  if (block.text.length === 0 && (!block.runs || block.runs.length === 0)) {
+  const hasVisibleRuns = block.runs?.some((r) => r.text.length > 0) === true;
+  if (block.text.length === 0 && !hasVisibleRuns) {
     diagnostics.push({
       severity: 'warning',
       code: 'empty_run_removed',
