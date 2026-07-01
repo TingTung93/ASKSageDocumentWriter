@@ -91,7 +91,12 @@ export function buildTableElement(dom: Document, table: StructuredTableBlock): E
   tblPr.appendChild(tblW);
   tbl.appendChild(tblPr);
 
-  const columnCount = Math.max(0, ...table.rows.map((row) => row.cells.length));
+  const columnCount = Math.max(
+    0,
+    ...table.rows.map((row) =>
+      row.cells.reduce((count, cell) => count + (cell.colspan && cell.colspan > 1 ? cell.colspan : 1), 0),
+    ),
+  );
   const tblGrid = dom.createElementNS(W_NS, 'w:tblGrid');
   for (let i = 0; i < columnCount; i++) {
     tblGrid.appendChild(dom.createElementNS(W_NS, 'w:gridCol'));

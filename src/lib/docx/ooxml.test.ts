@@ -80,7 +80,7 @@ describe('OOXML builders', () => {
     expect(xml).toContain('w:w="0"');
     expect(xml).toContain('w:type="auto"');
     expect(xml).toContain('<w:tblGrid');
-    expect(countOccurrences(xml, '<w:gridCol')).toBe(2);
+    expect(countOccurrences(xml, '<w:gridCol')).toBe(3);
     expect(xml).toContain('Role');
     expect(xml).toContain('Award');
     expect(xml).toContain('<w:shd');
