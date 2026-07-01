@@ -23,6 +23,8 @@ export interface StructuredTableCell {
   shading?: string | null;
   colspan?: number;
   width_pct?: number;
+  // Legacy DraftParagraph can only carry row-level runs, so compatibility
+  // flattening preserves cell runs only for single-cell table rows.
   runs?: DraftRun[];
 }
 
@@ -156,7 +158,7 @@ export function structuredBlocksToDraftParagraphs(blocks: StructuredBlock[]): Dr
     if (block.indent_left_pt !== undefined) draftParagraph.indent_left_pt = block.indent_left_pt;
     if (block.spacing_before_pt !== undefined) draftParagraph.spacing_before_pt = block.spacing_before_pt;
     if (block.spacing_after_pt !== undefined) draftParagraph.spacing_after_pt = block.spacing_after_pt;
-    if (pendingPageBreak) draftParagraph.page_break_before = true;
+    if (pendingPageBreak || block.page_break_before) draftParagraph.page_break_before = true;
     out.push(draftParagraph);
     pendingPageBreak = false;
   }

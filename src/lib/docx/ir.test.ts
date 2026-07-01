@@ -4,6 +4,7 @@ import {
   normalizeDraftParagraphs,
   structuredBlocksToDraftParagraphs,
 } from './ir';
+import type { StructuredBlock } from './ir';
 
 describe('normalizeDraftParagraphs', () => {
   it('collapses consecutive table_row paragraphs into a table block', () => {
@@ -44,6 +45,18 @@ describe('normalizeDraftParagraphs', () => {
     expect(blocks[1]).toMatchObject({
       kind: 'table',
       rows: [{ cells: [{ text: 'A' }, { text: 'B' }] }],
+    });
+  });
+
+  it('coerces invalid paragraph roles to body', () => {
+    const blocks = normalizeDraftParagraphs([
+      { role: 'unknown' as DraftParagraph['role'], text: 'Fallback text.' },
+    ]);
+
+    expect(blocks[0]).toMatchObject({
+      kind: 'paragraph',
+      role: 'body',
+      text: 'Fallback text.',
     });
   });
 
@@ -105,5 +118,17 @@ describe('normalizeDraftParagraphs', () => {
       rows: [{ cells: [{ text: 'Formatted', runs: [{ text: 'Formatted', bold: true }] }] }],
     });
     expect(structuredBlocksToDraftParagraphs(blocks)).toEqual(input);
+  });
+});
+
+describe('structuredBlocksToDraftParagraphs', () => {
+  it('honors paragraph-local page_break_before when flattening', () => {
+    const blocks: StructuredBlock[] = [
+      { kind: 'paragraph', role: 'heading', text: 'Appendix', page_break_before: true },
+    ];
+
+    expect(structuredBlocksToDraftParagraphs(blocks)).toEqual([
+      { role: 'heading', text: 'Appendix', page_break_before: true },
+    ]);
   });
 });
