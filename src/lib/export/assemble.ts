@@ -342,14 +342,15 @@ function processSection(
       error: `heading_bounded section got non-body draft kind: ${draftUnion.kind}`,
     };
   }
-  const permittedParagraphRoles = new Set(
-    (fr.permitted_roles ?? ['body']).filter(isParagraphRole),
-  );
+  const permittedParagraphRoles =
+    fr.permitted_roles == null
+      ? undefined
+      : new Set(fr.permitted_roles.filter(isParagraphRole));
   const validation = validateStructuredBlocks(
     normalizeDraftParagraphs(draftUnion.paragraphs),
     {
       repair: true,
-      permittedRoles: permittedParagraphRoles.size > 0 ? permittedParagraphRoles : undefined,
+      permittedRoles: permittedParagraphRoles,
     },
   );
   const draft = structuredBlocksToDraftParagraphs(validation.blocks);

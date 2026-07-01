@@ -314,7 +314,38 @@ describe('assembleProjectDocx structured validation', () => {
 
     const status = result.section_results.find((r) => r.section_id === section.id)?.status;
     expect(status?.kind).toBe('assembled');
-    expect(JSON.stringify(status)).toContain('table_row_padded');
+    if (status?.kind !== 'assembled') throw new Error('section was not assembled');
+    expect(status.validation_diagnostics?.some((d) => d.code === 'table_row_padded')).toBe(true);
+  });
+
+  it('reports stray paragraph roles in table-only sections', async () => {
+    const template = await loadAsTemplate(PUBLICATION);
+    const section = firstHeadingBoundedSection(template.schema_json);
+    if (!section) throw new Error('fixture has no heading-bounded section');
+
+    const clonedSchema: TemplateSchema = JSON.parse(JSON.stringify(template.schema_json));
+    const clonedSection = clonedSchema.sections.find((s) => s.id === section.id);
+    if (!clonedSection || clonedSection.fill_region.kind !== 'heading_bounded') {
+      throw new Error('fixture section clone was not heading-bounded');
+    }
+    clonedSection.fill_region.permitted_roles = ['table_row'];
+    const mutated: TemplateRecord = { ...template, schema_json: clonedSchema };
+
+    const result = await assembleProjectDocx({
+      template: mutated,
+      draftedBySectionId: new Map<string, DraftParagraph[]>([
+        [section.id, [{ role: 'body', text: 'stray body paragraph' }]],
+      ]),
+    });
+
+    const status = result.section_results.find((r) => r.section_id === section.id)?.status;
+    expect(status?.kind).toBe('assembled');
+    if (status?.kind !== 'assembled') throw new Error('section was not assembled');
+    expect(
+      status.validation_diagnostics?.some(
+        (d) => d.code === 'role_not_permitted' || d.code === 'role_repaired',
+      ),
+    ).toBe(true);
   });
 });
 
