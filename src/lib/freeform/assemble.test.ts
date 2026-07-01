@@ -38,4 +38,18 @@ describe('assembleFreeformDocx', () => {
 
     expect(xml).toContain('D9EAF7');
   });
+
+  it('preserves page breaks before tables', async () => {
+    const result = await assembleFreeformDocx([
+      { role: 'table_row', text: '', page_break_before: true, cells: ['A'] },
+    ]);
+
+    const xml = await documentXml(result.blob);
+    const pageBreakIndex = xml.indexOf('<w:pageBreakBefore');
+    const tableIndex = xml.indexOf('<w:tbl');
+
+    expect(pageBreakIndex).toBeGreaterThanOrEqual(0);
+    expect(tableIndex).toBeGreaterThanOrEqual(0);
+    expect(pageBreakIndex).toBeLessThan(tableIndex);
+  });
 });

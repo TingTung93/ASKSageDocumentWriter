@@ -41,6 +41,16 @@ function buildDocumentXml(paragraphs: DraftParagraph[]): string {
       continue;
     }
     if (block.kind === 'table') {
+      if (nextParagraphGetsPageBreak) {
+        body.appendChild(
+          buildParagraphElement(dom, {
+            kind: 'paragraph',
+            role: 'body',
+            text: '',
+            page_break_before: true,
+          }),
+        );
+      }
       body.appendChild(buildTableElement(dom, block));
       nextParagraphGetsPageBreak = false;
       continue;
