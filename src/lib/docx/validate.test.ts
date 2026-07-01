@@ -145,6 +145,29 @@ describe('validateStructuredBlocks', () => {
     });
   });
 
+  it('does not pad colspan rows that already match the widest logical width', () => {
+    const blocks: StructuredBlock[] = [
+      {
+        kind: 'table',
+        rows: [
+          { is_header: true, cells: [{ text: 'A' }, { text: 'B' }, { text: 'C' }] },
+          { is_header: false, cells: [{ text: 'Wide', colspan: 2 }, { text: 'Tail', colspan: 1 }] },
+        ],
+      },
+    ];
+
+    const result = validateStructuredBlocks(blocks, { repair: true });
+
+    expect(result.blocks[0]).toMatchObject({
+      kind: 'table',
+      rows: [
+        { cells: [{ text: 'A' }, { text: 'B' }, { text: 'C' }] },
+        { cells: [{ text: 'Wide', colspan: 2 }, { text: 'Tail', colspan: 1 }] },
+      ],
+    });
+    expect(result.diagnostics.map((d) => d.code)).not.toContain('table_row_padded');
+  });
+
   it('keeps empty tables and reports an error when repair is disabled', () => {
     const blocks: StructuredBlock[] = [
       {

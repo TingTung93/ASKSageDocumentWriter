@@ -158,13 +158,15 @@ function validateTable(
   repair: boolean,
   diagnostics: StructureDiagnostic[],
 ): StructuredTableBlock {
-  const widest = Math.max(0, ...table.rows.map((r) => r.cells.length));
+  const widest = Math.max(0, ...table.rows.map((r) => tableRowWidth(r)));
   if (widest === 0) return table;
 
   const rows = table.rows.map((row, rowIndex) => {
     const cells = [...row.cells];
-    while (repair && cells.length < widest) {
+    let width = tableCellWidth(cells);
+    while (repair && width < widest) {
       cells.push({ text: '' });
+      width += 1;
       diagnostics.push({
         severity: 'warning',
         code: 'table_row_padded',
@@ -176,6 +178,14 @@ function validateTable(
   });
 
   return { ...table, rows };
+}
+
+function tableRowWidth(row: StructuredTableBlock['rows'][number]): number {
+  return tableCellWidth(row.cells);
+}
+
+function tableCellWidth(cells: StructuredTableBlock['rows'][number]['cells']): number {
+  return cells.reduce((width, cell) => width + (cell.colspan && cell.colspan > 1 ? cell.colspan : 1), 0);
 }
 
 function cloneBlock(block: StructuredBlock): StructuredBlock {

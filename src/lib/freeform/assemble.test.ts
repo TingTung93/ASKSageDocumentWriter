@@ -9,6 +9,10 @@ async function documentXml(blob: Blob): Promise<string> {
   return xml;
 }
 
+function countOccurrences(value: string, pattern: string): number {
+  return value.split(pattern).length - 1;
+}
+
 describe('assembleFreeformDocx', () => {
   it('builds rich runs through shared OOXML helpers', async () => {
     const result = await assembleFreeformDocx([
@@ -91,5 +95,18 @@ describe('assembleFreeformDocx', () => {
     expect(pageBreakIndex).toBeGreaterThanOrEqual(0);
     expect(tableIndex).toBeGreaterThanOrEqual(0);
     expect(pageBreakIndex).toBeLessThan(tableIndex);
+  });
+
+  it('does not pad colspan table rows that already match logical width', async () => {
+    const result = await assembleFreeformDocx([
+      { role: 'table_row', text: '', cells: ['A', 'B', 'C'] },
+      { role: 'table_row', text: '', cells: ['Wide', 'Tail'], cell_colspans: [2, 1] },
+    ]);
+
+    const xml = await documentXml(result.blob);
+
+    expect(countOccurrences(xml, '<w:gridCol')).toBe(3);
+    expect(countOccurrences(xml, '<w:tc>')).toBe(5);
+    expect(xml).toContain('<w:gridSpan w:val="2"');
   });
 });
