@@ -295,6 +295,29 @@ describe('assembleProjectDocx — result summary counts match per-section status
   });
 });
 
+describe('assembleProjectDocx structured validation', () => {
+  it('repairs short table rows before assembly', async () => {
+    const template = await loadAsTemplate(PUBLICATION);
+    const section = firstHeadingBoundedSection(template.schema_json);
+    if (!section) throw new Error('fixture has no heading-bounded section');
+    const drafted = new Map<string, DraftParagraph[]>([
+      [
+        section.id,
+        [
+          { role: 'table_row', text: '', is_header: true, cells: ['A', 'B'] },
+          { role: 'table_row', text: '', cells: ['1'] },
+        ],
+      ],
+    ]);
+
+    const result = await assembleProjectDocx({ template, draftedBySectionId: drafted });
+
+    const status = result.section_results.find((r) => r.section_id === section.id)?.status;
+    expect(status?.kind).toBe('assembled');
+    expect(JSON.stringify(status)).toContain('table_row_padded');
+  });
+});
+
 describe('roleToStyleId — unit tests', () => {
   const available = new Set([
     'Heading1',

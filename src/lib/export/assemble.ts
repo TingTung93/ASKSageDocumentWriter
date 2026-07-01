@@ -28,13 +28,24 @@ import type {
   SectionDraft,
 } from '../draft/types';
 import { toSectionDraft } from '../draft/types';
+import {
+  isParagraphRole,
+  normalizeDraftParagraphs,
+  structuredBlocksToDraftParagraphs,
+} from '../docx/ir';
+import { validateStructuredBlocks, type StructureDiagnostic } from '../docx/validate';
 
 const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DOCX_MIME =
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
 export type AssembleSectionStatus =
-  | { kind: 'assembled'; paragraphs_replaced: number; paragraphs_inserted: number }
+  | {
+      kind: 'assembled';
+      paragraphs_replaced: number;
+      paragraphs_inserted: number;
+      validation_diagnostics?: StructureDiagnostic[];
+    }
   | {
       kind: 'assembled_slots';
       slots_replaced: number;
@@ -331,7 +342,17 @@ function processSection(
       error: `heading_bounded section got non-body draft kind: ${draftUnion.kind}`,
     };
   }
-  const draft = draftUnion.paragraphs;
+  const permittedParagraphRoles = new Set(
+    (fr.permitted_roles ?? ['body']).filter(isParagraphRole),
+  );
+  const validation = validateStructuredBlocks(
+    normalizeDraftParagraphs(draftUnion.paragraphs),
+    {
+      repair: true,
+      permittedRoles: permittedParagraphRoles.size > 0 ? permittedParagraphRoles : undefined,
+    },
+  );
+  const draft = structuredBlocksToDraftParagraphs(validation.blocks);
   if (draft.length === 0) {
     return { kind: 'skipped_no_draft' };
   }
@@ -399,6 +420,7 @@ function processSection(
         kind: 'assembled',
         paragraphs_replaced: group.paragraphs.length,
         paragraphs_inserted: newEls.length,
+        validation_diagnostics: validation.diagnostics,
       };
     }
 
@@ -436,6 +458,7 @@ function processSection(
       kind: 'assembled',
       paragraphs_replaced: totalReplaced,
       paragraphs_inserted: totalInserted,
+      validation_diagnostics: validation.diagnostics,
     };
   } catch (e) {
     return {
