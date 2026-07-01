@@ -80,6 +80,19 @@ describe('buildDraftingPrompt', () => {
     expect(built.system_prompt).toMatch(/bullet/);
   });
 
+  it('includes the structured DOCX contract in the system prompt', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: 'Maintenance contract',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.system_prompt).toContain('STRUCTURED DOCX CONTRACT');
+    expect(built.system_prompt).toContain('Use semantic roles and fields only');
+    expect(built.system_prompt).toContain('Do not emit raw OOXML');
+  });
+
   it('includes the section spec and document context in the message', () => {
     const built = buildDraftingPrompt({
       template: makeTemplate(),

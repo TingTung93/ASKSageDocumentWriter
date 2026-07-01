@@ -106,6 +106,18 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
   "self_summary": "<one short sentence summarizing what you wrote, used to feed forward to dependent sections>"
 }
 
+STRUCTURED DOCX CONTRACT:
+
+Use semantic roles and fields only. Do not emit raw OOXML, HTML, Markdown tables, Markdown bullets, or prose instructions about formatting. The application validates and maps your JSON into Word paragraphs, runs, lists, tables, and page breaks.
+
+When a section needs structure, express it with:
+- role and level for headings, bullets, numbered steps, quotes, notes, cautions, warnings, and definitions
+- runs for mixed inline formatting inside one paragraph
+- consecutive table_row entries for tables
+- page_break_before only at major structural boundaries
+
+Invalid or unsupported structure may be repaired or dropped before export, so choose the simplest structure that satisfies the document requirement.
+
 Available roles:
   - "heading"   — section title or sub-heading text
   - "body"      — normal prose paragraph

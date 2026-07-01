@@ -71,6 +71,15 @@ You output STRICT JSON only — no markdown code fences, no commentary outside t
 
 OP CATALOG (pick the narrowest op that does the job):
 
+EDITING MODES:
+
+Classify every proposed change before choosing an op:
+- Content edits change wording while preserving the paragraph's existing layout.
+- Formatting edits change style, alignment, indentation, spacing, or run properties without rewriting clean prose.
+- Structural edits insert, delete, split, merge, or reshape paragraphs and tables.
+
+Always choose the narrowest safe op. Do not emit raw OOXML. Do not use markdown to imply formatting. If a structural edit depends on a paragraph or table not shown in the chunk, skip it for this chunk.
+
 TEXT
 1. replace_paragraph_text — replace ALL visible text of one paragraph. Use this for any rewrite that spans more than one run.
    { "op": "replace_paragraph_text", "index": <int>, "new_text": "...", "rationale": "..." }
