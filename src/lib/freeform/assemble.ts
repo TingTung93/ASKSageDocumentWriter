@@ -24,6 +24,29 @@ const DOCX_MIME =
 
 // ─── Document XML ────────────────────────────────────────────────
 
+type BuildParagraphInput = Parameters<typeof buildParagraphElement>[1];
+
+function withFreeformAlertLabel(block: BuildParagraphInput): BuildParagraphInput {
+  const label =
+    block.role === 'note'
+      ? 'NOTE: '
+      : block.role === 'caution'
+        ? 'CAUTION: '
+        : block.role === 'warning'
+          ? 'WARNING: '
+          : null;
+
+  if (!label || (block.runs && block.runs.length > 0)) return block;
+
+  return {
+    ...block,
+    runs: [
+      { text: label, bold: true },
+      { text: block.text },
+    ],
+  };
+}
+
 function buildDocumentXml(paragraphs: DraftParagraph[]): string {
   const dom = createWordDocument();
   const body = dom.getElementsByTagNameNS(W_NS, 'body')[0];
@@ -56,10 +79,13 @@ function buildDocumentXml(paragraphs: DraftParagraph[]): string {
       continue;
     }
     body.appendChild(
-      buildParagraphElement(dom, {
-        ...block,
-        page_break_before: nextParagraphGetsPageBreak,
-      }),
+      buildParagraphElement(
+        dom,
+        withFreeformAlertLabel({
+          ...block,
+          page_break_before: nextParagraphGetsPageBreak,
+        }),
+      ),
     );
     nextParagraphGetsPageBreak = false;
   }

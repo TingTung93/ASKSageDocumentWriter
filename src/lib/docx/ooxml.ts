@@ -28,10 +28,15 @@ export function appendTextRun(dom: Document, parent: Element, text: string, run?
   const rPr = buildRunProperties(dom, run);
   if (rPr) r.appendChild(rPr);
 
-  const t = dom.createElementNS(W_NS, 'w:t');
-  t.setAttribute('xml:space', 'preserve');
-  t.textContent = text;
-  r.appendChild(t);
+  const parts = text.split('\n');
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) r.appendChild(dom.createElementNS(W_NS, 'w:br'));
+    const t = dom.createElementNS(W_NS, 'w:t');
+    t.setAttribute('xml:space', 'preserve');
+    t.textContent = parts[i]!;
+    r.appendChild(t);
+  }
+
   parent.appendChild(r);
   return r;
 }
@@ -80,7 +85,18 @@ export function buildTableElement(dom: Document, table: StructuredTableBlock): E
   const tblStyle = dom.createElementNS(W_NS, 'w:tblStyle');
   tblStyle.setAttributeNS(W_NS, 'w:val', 'TableGrid');
   tblPr.appendChild(tblStyle);
+  const tblW = dom.createElementNS(W_NS, 'w:tblW');
+  tblW.setAttributeNS(W_NS, 'w:w', '0');
+  tblW.setAttributeNS(W_NS, 'w:type', 'auto');
+  tblPr.appendChild(tblW);
   tbl.appendChild(tblPr);
+
+  const columnCount = Math.max(0, ...table.rows.map((row) => row.cells.length));
+  const tblGrid = dom.createElementNS(W_NS, 'w:tblGrid');
+  for (let i = 0; i < columnCount; i++) {
+    tblGrid.appendChild(dom.createElementNS(W_NS, 'w:gridCol'));
+  }
+  tbl.appendChild(tblGrid);
 
   for (const row of table.rows) {
     const tr = dom.createElementNS(W_NS, 'w:tr');

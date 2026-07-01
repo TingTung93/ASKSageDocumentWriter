@@ -10,6 +10,10 @@ import {
 } from './ooxml';
 
 describe('OOXML builders', () => {
+  function countOccurrences(value: string, pattern: string): number {
+    return value.split(pattern).length - 1;
+  }
+
   it('builds rich paragraph runs with toggles', () => {
     const dom = createWordDocument();
     const p = buildParagraphElement(dom, {
@@ -72,6 +76,11 @@ describe('OOXML builders', () => {
 
     expect(tbl.namespaceURI).toBe(W_NS);
     expect(xml).toContain('<w:tblHeader');
+    expect(xml).toContain('<w:tblW');
+    expect(xml).toContain('w:w="0"');
+    expect(xml).toContain('w:type="auto"');
+    expect(xml).toContain('<w:tblGrid');
+    expect(countOccurrences(xml, '<w:gridCol')).toBe(2);
     expect(xml).toContain('Role');
     expect(xml).toContain('Award');
     expect(xml).toContain('<w:shd');
@@ -117,5 +126,19 @@ describe('OOXML builders', () => {
     appendTextRun(dom, p, '  spaced  ');
 
     expect(serializeXml(p)).toContain('xml:space="preserve"');
+  });
+
+  it('emits line breaks for embedded newlines in runs', () => {
+    const dom = createWordDocument();
+    const p = dom.createElementNS(W_NS, 'w:p');
+    appendTextRun(dom, p, 'Line 1\nLine 2');
+
+    const xml = serializeXml(p);
+
+    expect(xml).toContain('Line 1');
+    expect(xml).toContain('<w:br');
+    expect(xml).toContain('Line 2');
+    expect(xml.indexOf('Line 1')).toBeLessThan(xml.indexOf('<w:br'));
+    expect(xml.indexOf('<w:br')).toBeLessThan(xml.indexOf('Line 2'));
   });
 });

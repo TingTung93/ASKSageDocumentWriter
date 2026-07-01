@@ -37,6 +37,46 @@ describe('assembleFreeformDocx', () => {
     const xml = await documentXml(result.blob);
 
     expect(xml).toContain('D9EAF7');
+    expect(xml).toMatch(/<w:shd[^>]+w:fill="D9EAF7"/);
+  });
+
+  it('preserves bold semantic labels for alert paragraphs without explicit runs', async () => {
+    const result = await assembleFreeformDocx([
+      { role: 'note', text: 'Review the checklist.' },
+      { role: 'caution', text: 'Disconnect power first.' },
+      { role: 'warning', text: 'Do not proceed.' },
+    ]);
+
+    const xml = await documentXml(result.blob);
+
+    for (const label of ['NOTE: ', 'CAUTION: ', 'WARNING: ']) {
+      const labelIndex = xml.indexOf(label);
+      const runStart = xml.lastIndexOf('<w:r>', labelIndex);
+      const runEnd = xml.indexOf('</w:r>', labelIndex);
+      const labelRun = xml.slice(runStart, runEnd);
+
+      expect(labelIndex).toBeGreaterThanOrEqual(0);
+      expect(labelRun).toContain('<w:b');
+    }
+    expect(xml).toContain('Review the checklist.');
+    expect(xml).toContain('Disconnect power first.');
+    expect(xml).toContain('Do not proceed.');
+  });
+
+  it('does not add semantic labels when alert paragraphs provide explicit runs', async () => {
+    const result = await assembleFreeformDocx([
+      {
+        role: 'note',
+        text: 'Fallback text',
+        runs: [{ text: 'Custom note', italic: true }],
+      },
+    ]);
+
+    const xml = await documentXml(result.blob);
+
+    expect(xml).toContain('Custom note');
+    expect(xml).not.toContain('NOTE: ');
+    expect(xml).not.toContain('Fallback text');
   });
 
   it('preserves page breaks before tables', async () => {
