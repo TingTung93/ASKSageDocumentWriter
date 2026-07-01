@@ -60,6 +60,37 @@ describe('OOXML builders', () => {
     expect(xml).toContain('Award');
   });
 
+  it('builds table cell rich runs', () => {
+    const dom = createWordDocument();
+    const table: StructuredTableBlock = {
+      kind: 'table',
+      rows: [
+        {
+          is_header: false,
+          cells: [
+            {
+              text: 'fallback',
+              runs: [
+                { text: 'Bold ', bold: true },
+                { text: 'italic', italic: true, underline: true },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const tbl = buildTableElement(dom, table);
+    const xml = serializeXml(tbl);
+
+    expect(xml).toContain('<w:b');
+    expect(xml).toContain('<w:i');
+    expect(xml).toContain('<w:u');
+    expect(xml).toContain('Bold ');
+    expect(xml).toContain('italic');
+    expect(xml).not.toContain('fallback');
+  });
+
   it('appends a run with preserved whitespace', () => {
     const dom = createWordDocument();
     const p = dom.createElementNS(W_NS, 'w:p');

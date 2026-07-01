@@ -105,7 +105,11 @@ export function buildTableElement(dom: Document, table: StructuredTableBlock): E
       }
       tc.appendChild(tcPr);
       const p = dom.createElementNS(W_NS, 'w:p');
-      appendTextRun(dom, p, cell.text, row.is_header ? { text: cell.text, bold: true } : undefined);
+      if (cell.runs && cell.runs.length > 0) {
+        for (const run of cell.runs) appendTextRun(dom, p, run.text, run);
+      } else {
+        appendTextRun(dom, p, cell.text, row.is_header ? { text: cell.text, bold: true } : undefined);
+      }
       tc.appendChild(p);
       tr.appendChild(tc);
     }
