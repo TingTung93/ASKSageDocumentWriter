@@ -32,6 +32,39 @@ describe('validateStructuredBlocks', () => {
     expect(result.diagnostics[0]).toMatchObject({ code: 'role_repaired' });
   });
 
+  it('repairs disallowed roles to the first permitted fallback when body is not permitted', () => {
+    const blocks: StructuredBlock[] = [
+      { kind: 'paragraph', role: 'warning', text: 'Unsafe role' },
+    ];
+
+    const result = validateStructuredBlocks(blocks, {
+      repair: true,
+      permittedRoles: new Set(['heading']),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.blocks[0]).toMatchObject({ kind: 'paragraph', role: 'heading' });
+    expect(result.diagnostics[0]).toMatchObject({ code: 'role_repaired' });
+  });
+
+  it('leaves disallowed roles unchanged and reports an error when no permitted fallback exists', () => {
+    const blocks: StructuredBlock[] = [
+      { kind: 'paragraph', role: 'warning', text: 'Unsafe role' },
+    ];
+
+    const result = validateStructuredBlocks(blocks, {
+      repair: true,
+      permittedRoles: new Set(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blocks[0]).toMatchObject({ kind: 'paragraph', role: 'warning' });
+    expect(result.diagnostics[0]).toMatchObject({
+      severity: 'error',
+      code: 'role_not_permitted',
+    });
+  });
+
   it('removes empty runs from rich paragraphs', () => {
     const blocks: StructuredBlock[] = [
       {
@@ -51,7 +84,7 @@ describe('validateStructuredBlocks', () => {
     expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_removed');
   });
 
-  it('preserves empty runs when repair is disabled', () => {
+  it('preserves empty runs and does not claim removal when repair is disabled', () => {
     const blocks: StructuredBlock[] = [
       {
         kind: 'paragraph',
@@ -67,7 +100,8 @@ describe('validateStructuredBlocks', () => {
       kind: 'paragraph',
       runs: [{ text: '' }, { text: 'Keep me', bold: true }],
     });
-    expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_removed');
+    expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_present');
+    expect(result.diagnostics.map((d) => d.code)).not.toContain('empty_run_removed');
   });
 
   it('reports empty visible paragraphs after removing empty runs', () => {
@@ -85,6 +119,8 @@ describe('validateStructuredBlocks', () => {
     expect(result.blocks[0]).toMatchObject({ kind: 'paragraph', text: '' });
     expect(result.blocks[0]).not.toHaveProperty('runs');
     expect(result.diagnostics.map((d) => d.message)).toContain('Paragraph has no visible text.');
+    expect(result.diagnostics.map((d) => d.code)).toContain('empty_run_removed');
+    expect(result.diagnostics.map((d) => d.code)).toContain('empty_paragraph');
   });
 
   it('pads short table rows to the widest row', () => {
@@ -142,5 +178,32 @@ describe('validateStructuredBlocks', () => {
       severity: 'error',
       code: 'role_not_permitted',
     });
+  });
+
+  it('does not mutate input blocks when repairing structure', () => {
+    const blocks: StructuredBlock[] = [
+      {
+        kind: 'paragraph',
+        role: 'warning',
+        text: '',
+        level: 99,
+        runs: [{ text: '' }, { text: 'Keep me' }],
+      },
+      {
+        kind: 'table',
+        rows: [
+          { is_header: true, cells: [{ text: 'A' }, { text: 'B' }] },
+          { is_header: false, cells: [{ text: '1' }] },
+        ],
+      },
+    ];
+    const original = structuredClone(blocks);
+
+    validateStructuredBlocks(blocks, {
+      repair: true,
+      permittedRoles: new Set(['body']),
+    });
+
+    expect(blocks).toEqual(original);
   });
 });

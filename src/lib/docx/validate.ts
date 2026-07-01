@@ -1,4 +1,3 @@
-import type { ParagraphRole } from '../draft/types';
 import type {
   StructuredBlock,
   StructuredParagraphBlock,
@@ -14,6 +13,8 @@ export interface StructureDiagnostic {
     | 'role_not_permitted'
     | 'role_repaired'
     | 'empty_run_removed'
+    | 'empty_run_present'
+    | 'empty_paragraph'
     | 'table_row_padded'
     | 'empty_table_removed';
   message: string;
@@ -23,7 +24,7 @@ export interface StructureDiagnostic {
 export interface ValidateStructuredBlocksOptions {
   repair?: boolean;
   maxLevel?: number;
-  permittedRoles?: Set<ParagraphRole | StructuredParagraphBlock['role']>;
+  permittedRoles?: Set<StructuredParagraphBlock['role']>;
 }
 
 export interface ValidateStructuredBlocksResult {
@@ -46,14 +47,15 @@ export function validateStructuredBlocks(
 
     if (block.kind === 'paragraph') {
       if (options.permittedRoles && !options.permittedRoles.has(block.role)) {
-        if (repair) {
+        const fallbackRole = getRoleRepairFallback(options.permittedRoles);
+        if (repair && fallbackRole) {
           diagnostics.push({
             severity: 'warning',
             code: 'role_repaired',
             path: `blocks[${blockIndex}].role`,
-            message: `Role "${block.role}" is not permitted here; converted to "body".`,
+            message: `Role "${block.role}" is not permitted here; converted to "${fallbackRole}".`,
           });
-          block.role = 'body';
+          block.role = fallbackRole;
         } else {
           diagnostics.push({
             severity: 'error',
@@ -82,9 +84,11 @@ export function validateStructuredBlocks(
         if (hasEmptyRuns) {
           diagnostics.push({
             severity: 'warning',
-            code: 'empty_run_removed',
+            code: repair ? 'empty_run_removed' : 'empty_run_present',
             path: `blocks[${blockIndex}].runs`,
-            message: 'Empty rich-text runs were removed.',
+            message: repair
+              ? 'Empty rich-text runs were removed.'
+              : 'Empty rich-text runs are present.',
           });
         }
         if (repair) {
@@ -134,11 +138,18 @@ function validateParagraph(
   if (block.text.length === 0 && !hasVisibleRuns) {
     diagnostics.push({
       severity: 'warning',
-      code: 'empty_run_removed',
+      code: 'empty_paragraph',
       path: `blocks[${blockIndex}]`,
       message: 'Paragraph has no visible text.',
     });
   }
+}
+
+function getRoleRepairFallback(
+  permittedRoles: Set<StructuredParagraphBlock['role']>,
+): StructuredParagraphBlock['role'] | undefined {
+  if (permittedRoles.has('body')) return 'body';
+  return permittedRoles.values().next().value;
 }
 
 function validateTable(
