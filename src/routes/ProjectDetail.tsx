@@ -33,6 +33,7 @@ import { EmptyState } from '../components/EmptyState';
 import { useAuth } from '../lib/state/auth';
 import { AskSageClient } from '../lib/asksage/client';
 import { createLLMClient } from '../lib/provider/factory';
+import type { ProviderId } from '../lib/provider/types';
 import { extractedTextFromRet } from '../lib/asksage/extract';
 import { draftProject } from '../lib/draft/orchestrator';
 import { runValidation } from '../lib/draft/deterministic_validation';
@@ -77,6 +78,10 @@ import {
   type AssembleProjectResult,
 } from '../lib/export/downloadAssembled';
 import { AssembledDocxPreview } from '../components/AssembledDocxPreview';
+import { runAskSageResearch } from '../lib/research/asksage';
+import { saveResearchPackToProject } from '../lib/research/context';
+import { validateResearchPack } from '../lib/research/citations';
+import type { ResearchDepth, ResearchPack } from '../lib/research/types';
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -581,6 +586,14 @@ export function ProjectDetail() {
         </div>
       )}
 
+      <ResearchPanel
+        project={project}
+        apiKey={apiKey}
+        baseUrl={baseUrl}
+        provider={provider}
+        model={draftingModelOverride ?? undefined}
+      />
+
       <ProjectContextSection project={project} />
 
       <h2>Drafting</h2>
@@ -772,6 +785,205 @@ export function ProjectDetail() {
         </>
       )}
     </main>
+  );
+}
+
+export function researchDepthLabel(depth: ResearchDepth): string {
+  switch (depth) {
+    case 'quick':
+      return 'Quick - compact scan';
+    case 'standard':
+      return 'Standard - broader source set';
+    case 'deep':
+      return 'Deep - more findings and gaps';
+  }
+}
+
+export function researchPackHasUncitedFindings(pack: ResearchPack): boolean {
+  return validateResearchPack(pack).uncited_finding_ids.length > 0;
+}
+
+function ResearchPanel({
+  project,
+  apiKey,
+  baseUrl,
+  provider,
+  model,
+}: {
+  project: ProjectRecord;
+  apiKey: string | null;
+  baseUrl: string;
+  provider: ProviderId;
+  model?: string;
+}) {
+  const [objective, setObjective] = useState(project.description || project.name);
+  const [focusQuestions, setFocusQuestions] = useState('');
+  const [depth, setDepth] = useState<ResearchDepth>('standard');
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const packs = project.research_packs ?? [];
+  const enabled = provider === 'asksage' && Boolean(apiKey);
+
+  async function onRunResearch(e: FormEvent) {
+    e.preventDefault();
+    if (!apiKey) {
+      setError('Connect on the Connection tab first - research needs an Ask Sage API key.');
+      return;
+    }
+    if (provider !== 'asksage') {
+      setError('Research packs currently use Ask Sage live web search.');
+      return;
+    }
+    const trimmedObjective = objective.trim();
+    if (!trimmedObjective) {
+      setError('Enter a research objective.');
+      return;
+    }
+
+    setRunning(true);
+    setError(null);
+    try {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const result = await runAskSageResearch(client, {
+        project_name: project.name,
+        project_description: project.description,
+        objective: trimmedObjective,
+        focus_questions: focusQuestions,
+        depth,
+        model,
+      });
+      const attached = await saveResearchPackToProject(project.id, result.pack);
+      toast.success(
+        `Research pack saved with ${result.pack.citations.length} citation${result.pack.citations.length === 1 ? '' : 's'} and attached as ${attached.filename}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      toast.error(`Research failed: ${message}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <section className="panel" style={{ marginBottom: 'var(--space-3)' }}>
+      <h2>Research</h2>
+      <p className="note">
+        Use Ask Sage live web search to create a cited Markdown research pack.
+        The pack is saved here and attached as a project reference document.
+      </p>
+
+      <form onSubmit={(e) => void onRunResearch(e)}>
+        <label htmlFor="research-objective">Research objective</label>
+        <textarea
+          id="research-objective"
+          value={objective}
+          onChange={(e) => setObjective(e.target.value)}
+          rows={3}
+          style={{ width: '100%', font: 'inherit', padding: '0.5rem' }}
+          disabled={running}
+        />
+
+        <label htmlFor="research-focus" style={{ marginTop: 'var(--space-2)' }}>
+          Focus questions
+        </label>
+        <textarea
+          id="research-focus"
+          value={focusQuestions}
+          onChange={(e) => setFocusQuestions(e.target.value)}
+          rows={3}
+          placeholder="Optional - one question per line"
+          style={{ width: '100%', font: 'inherit', padding: '0.5rem' }}
+          disabled={running}
+        />
+
+        <label htmlFor="research-depth" style={{ marginTop: 'var(--space-2)' }}>
+          Depth
+        </label>
+        <select
+          id="research-depth"
+          value={depth}
+          onChange={(e) => setDepth(e.target.value as ResearchDepth)}
+          disabled={running}
+          style={{ width: '100%', padding: '0.5rem', font: 'inherit', maxWidth: 420 }}
+        >
+          <option value="quick">{researchDepthLabel('quick')}</option>
+          <option value="standard">{researchDepthLabel('standard')}</option>
+          <option value="deep">{researchDepthLabel('deep')}</option>
+        </select>
+
+        <div className="btn-row" style={{ marginTop: 'var(--space-2)' }}>
+          <button type="submit" disabled={!enabled || running}>
+            {running ? <Spinner light label="Researching..." /> : 'Run Ask Sage research'}
+          </button>
+        </div>
+        {!apiKey && <p className="note">Connect Ask Sage before running research.</p>}
+        {provider !== 'asksage' && (
+          <p className="note">Research packs currently require the Ask Sage provider.</p>
+        )}
+        {error && <div className="error">{error}</div>}
+      </form>
+
+      {packs.length > 0 && (
+        <div style={{ marginTop: 'var(--space-3)' }}>
+          <h3>Saved research packs ({packs.length})</h3>
+          {packs.slice().reverse().map((pack) => {
+            const validation = validateResearchPack(pack);
+            return (
+              <details key={pack.id} style={{ marginBottom: 'var(--space-2)' }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                  {pack.objective} - {researchDepthLabel(pack.depth)} - {new Date(pack.generated_at).toLocaleString()}
+                </summary>
+                {researchPackHasUncitedFindings(pack) && (
+                  <div className="error" style={{ marginTop: 'var(--space-2)' }}>
+                    {validation.uncited_finding_ids.length} finding{validation.uncited_finding_ids.length === 1 ? '' : 's'} lack citations.
+                  </div>
+                )}
+                {pack.findings.length > 0 && (
+                  <>
+                    <strong>Findings</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {pack.findings.map((finding) => (
+                        <li key={finding.id}>{finding.text}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {pack.citations.length > 0 && (
+                  <>
+                    <strong>Citations</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {pack.citations.map((citation) => (
+                        <li key={citation.id}>
+                          {citation.url ? (
+                            <a href={citation.url} target="_blank" rel="noopener noreferrer">
+                              {citation.title || citation.url}
+                            </a>
+                          ) : citation.title}
+                          <span className="note" style={{ marginLeft: '0.4rem' }}>
+                            {citation.source_type}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {pack.gaps.length > 0 && (
+                  <>
+                    <strong>Gaps</strong>
+                    <ul style={{ margin: '0.3rem 0 0.75rem', paddingLeft: '1.2rem' }}>
+                      {pack.gaps.map((gap, index) => (
+                        <li key={`${pack.id}-gap-${index}`}>{gap}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </details>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

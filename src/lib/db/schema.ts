@@ -147,6 +147,8 @@ export interface ProjectRecord {
   freeform_draft_raw_references?: string;
   /** Extracted source references (URLs, file citations, etc.) */
   freeform_draft_sources?: import('../freeform/drafter').SourceReference[];
+  /** Ask Sage live-search research packs generated for this project */
+  research_packs?: import('../research/types').ResearchPack[];
   /** TemplateRecord ids included in this project */
   template_ids: string[];
   /** Ask Sage dataset names to use for RAG context during drafting */
