@@ -125,7 +125,7 @@ function buildRunProperties(dom: Document, run: DraftRun | undefined): Element |
   const rPr = dom.createElementNS(W_NS, 'w:rPr');
   if (run.bold !== undefined) appendToggle(dom, rPr, 'b', run.bold);
   if (run.italic !== undefined) appendToggle(dom, rPr, 'i', run.italic);
-  if (run.underline !== undefined) appendToggle(dom, rPr, 'u', run.underline, 'single');
+  if (run.underline !== undefined) appendToggle(dom, rPr, 'u', run.underline, 'single', 'none');
   if (run.strike !== undefined) appendToggle(dom, rPr, 'strike', run.strike);
   if (run.color) {
     const color = dom.createElementNS(W_NS, 'w:color');
@@ -146,9 +146,10 @@ function appendToggle(
   tag: 'b' | 'i' | 'u' | 'strike',
   value: boolean,
   valWhenTrue?: string,
+  valWhenFalse = 'false',
 ): void {
   const el = dom.createElementNS(W_NS, `w:${tag}`);
-  if (!value) el.setAttributeNS(W_NS, 'w:val', 'false');
+  if (!value) el.setAttributeNS(W_NS, 'w:val', valWhenFalse);
   if (value && valWhenTrue) el.setAttributeNS(W_NS, 'w:val', valWhenTrue);
   rPr.appendChild(el);
 }
@@ -158,5 +159,7 @@ function styleIdForRole(role: StructuredParagraphBlock['role'], level: number): 
   if (role === 'bullet') return 'ListBullet';
   if (role === 'step') return 'ListNumber';
   if (role === 'quote') return 'Quote';
+  // note/caution/warning/definition intentionally fall back to Normal until
+  // template or freeform style inventory maps those semantic roles explicitly.
   return 'Normal';
 }

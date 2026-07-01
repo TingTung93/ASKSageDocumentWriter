@@ -36,9 +36,25 @@ describe('OOXML builders', () => {
       role: 'heading',
       text: 'Appendix',
       page_break_before: true,
-    } as never);
+    });
 
     expect(serializeXml(p)).toContain('<w:pageBreakBefore');
+  });
+
+  it('emits underline none when underline is false', () => {
+    const dom = createWordDocument();
+    const p = buildParagraphElement(dom, {
+      kind: 'paragraph',
+      role: 'body',
+      text: '',
+      runs: [{ text: 'plain', underline: false }],
+    });
+
+    const xml = serializeXml(p);
+
+    expect(xml).toContain('<w:u');
+    expect(xml).toContain('w:val="none"');
+    expect(xml).not.toContain('w:val="false"');
   });
 
   it('builds a table with header rows and padded cells', () => {
@@ -47,7 +63,7 @@ describe('OOXML builders', () => {
       kind: 'table',
       rows: [
         { is_header: true, cells: [{ text: 'Role' }, { text: 'Duty' }] },
-        { is_header: false, cells: [{ text: 'CO' }, { text: 'Award' }] },
+        { is_header: false, cells: [{ text: 'CO', shading: 'D9EAF7', colspan: 2 }, { text: 'Award' }] },
       ],
     };
 
@@ -58,6 +74,10 @@ describe('OOXML builders', () => {
     expect(xml).toContain('<w:tblHeader');
     expect(xml).toContain('Role');
     expect(xml).toContain('Award');
+    expect(xml).toContain('<w:shd');
+    expect(xml).toContain('w:fill="D9EAF7"');
+    expect(xml).toContain('<w:gridSpan');
+    expect(xml).toContain('w:val="2"');
   });
 
   it('builds table cell rich runs', () => {
