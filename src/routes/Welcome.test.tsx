@@ -148,6 +148,48 @@ describe('Welcome local provider gate', () => {
     expect(serverUrl).toHaveValue('http://localhost:9999/v1');
   });
 
+  it('switching away from a non-default local preset resets to the next provider default URL', () => {
+    const { getByRole, getByLabelText } = render(withRouter(<Welcome />));
+    const selector = getByLabelText(/Local backend/i);
+    const serverUrl = getByLabelText(/Server URL/i);
+
+    fireEvent.change(selector, { target: { value: 'llama.cpp' } });
+
+    expect(selector).toHaveValue('llama.cpp');
+    expect(serverUrl).toHaveValue('http://localhost:8080/v1');
+
+    fireEvent.click(getByRole('radio', { name: /OpenRouter/i }));
+
+    expect(serverUrl).toHaveValue('https://openrouter.ai/api/v1');
+  });
+
+  it('hides and clears stale local probe results after editing the endpoint', () => {
+    authMock.state = {
+      ...authMock.defaultState(),
+      localProbe: {
+        ok: true,
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'qwen3:14b',
+        capabilities: {
+          models: true,
+          chat: true,
+          tools: false,
+          jsonOutput: true,
+          embeddings: false,
+        },
+        warnings: [],
+      },
+    };
+    const { getByLabelText, getByText, queryByText } = render(withRouter(<Welcome />));
+
+    expect(getByText(/Endpoint check/i)).not.toBeNull();
+
+    fireEvent.change(getByLabelText(/Server URL/i), { target: { value: 'http://localhost:9999/v1' } });
+
+    expect(authMock.state.setLocalProbe).toHaveBeenCalledWith(null);
+    expect(queryByText(/Endpoint check/i)).toBeNull();
+  });
+
   it('warns when the Local OpenAI base URL is not localhost', () => {
     authMock.state = {
       ...authMock.defaultState(),

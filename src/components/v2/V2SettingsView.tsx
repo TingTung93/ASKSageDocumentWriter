@@ -111,10 +111,16 @@ export function V2SettingsView() {
     draftProvider === 'local_openai' &&
     draftBase.trim().length > 0 &&
     !isLocalhostBaseUrl(draftBase.trim());
+  const visibleLocalProbe =
+    draftProvider === 'local_openai' &&
+    localProbe &&
+    draftBase.trim() === localProbe.baseUrl
+      ? localProbe
+      : null;
 
   function onPickProvider(next: ProviderId) {
     if (next === draftProvider) return;
-    const wasOnDefault = draftBase.trim() === defaultBaseUrlFor(draftProvider);
+    const wasOnDefault = isDefaultOrLocalPresetBase(draftProvider, draftBase);
     setDraftProvider(next);
     if (wasOnDefault) {
       const nextBase = defaultBaseUrlFor(next);
@@ -127,6 +133,7 @@ export function V2SettingsView() {
 
   function onPickLocalPreset(next: LocalPresetId) {
     setLocalPresetId(next);
+    setLocalProbe(null);
     if (next === 'custom') return;
     const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
     if (preset) setDraftBase(preset.baseUrl);
@@ -134,6 +141,7 @@ export function V2SettingsView() {
 
   function onDraftBaseChange(nextBase: string) {
     setDraftBase(nextBase);
+    setLocalProbe(null);
     if (draftProvider === 'local_openai') {
       setLocalPresetId(localPresetIdForBase(nextBase));
     }
@@ -345,8 +353,8 @@ export function V2SettingsView() {
               )}
             </div>
           </form>
-          {draftProvider === 'local_openai' && localProbe && (
-            <LocalProbeSummary probe={localProbe} />
+          {visibleLocalProbe && (
+            <LocalProbeSummary probe={visibleLocalProbe} />
           )}
         </div>
 
@@ -414,6 +422,11 @@ type LocalPresetId = (typeof LOCAL_OPENAI_PRESETS)[number]['id'] | 'custom';
 function localPresetIdForBase(baseUrl: string): LocalPresetId {
   const normalized = baseUrl.trim();
   return LOCAL_OPENAI_PRESETS.find((preset) => preset.baseUrl === normalized)?.id ?? 'custom';
+}
+
+function isDefaultOrLocalPresetBase(provider: ProviderId, baseUrl: string): boolean {
+  if (provider === 'local_openai') return localPresetIdForBase(baseUrl) !== 'custom';
+  return baseUrl.trim() === defaultBaseUrlFor(provider);
 }
 
 function LocalProbeSummary({ probe }: { probe: LocalEndpointProbeResult }) {
