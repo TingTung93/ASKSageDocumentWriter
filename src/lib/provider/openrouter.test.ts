@@ -243,6 +243,68 @@ describe('OpenRouterClient', () => {
     ]);
   });
 
+  it('query() preserves canonical OpenAI tool request and response envelopes', async () => {
+    const toolCall = {
+      id: 'call-lookup',
+      type: 'function' as const,
+      function: { name: 'lookup', arguments: '{"query":"alpha"}' },
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'g',
+          choices: [{ message: { role: 'assistant', content: '', tool_calls: [toolCall] } }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        }),
+        { status: 200 },
+      ),
+    );
+    const client = makeClient();
+    const response = await client.query({
+      model: 'openai/gpt-4o',
+      message: [
+        { user: 'me', message: 'Find alpha' },
+        { user: 'gpt', message: '', tool_calls: [toolCall] },
+        { user: 'tool', message: '{"answer":42}', tool_call_id: 'call-lookup', name: 'lookup' },
+      ],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'lookup',
+            parameters: { type: 'object' },
+          },
+        },
+      ],
+      tool_choice: {
+        type: 'function',
+        function: { name: 'lookup' },
+      },
+    });
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.messages).toEqual([
+      { role: 'user', content: 'Find alpha' },
+      { role: 'assistant', content: '', tool_calls: [toolCall] },
+      { role: 'tool', content: '{"answer":42}', tool_call_id: 'call-lookup', name: 'lookup' },
+    ]);
+    expect(body.tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'lookup',
+          parameters: { type: 'object' },
+        },
+      },
+    ]);
+    expect(body.tool_choice).toEqual({
+      type: 'function',
+      function: { name: 'lookup' },
+    });
+    expect(response.tool_calls).toEqual([toolCall]);
+    expect(response.usage?.total_tokens).toBe(12);
+  });
+
   it('query() throws AskSageError when no model is supplied (OpenRouter has no default)', async () => {
     const client = makeClient();
     await expect(client.query({ message: 'hi' })).rejects.toMatchObject({

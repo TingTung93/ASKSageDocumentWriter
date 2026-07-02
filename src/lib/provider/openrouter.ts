@@ -36,15 +36,26 @@
 
 import { AskSageError } from '../asksage/types';
 import type {
-  ModelCapabilities,
   ModelInfo,
   ModelPricing,
   QueryInput,
   QueryResponse,
-  QueryUsage,
 } from '../asksage/types';
 import { writeAuditEntry } from '../asksage/audit';
 import type { LLMClient, ProviderCapabilities } from './types';
+import {
+  buildOpenAIHeaders,
+  mapModelRowToModelInfo,
+  mapOpenAIResponseToQueryResponse,
+  mapQueryInputToOpenAIChatBody,
+  parseJsonFromOpenAIText,
+  sortOpenAIEmbeddings,
+  urlForOpenAIPath,
+  type OpenAIChatBody,
+  type OpenAIChatCompletionResponse,
+  type OpenAIEmbeddingsResponse,
+  type OpenAIModelRow,
+} from './openai_compat';
 
 const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
 
@@ -59,71 +70,14 @@ const DEFAULT_EMBEDDING_MODEL = 'openai/text-embedding-3-small';
 // OpenRouter `/v1/models` shape (subset we use). Pricing fields are
 // stringified USD per token; `"0"` for free models.
 interface OpenRouterModelsResponse {
-  data: Array<{
-    id: string;
-    name?: string;
-    created?: number;
-    description?: string;
+  data: Array<OpenAIModelRow & {
     pricing?: {
       prompt?: string;
       completion?: string;
       request?: string;
       image?: string;
     };
-    /** Maximum context window in tokens. */
-    context_length?: number;
-    architecture?: {
-      modality?: string;
-      input_modalities?: string[];
-      output_modalities?: string[];
-      tokenizer?: string;
-    };
-    /**
-     * OpenAI-style parameter names this model honors. We use this to
-     * check that `temperature` is settable for queryJson calls.
-     */
-    supported_parameters?: string[];
   }>;
-}
-
-// OpenRouter `/v1/chat/completions` shape (OpenAI-compatible subset).
-interface OpenAIChatCompletionResponse {
-  id: string;
-  object?: string;
-  choices: Array<{
-    index?: number;
-    message: { 
-      role: string; 
-      content: string; 
-      tool_calls?: import('../asksage/types').OpenAIToolCall[];
-    };
-    finish_reason?: string;
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
-
-/** OpenAI-compatible /v1/embeddings response shape. */
-interface OpenAIEmbeddingsResponse {
-  data: Array<{
-    index: number;
-    embedding: number[];
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    total_tokens?: number;
-  };
-}
-
-interface OpenAIChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
-  tool_calls?: import('../asksage/types').OpenAIToolCall[];
-  tool_call_id?: string;
-  name?: string;
 }
 
 /**
@@ -136,6 +90,10 @@ interface OpenRouterWebPlugin {
   id: 'web';
   max_results?: number;
 }
+
+type OpenRouterChatBody = OpenAIChatBody & {
+  plugins?: OpenRouterWebPlugin[];
+};
 
 export class OpenRouterClient implements LLMClient {
   /**
@@ -170,18 +128,18 @@ export class OpenRouterClient implements LLMClient {
   }
 
   private url(path: string): string {
-    const trimmed = this.baseUrl.replace(/\/$/, '');
-    return `${trimmed}${path.startsWith('/') ? path : `/${path}`}`;
+    return urlForOpenAIPath(this.baseUrl, path);
   }
 
   private buildHeaders(includeContentType: boolean): Record<string, string> {
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.apiKey}`,
-    };
-    if (includeContentType) headers['Content-Type'] = 'application/json';
-    if (this.attribution.referer) headers['HTTP-Referer'] = this.attribution.referer;
-    if (this.attribution.title) headers['X-Title'] = this.attribution.title;
-    return headers;
+    return buildOpenAIHeaders({
+      apiKey: this.apiKey,
+      includeContentType,
+      extra: {
+        'HTTP-Referer': this.attribution.referer || undefined,
+        'X-Title': this.attribution.title || undefined,
+      },
+    });
   }
 
   async getModels(): Promise<ModelInfo[]> {
@@ -242,7 +200,7 @@ export class OpenRouterClient implements LLMClient {
   async query(input: QueryInput): Promise<QueryResponse> {
     const url = this.url('/chat/completions');
     const startedAt = Date.now();
-    const body = mapQueryInputToOpenAI(input);
+    const body = mapQueryInputToOpenRouter(input);
     const reqBodyStr = JSON.stringify(body);
     let res: Response;
     try {
@@ -323,9 +281,8 @@ export class OpenRouterClient implements LLMClient {
   async queryJson<T>(input: QueryInput): Promise<{ data: T; raw: QueryResponse }> {
     const response = await this.query(input);
     const text = (response.message ?? '').trim();
-    const cleaned = stripCodeFence(text);
     try {
-      return { data: JSON.parse(cleaned) as T, raw: response };
+      return { data: parseJsonFromOpenAIText<T>(text), raw: response };
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
       throw new AskSageError(
@@ -403,7 +360,7 @@ export class OpenRouterClient implements LLMClient {
       ok: true,
     });
     // Sort by index — the API may return embeddings out of order.
-    const sorted = [...parsed.data].sort((a, b) => a.index - b.index);
+    const sorted = sortOpenAIEmbeddings(parsed);
     return {
       embeddings: sorted.map((d) => d.embedding),
       tokens: parsed.usage?.prompt_tokens ?? 0,
@@ -414,48 +371,10 @@ export class OpenRouterClient implements LLMClient {
 // ─── Mapping helpers ──────────────────────────────────────────────
 
 function mapModel(m: OpenRouterModelsResponse['data'][number]): ModelInfo {
-  // OpenRouter ids look like "anthropic/claude-3.5-sonnet". Use the
-  // vendor segment as `owned_by` to mirror Ask Sage's shape so the
-  // existing model picker UI doesn't have to special-case anything.
-  const vendor = m.id.includes('/') ? m.id.split('/')[0] ?? 'openrouter' : 'openrouter';
-  const out: ModelInfo = {
-    id: m.id,
-    name: m.name ?? m.id,
-    object: 'model',
-    owned_by: vendor,
-    created: typeof m.created === 'number' ? String(m.created) : 'na',
-  };
+  const out = mapModelRowToModelInfo(m, 'openrouter');
   const pricing = extractPricing(m);
   if (pricing) out.pricing = pricing;
-  const capabilities = extractCapabilities(m);
-  if (capabilities) out.capabilities = capabilities;
   return out;
-}
-
-/**
- * Pull capability metadata from the OpenRouter `/v1/models` row. We
- * only set fields the API actually returned — leaving the rest
- * undefined so the validator can distinguish "missing" from "empty".
- */
-function extractCapabilities(
-  m: OpenRouterModelsResponse['data'][number],
-): ModelCapabilities | null {
-  const out: ModelCapabilities = {};
-  if (typeof m.context_length === 'number' && m.context_length > 0) {
-    out.context_length = m.context_length;
-  }
-  const inMods = m.architecture?.input_modalities;
-  if (Array.isArray(inMods) && inMods.length > 0) {
-    out.input_modalities = inMods.slice();
-  }
-  const outMods = m.architecture?.output_modalities;
-  if (Array.isArray(outMods) && outMods.length > 0) {
-    out.output_modalities = outMods.slice();
-  }
-  if (Array.isArray(m.supported_parameters) && m.supported_parameters.length > 0) {
-    out.supported_parameters = m.supported_parameters.slice();
-  }
-  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -488,30 +407,7 @@ function parseUsdPerToken(value: string | undefined): number {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
-function mapQueryInputToOpenAI(input: QueryInput): {
-  model: string;
-  messages: OpenAIChatMessage[];
-  temperature?: number;
-  plugins?: OpenRouterWebPlugin[];
-} {
-  const messages: OpenAIChatMessage[] = [];
-  if (input.system_prompt) {
-    messages.push({ role: 'system', content: input.system_prompt });
-  }
-  if (typeof input.message === 'string') {
-    messages.push({ role: 'user', content: input.message });
-  } else {
-    // Ask Sage's turn array uses `{user, message}` where `user` is
-    // 'me' or 'gpt'. Map to OpenAI roles.
-    for (const turn of input.message) {
-      const role: OpenAIChatMessage['role'] = turn.user === 'gpt' ? 'assistant' : turn.user === 'tool' ? 'tool' : 'user';
-      const msg: OpenAIChatMessage = { role, content: turn.message };
-      if (turn.tool_calls) msg.tool_calls = turn.tool_calls;
-      if (turn.tool_call_id) msg.tool_call_id = turn.tool_call_id;
-      if (turn.name) msg.name = turn.name;
-      messages.push(msg);
-    }
-  }
+function mapQueryInputToOpenRouter(input: QueryInput): OpenRouterChatBody {
   // Required: model. OpenRouter won't pick a default for us — caller
   // must supply one (Settings tab does this for every stage).
   if (!input.model) {
@@ -520,20 +416,7 @@ function mapQueryInputToOpenAI(input: QueryInput): {
       'OpenRouter requires an explicit model id (e.g. "anthropic/claude-3.5-sonnet"). Set per-stage model overrides on the Settings tab.',
     );
   }
-  const out: {
-    model: string;
-    messages: OpenAIChatMessage[];
-    temperature?: number;
-    plugins?: OpenRouterWebPlugin[];
-    tools?: import('../asksage/types').OpenAITool[];
-    tool_choice?: 'none' | 'auto' | 'required' | import('../asksage/types').OpenAIToolChoice;
-  } = {
-    model: input.model,
-    messages,
-  };
-  if (typeof input.temperature === 'number') out.temperature = input.temperature;
-  if (input.tools && input.tools.length > 0) out.tools = input.tools;
-  if (input.tool_choice) out.tool_choice = input.tool_choice;
+  const out: OpenRouterChatBody = mapQueryInputToOpenAIChatBody(input);
   // Web search: Ask Sage's `live` field (0/1/2) maps to OpenRouter's
   // `plugins: [{ id: 'web' }]`. We use max_results to roughly mirror
   // the Ask Sage modes — mode 1 is "give me web hits", mode 2 is
@@ -546,33 +429,4 @@ function mapQueryInputToOpenAI(input: QueryInput): {
     out.plugins = [{ id: 'web', max_results: 10 }];
   }
   return out;
-}
-
-function mapOpenAIResponseToQueryResponse(r: OpenAIChatCompletionResponse): QueryResponse {
-  const content = r.choices?.[0]?.message?.content ?? '';
-  const usage: QueryUsage | null = r.usage
-    ? {
-        prompt_tokens: r.usage.prompt_tokens,
-        completion_tokens: r.usage.completion_tokens,
-        total_tokens: r.usage.total_tokens,
-      }
-    : null;
-  const tool_calls = r.choices?.[0]?.message?.tool_calls;
-  return {
-    message: content,
-    response: 'OK',
-    status: 200,
-    uuid: r.id,
-    references: '',
-    embedding_down: false,
-    vectors_down: false,
-    usage,
-    tool_calls,
-  };
-}
-
-function stripCodeFence(text: string): string {
-  const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i);
-  if (fenced) return fenced[1]!.trim();
-  return text;
 }
