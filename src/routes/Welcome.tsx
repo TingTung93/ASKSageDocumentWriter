@@ -71,8 +71,9 @@ export function Welcome() {
     toast.info('Stored API key cleared');
   }
 
-  const connected = !!apiKey && !!models;
+  const connected = (provider === 'local_openai' || !!apiKey) && !!models;
   const hasKey = draftKey.trim().length > 0;
+  const canSubmit = draftProvider === 'local_openai' || hasKey;
 
   return (
     <main>
@@ -247,7 +248,7 @@ export function Welcome() {
 
           {/* Action buttons */}
           <div className="btn-row" style={{ marginTop: 'var(--space-4)' }}>
-            <button type="submit" disabled={isValidating || !hasKey} style={{ fontSize: 14 }}>
+            <button type="submit" disabled={isValidating || !canSubmit} style={{ fontSize: 14 }}>
               {isValidating ? (
                 <Spinner light label="Connecting…" />
               ) : connected ? (

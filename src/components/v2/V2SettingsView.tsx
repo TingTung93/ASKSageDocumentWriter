@@ -74,10 +74,17 @@ export function V2SettingsView() {
   }
 
   const connectionStatus = useMemo<'connected' | 'unverified' | 'none'>(() => {
-    if (!apiKey) return 'none';
     if (models && models.length > 0) return 'connected';
-    return 'unverified';
-  }, [apiKey, models]);
+    if (provider === 'local_openai' || apiKey) return 'unverified';
+    return 'none';
+  }, [apiKey, models, provider]);
+  const connectionStatusLabel =
+    connectionStatus === 'connected'
+      ? 'connected'
+      : connectionStatus === 'unverified'
+        ? provider === 'local_openai' ? 'not verified' : 'key set · not verified'
+        : 'no key';
+  const canTestConnection = draftProvider === 'local_openai' || draftKey.trim().length > 0;
 
   function onPickProvider(next: ProviderId) {
     if (next === draftProvider) return;
@@ -150,7 +157,7 @@ export function V2SettingsView() {
             </div>
             <span className={"s-status " + (connectionStatus === 'connected' ? '' : 'warn')}>
               <span className="d" />
-              {connectionStatus === 'connected' ? 'connected' : connectionStatus === 'unverified' ? 'key set · not verified' : 'no key'}
+              {connectionStatusLabel}
             </span>
           </div>
 
@@ -217,7 +224,7 @@ export function V2SettingsView() {
             </div>
 
             <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-              <button type="submit" className="btn btn-primary" disabled={isValidating || !draftKey.trim()}>
+              <button type="submit" className="btn btn-primary" disabled={isValidating || !canTestConnection}>
                 {isValidating ? 'Testing…' : 'Test connection'}
               </button>
               <button type="button" className="btn" onClick={onClear} disabled={!apiKey}>

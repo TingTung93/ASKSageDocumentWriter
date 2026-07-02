@@ -84,7 +84,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     });
   },
   setApiKey: (apiKey) => {
-    const nextApiKey = apiKey === '' ? null : apiKey;
+    const nextApiKey = apiKey === null || apiKey.trim() === '' ? null : apiKey;
     writeSession(SESSION_KEY_API, nextApiKey);
     set({ apiKey: nextApiKey });
   },

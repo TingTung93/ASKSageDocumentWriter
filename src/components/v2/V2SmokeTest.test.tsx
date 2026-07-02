@@ -7,11 +7,33 @@
 // need a full project + templates + drafts shape. They remain covered
 // by typecheck + the three-pane workflow that runs when a user drafts.
 
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 // ── Shared mocks ─────────────────────────────────────────────────
+const authMock = vi.hoisted(() => {
+  const defaultState = (): Record<string, unknown> => ({
+    provider: 'asksage',
+    apiKey: null,
+    baseUrl: 'https://api.asksage.health.mil',
+    models: null,
+    isValidating: false,
+    error: null,
+    setProvider: vi.fn(),
+    setApiKey: vi.fn(),
+    setBaseUrl: vi.fn(),
+    setModels: vi.fn(),
+    setValidating: vi.fn(),
+    setError: vi.fn(),
+    clear: vi.fn(),
+  });
+  return {
+    defaultState,
+    state: defaultState(),
+  };
+});
+
 // Dexie live queries — return undefined, matching Dexie's real behavior
 // of "query not resolved yet" on first render. Views MUST handle this.
 vi.mock('dexie-react-hooks', () => ({
@@ -38,22 +60,7 @@ vi.mock('../../lib/state/toast', () => ({
 
 vi.mock('../../lib/state/auth', () => ({
   useAuth: (selector?: (s: Record<string, unknown>) => unknown) => {
-    const state = {
-      provider: 'asksage',
-      apiKey: null,
-      baseUrl: 'https://api.asksage.health.mil',
-      models: null,
-      isValidating: false,
-      error: null,
-      setProvider: vi.fn(),
-      setApiKey: vi.fn(),
-      setBaseUrl: vi.fn(),
-      setModels: vi.fn(),
-      setValidating: vi.fn(),
-      setError: vi.fn(),
-      clear: vi.fn(),
-    };
-    return selector ? selector(state) : state;
+    return selector ? selector(authMock.state) : authMock.state;
   },
 }));
 
@@ -76,6 +83,10 @@ function withRouter(ui: React.ReactElement) {
 
 // ── Tests ───────────────────────────────────────────────────────
 describe('V2 view smoke tests', () => {
+  beforeEach(() => {
+    authMock.state = authMock.defaultState();
+  });
+
   it('V2FirstRun mounts and renders the first-run copy', async () => {
     const { V2FirstRun } = await import('./V2FirstRun');
     const { container, getByText } = render(withRouter(<V2FirstRun onDismiss={() => {}} />));
@@ -111,6 +122,22 @@ describe('V2 view smoke tests', () => {
     expect(getByText(/Test connection/i)).not.toBeNull();
     // Advanced-surface controls (V2SettingsAdvanced) require settings to load,
     // which is intentionally mocked as undefined in this smoke test.
+  });
+
+  it('V2SettingsView can test a restored local_openai provider without an API key', async () => {
+    authMock.state = {
+      ...authMock.defaultState(),
+      provider: 'local_openai',
+      apiKey: null,
+      baseUrl: 'http://localhost:11434/v1',
+      models: [{ id: 'qwen3:14b' }],
+    };
+
+    const { V2SettingsView } = await import('./V2SettingsView');
+    const { getByRole, getByText } = render(withRouter(<V2SettingsView />));
+
+    expect(getByText(/^connected$/i)).not.toBeNull();
+    expect(getByRole('button', { name: /Test connection/i })).not.toBeDisabled();
   });
 
   it('V2CommandPalette mounts with focus-capture input', async () => {
