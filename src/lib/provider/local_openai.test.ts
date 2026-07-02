@@ -3,6 +3,7 @@ import { AskSageError } from '../asksage/types';
 import {
   LOCAL_OPENAI_PRESETS,
   LocalOpenAIClient,
+  enrichLocalModelInfo,
   isLocalhostBaseUrl,
   probeLocalOpenAIEndpoint,
 } from './local_openai';
@@ -78,6 +79,34 @@ describe('LocalOpenAIClient', () => {
     const headers = (fetchMock.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer sk-local');
     expect(headers['Content-Type']).toBeUndefined();
+  });
+
+  it('enrichLocalModelInfo preserves provider-reported context_length over presets', () => {
+    const model = enrichLocalModelInfo({
+      id: 'qwen3:8b',
+      name: 'qwen3:8b',
+      object: 'model',
+      owned_by: 'local_openai',
+      created: 'na',
+      capabilities: {
+        context_length: 65536,
+        input_modalities: ['text'],
+        supported_parameters: ['temperature'],
+      },
+    });
+
+    expect(model.capabilities).toMatchObject({
+      context_length: 65536,
+      input_modalities: ['text'],
+      tool_calling: true,
+      json_output: true,
+      recommended_vram_gb: 8,
+    });
+    expect(model.capabilities?.supported_parameters).toEqual([
+      'temperature',
+      'tools',
+      'response_format',
+    ]);
   });
 
   it('query posts chat completions and maps tool calls', async () => {
@@ -291,5 +320,59 @@ describe('LocalOpenAIClient', () => {
       },
       warnings: [],
     });
+  });
+
+  it('probeLocalOpenAIEndpoint continues through JSON and embeddings when tool call request fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ data: [{ id: 'qwen3:8b' }] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'chat-probe',
+            choices: [{ message: { role: 'assistant', content: 'ok' } }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response('tools unsupported', { status: 400, statusText: 'Bad Request' }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'json-probe',
+            choices: [{ message: { role: 'assistant', content: '{"ok":true}' } }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [{ index: 0, embedding: [0.1, 0.2] }],
+            usage: { prompt_tokens: 2 },
+          }),
+          { status: 200 },
+        ),
+      );
+
+    const result = await probeLocalOpenAIEndpoint({
+      baseUrl: 'http://localhost:11434/v1',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.capabilities).toEqual({
+      models: true,
+      chat: true,
+      tools: false,
+      jsonOutput: true,
+      embeddings: true,
+    });
+    expect(result.warnings[0]).toContain('Tool call probe failed:');
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 });

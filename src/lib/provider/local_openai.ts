@@ -318,8 +318,12 @@ export function enrichLocalModelInfo(model: ModelInfo): ModelInfo {
 
   const capabilities: ModelCapabilities = {
     ...(model.capabilities ?? {}),
-    ...enrichment,
   };
+  capabilities.context_length ??= enrichment.context_length;
+  capabilities.tool_calling ??= enrichment.tool_calling;
+  capabilities.json_output ??= enrichment.json_output;
+  capabilities.recommended_vram_gb ??= enrichment.recommended_vram_gb;
+  capabilities.backend_notes ??= enrichment.backend_notes;
 
   const supported = new Set(capabilities.supported_parameters ?? []);
   if (enrichment.tool_calling) supported.add('tools');
@@ -388,39 +392,43 @@ export async function probeLocalOpenAIEndpoint({
     });
     result.capabilities.chat = true;
 
-    const toolResponse = await client.query({
-      model: result.model,
-      message: 'Use lookup_policy for document type PWS.',
-      temperature: 0,
-      tools: [
-        {
-          type: 'function',
-          function: {
-            name: 'lookup_policy',
-            description: 'Look up acquisition policy by document type.',
-            parameters: {
-              type: 'object',
-              properties: {
-                document_type: {
-                  type: 'string',
-                  enum: ['PWS'],
+    try {
+      const toolResponse = await client.query({
+        model: result.model,
+        message: 'Use lookup_policy for document type PWS.',
+        temperature: 0,
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'lookup_policy',
+              description: 'Look up acquisition policy by document type.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  document_type: {
+                    type: 'string',
+                    enum: ['PWS'],
+                  },
                 },
+                required: ['document_type'],
               },
-              required: ['document_type'],
             },
           },
+        ],
+        tool_choice: {
+          type: 'function',
+          function: { name: 'lookup_policy' },
         },
-      ],
-      tool_choice: {
-        type: 'function',
-        function: { name: 'lookup_policy' },
-      },
-    });
-    result.capabilities.tools = (toolResponse.tool_calls ?? []).some(
-      (call) => call.function.name === 'lookup_policy',
-    );
-    if (!result.capabilities.tools) {
-      warnings.push('Tool probe completed but did not return a lookup_policy tool call.');
+      });
+      result.capabilities.tools = (toolResponse.tool_calls ?? []).some(
+        (call) => call.function.name === 'lookup_policy',
+      );
+      if (!result.capabilities.tools) {
+        warnings.push('Tool calls were not returned in native OpenAI format.');
+      }
+    } catch (err) {
+      warnings.push(`Tool call probe failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     await client.queryJson<{ ok: boolean }>({
