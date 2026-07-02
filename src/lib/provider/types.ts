@@ -26,8 +26,7 @@
 
 import type { ModelInfo, QueryInput, QueryResponse } from '../asksage/types';
 
-export type KnownProviderId = 'asksage' | 'openrouter' | 'local_openai';
-export type ProviderId = string & {};
+export type ProviderId = 'asksage' | 'openrouter' | 'local_openai';
 
 /**
  * Provider capability flags. Used by callers (drafting chain, preflight,

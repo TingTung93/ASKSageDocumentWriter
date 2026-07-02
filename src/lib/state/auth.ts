@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ModelInfo } from '../asksage/types';
 import { defaultBaseUrlFor } from '../provider/factory';
+import type { LocalEndpointProbeResult } from '../provider/local_openai';
 import type { ProviderId } from '../provider/types';
 
 // Phase 0: API key lives in memory + sessionStorage for tab-refresh
@@ -33,6 +34,7 @@ function writeSession(name: string, value: string | null): void {
 
 function readProvider(): ProviderId {
   const raw = readSession(SESSION_KEY_PROVIDER);
+  if (raw === 'local_openai') return 'local_openai';
   return raw === 'openrouter' ? 'openrouter' : 'asksage';
 }
 
@@ -41,6 +43,7 @@ interface AuthState {
   apiKey: string | null;
   baseUrl: string;
   models: ModelInfo[] | null;
+  localProbe: LocalEndpointProbeResult | null;
   isValidating: boolean;
   error: string | null;
 
@@ -48,6 +51,7 @@ interface AuthState {
   setApiKey: (key: string | null) => void;
   setBaseUrl: (url: string) => void;
   setModels: (models: ModelInfo[] | null) => void;
+  setLocalProbe: (probe: LocalEndpointProbeResult | null) => void;
   setValidating: (v: boolean) => void;
   setError: (msg: string | null) => void;
   clear: () => void;
@@ -58,6 +62,7 @@ export const useAuth = create<AuthState>((set, get) => ({
   apiKey: readSession(SESSION_KEY_API),
   baseUrl: readSession(SESSION_KEY_BASE) ?? defaultBaseUrlFor(readProvider()),
   models: null,
+  localProbe: null,
   isValidating: false,
   error: null,
 
@@ -74,22 +79,25 @@ export const useAuth = create<AuthState>((set, get) => ({
       provider,
       baseUrl: nextBaseUrl,
       models: null,
+      localProbe: null,
       error: null,
     });
   },
   setApiKey: (apiKey) => {
-    writeSession(SESSION_KEY_API, apiKey);
-    set({ apiKey });
+    const nextApiKey = apiKey === '' ? null : apiKey;
+    writeSession(SESSION_KEY_API, nextApiKey);
+    set({ apiKey: nextApiKey });
   },
   setBaseUrl: (baseUrl) => {
     writeSession(SESSION_KEY_BASE, baseUrl);
-    set({ baseUrl });
+    set({ baseUrl, localProbe: null });
   },
   setModels: (models) => set({ models }),
+  setLocalProbe: (localProbe) => set({ localProbe }),
   setValidating: (isValidating) => set({ isValidating }),
   setError: (error) => set({ error }),
   clear: () => {
     writeSession(SESSION_KEY_API, null);
-    set({ apiKey: null, models: null, error: null, isValidating: false });
+    set({ apiKey: null, models: null, localProbe: null, error: null, isValidating: false });
   },
 }));

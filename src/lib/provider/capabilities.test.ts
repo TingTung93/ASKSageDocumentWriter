@@ -110,6 +110,18 @@ describe('validateModelForStage', () => {
     const m = model('opaque/model', { context_length: 200_000 });
     expect(validateModelForStage(m, 'drafting').compatible).toBe(true);
   });
+
+  it('passes a local drafting model without tool or JSON metadata', () => {
+    const m = model('qwen3:14b', {
+      context_length: 32768,
+      input_modalities: ['text'],
+      output_modalities: ['text'],
+    });
+    expect(validateModelForStage(m, 'drafting')).toEqual({
+      compatible: true,
+      reasons: [],
+    });
+  });
 });
 
 describe('filterModelsForStage', () => {

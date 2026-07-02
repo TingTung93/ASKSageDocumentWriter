@@ -55,6 +55,7 @@ export function V2SettingsView() {
   const providerRefs = useRef<Record<ProviderId, HTMLDivElement | null>>({
     asksage: null,
     openrouter: null,
+    local_openai: null,
   });
 
   const [draftProvider, setDraftProvider] = useState<ProviderId>(provider);

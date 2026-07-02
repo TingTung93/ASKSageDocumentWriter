@@ -8,6 +8,7 @@
 // `state.provider === 'asksage'` — guard the affordance in the UI.
 
 import { AskSageClient } from '../asksage/client';
+import { LocalOpenAIClient } from './local_openai';
 import { OpenRouterClient } from './openrouter';
 import type { LLMClient, ProviderId } from './types';
 import type { ModelStage } from '../settings/types';
@@ -20,6 +21,9 @@ export interface ProviderState {
 
 /** Build the right client for the active provider. */
 export function createLLMClient(state: ProviderState): LLMClient {
+  if (state.provider === 'local_openai') {
+    return new LocalOpenAIClient(state.baseUrl, state.apiKey);
+  }
   if (state.provider === 'openrouter') {
     return new OpenRouterClient(state.apiKey, state.baseUrl);
   }
@@ -32,10 +36,11 @@ export function createLLMClient(state: ProviderState): LLMClient {
  */
 export function defaultBaseUrlFor(provider: ProviderId): string {
   switch (provider) {
+    case 'local_openai':
+      return 'http://localhost:11434/v1';
     case 'openrouter':
       return 'https://openrouter.ai/api/v1';
     case 'asksage':
-    default:
       return 'https://api.asksage.health.mil';
   }
 }
@@ -43,10 +48,11 @@ export function defaultBaseUrlFor(provider: ProviderId): string {
 /** Human-readable label for UI. */
 export function providerLabel(provider: ProviderId): string {
   switch (provider) {
+    case 'local_openai':
+      return 'Local OpenAI-compatible (Ollama, llama.cpp, LM Studio — non-CUI only)';
     case 'openrouter':
       return 'OpenRouter (commercial — non-CUI only)';
     case 'asksage':
-    default:
       return 'Ask Sage (DHA health.mil tenant — CUI authorized)';
   }
 }
@@ -61,9 +67,16 @@ const ASK_SAGE_DRAFTING_DEFAULT = 'google-claude-46-sonnet';
 const ASK_SAGE_SYNTHESIS_DEFAULT = 'google-claude-46-sonnet';
 const OPENROUTER_DRAFTING_SUGGESTION = 'anthropic/claude-sonnet-4.5';
 const OPENROUTER_SYNTHESIS_SUGGESTION = 'anthropic/claude-sonnet-4.5';
+const LOCAL_OPENAI_STRONG_DEFAULT = 'qwen3:14b';
+const LOCAL_OPENAI_FAST_DEFAULT = 'qwen3:8b';
 
 /** Model id shown as the "default" hint in Settings for a given stage. */
 export function defaultModelFor(provider: ProviderId, stage: ModelStage): string {
+  if (provider === 'local_openai') {
+    return stage === 'cleanup' || stage === 'schema_edit'
+      ? LOCAL_OPENAI_FAST_DEFAULT
+      : LOCAL_OPENAI_STRONG_DEFAULT;
+  }
   if (provider === 'openrouter') {
     return stage === 'synthesis'
       ? OPENROUTER_SYNTHESIS_SUGGESTION
