@@ -88,6 +88,23 @@ Responsibilities:
 - Local audit endpoint names.
 - Local model capability enrichment from known presets.
 
+## Canonical Tool Format
+
+The app should use the OpenAI tool-calling envelope as the canonical internal representation for LLM tools across every provider:
+
+- Request tools: `tools: OpenAITool[]`
+- Request tool policy: `tool_choice: 'none' | 'auto' | 'required' | OpenAIToolChoice`
+- Response tool calls: `tool_calls: OpenAIToolCall[]`
+- Tool result turns: conversation messages with `user: 'tool'`, `tool_call_id`, `name`, and `message`
+
+Provider adapters are responsible for converting this canonical shape at the edge:
+
+- OpenAI-compatible providers, including OpenRouter and Local OpenAI, pass the canonical shape through directly.
+- Ask Sage receives the same canonical fields through `QueryInput` when the server supports tool calls.
+- Providers that do not support tools leave the request unchanged only when the call site does not require tools; tool-required workflows must fail fast with a clear unsupported-capability error.
+
+This keeps future agent workflows independent of backend-specific tool schemas. The rest of the app should not introduce provider-specific tool envelopes.
+
 ## Connection UX
 
 Add Local OpenAI as a provider option in the connection views.
@@ -144,6 +161,8 @@ For local models, the UI must distinguish advertised context from practical cont
 ## Tool Calling
 
 The branch should validate tool-call transport but should not introduce user-facing agent tools yet.
+
+All tool probes and future local-agent workflows should use the canonical OpenAI tool format described above. Local backend differences are adapter concerns, not workflow concerns.
 
 Tool probe:
 
