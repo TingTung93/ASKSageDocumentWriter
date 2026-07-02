@@ -534,15 +534,6 @@ export function formatModelOptionLabel(m: ModelInfo): string {
     const output = caps.output_modalities?.join('+') || '?';
     parts.push(`${input}→${output}`);
   }
-  if (caps?.tool_calling !== undefined) {
-    parts.push(caps.tool_calling ? 'tools: native' : 'tools: not verified');
-  }
-  if (caps?.json_output === true) {
-    parts.push('JSON: verified');
-  }
-  if (caps?.recommended_vram_gb) {
-    parts.push(`VRAM: ${caps.recommended_vram_gb} GB`);
-  }
   if (!caps) {
     parts.push('capabilities unknown');
   }

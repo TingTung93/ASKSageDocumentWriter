@@ -162,7 +162,11 @@ describe('Settings model labels', () => {
       },
     };
 
-    expect(formatModelOptionLabel(model)).toContain('41K ctx');
+    const optionLabel = formatModelOptionLabel(model);
+    expect(optionLabel).toContain('41K ctx');
+    expect(optionLabel).not.toContain('tools: native');
+    expect(optionLabel).not.toContain('JSON: verified');
+    expect(optionLabel).not.toContain('VRAM');
 
     const summary = formatModelCapabilitySummary(model);
     expect(summary).toContain('tools: native');
