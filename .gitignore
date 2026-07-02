@@ -11,6 +11,7 @@ node_modules/
 dist/
 build/
 .vite/
+.worktrees/
 
 # release/ IS tracked. The DHA workstation cannot run npm/node, so the
 # built single-file artifact (release/index.html) is the deliverable
