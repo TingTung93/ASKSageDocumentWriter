@@ -74,6 +74,12 @@ export function Welcome() {
   const connected = (provider === 'local_openai' || !!apiKey) && !!models;
   const hasKey = draftKey.trim().length > 0;
   const canSubmit = draftProvider === 'local_openai' || hasKey;
+  const connectedProviderLabel =
+    provider === 'local_openai'
+      ? 'Local OpenAI-compatible (non-CUI, default local endpoint)'
+      : provider === 'openrouter'
+        ? 'OpenRouter'
+        : 'Ask Sage';
 
   return (
     <main>
@@ -120,7 +126,7 @@ export function Welcome() {
       {connected && (
         <div className="success-banner" style={{ marginTop: 'var(--space-4)' }}>
           <strong>You're connected!</strong> Using{' '}
-          {provider === 'openrouter' ? 'OpenRouter' : 'Ask Sage'} with{' '}
+          {connectedProviderLabel} with{' '}
           {models?.length ?? 0} AI models available.
           <div style={{ marginTop: '0.4rem' }}>
             <strong>What to do next:</strong>{' '}

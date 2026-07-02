@@ -252,13 +252,17 @@ export function V2SettingsView() {
             </div>
           </div>
           {STAGE_META.map((s) => {
-            const suggested = defaultModelFor(draftProvider, s.stage);
+            const showLocalNeutralRouting = draftProvider === 'local_openai';
+            const suggested = showLocalNeutralRouting ? '' : defaultModelFor(draftProvider, s.stage);
+            const modelHint = showLocalNeutralRouting
+              ? 'local model selected in backend'
+              : `${draftProvider === 'openrouter' ? 'suggested' : 'default'}: ${suggested}`;
             return (
               <div key={s.stage} className="model-row">
                 <div>
                   <div className="mr-name">{s.label}</div>
                   <div style={{ fontSize: 11, color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', marginTop: 2 }}>
-                    {draftProvider === 'openrouter' ? 'suggested: ' : 'default: '}{suggested}
+                    {modelHint}
                   </div>
                 </div>
                 <span className={"mr-role " + s.role}>{s.role}</span>
@@ -267,7 +271,7 @@ export function V2SettingsView() {
                   style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
                   value={modelValueFor(s.stage)}
                   onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
-                  placeholder={suggested}
+                  placeholder={showLocalNeutralRouting ? 'local backend model' : suggested}
                   aria-label={`${s.label} model override`}
                 />
               </div>

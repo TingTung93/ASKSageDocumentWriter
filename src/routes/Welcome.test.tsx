@@ -31,9 +31,11 @@ function withRouter(ui: React.ReactElement) {
 
 describe('Welcome local provider gate', () => {
   it('treats restored local_openai state with models and no API key as connected', () => {
-    const { getByText, getByRole } = render(withRouter(<Welcome />));
+    const { getByText, getByRole, queryByText } = render(withRouter(<Welcome />));
 
     expect(getByText(/You're connected!/i)).not.toBeNull();
+    expect(getByText(/Using Local OpenAI-compatible/i)).not.toBeNull();
+    expect(queryByText(/Using Ask Sage/i)).toBeNull();
     expect(getByRole('button', { name: /Reconnect/i })).not.toBeDisabled();
   });
 });

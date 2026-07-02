@@ -134,10 +134,12 @@ describe('V2 view smoke tests', () => {
     };
 
     const { V2SettingsView } = await import('./V2SettingsView');
-    const { getByRole, getByText } = render(withRouter(<V2SettingsView />));
+    const { getAllByText, getByRole, getByText, queryByText } = render(withRouter(<V2SettingsView />));
 
     expect(getByText(/^connected$/i)).not.toBeNull();
     expect(getByRole('button', { name: /Test connection/i })).not.toBeDisabled();
+    expect(getAllByText(/local model selected in backend/i)).toHaveLength(3);
+    expect(queryByText(/qwen3/i)).toBeNull();
   });
 
   it('V2CommandPalette mounts with focus-capture input', async () => {
