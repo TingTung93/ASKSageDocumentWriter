@@ -142,4 +142,58 @@ describe('Settings model labels', () => {
       'Capabilities unknown; this provider did not return context window or modality metadata.',
     );
   });
+
+  it('includes local capability recommendations in model labels and summaries', () => {
+    const model: ModelInfo = {
+      id: 'qwen3:8b',
+      name: 'qwen3:8b',
+      object: 'model',
+      owned_by: 'local_openai',
+      created: 'na',
+      capabilities: {
+        context_length: 40960,
+        input_modalities: ['text'],
+        output_modalities: ['text'],
+        supported_parameters: ['temperature', 'tools'],
+        tool_calling: true,
+        json_output: true,
+        recommended_vram_gb: 8,
+        backend_notes: 'Qwen3 8B local model; balanced default for local tool and JSON probes.',
+      },
+    };
+
+    expect(formatModelOptionLabel(model)).toContain('41K ctx');
+
+    const summary = formatModelCapabilitySummary(model);
+    expect(summary).toContain('tools: native');
+    expect(summary).toContain('JSON: verified');
+    expect(summary).toContain('recommended VRAM: 8 GB');
+    expect(summary).toContain('Qwen3 8B local model; balanced default for local tool and JSON probes.');
+  });
+
+  it('warns that long local context depends on backend settings and KV cache memory', () => {
+    const model: ModelInfo = {
+      id: 'qwen3:30b',
+      name: 'qwen3:30b',
+      object: 'model',
+      owned_by: 'local_openai',
+      created: 'na',
+      capabilities: {
+        context_length: 131072,
+        input_modalities: ['text'],
+        output_modalities: ['text'],
+        tool_calling: false,
+        json_output: true,
+        recommended_vram_gb: 24,
+        backend_notes: 'Large Qwen3 local model; prefer high-VRAM systems or quantized builds.',
+      },
+    };
+
+    const summary = formatModelCapabilitySummary(model);
+    expect(summary).toContain('tools: not verified');
+    expect(summary).toContain('JSON: verified');
+    expect(summary).toContain(
+      'full context depends on backend settings',
+    );
+  });
 });

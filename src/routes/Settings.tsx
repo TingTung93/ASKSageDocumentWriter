@@ -534,6 +534,15 @@ export function formatModelOptionLabel(m: ModelInfo): string {
     const output = caps.output_modalities?.join('+') || '?';
     parts.push(`${input}→${output}`);
   }
+  if (caps?.tool_calling !== undefined) {
+    parts.push(caps.tool_calling ? 'tools: native' : 'tools: not verified');
+  }
+  if (caps?.json_output === true) {
+    parts.push('JSON: verified');
+  }
+  if (caps?.recommended_vram_gb) {
+    parts.push(`VRAM: ${caps.recommended_vram_gb} GB`);
+  }
   if (!caps) {
     parts.push('capabilities unknown');
   }
@@ -563,6 +572,21 @@ export function formatModelCapabilitySummary(m: ModelInfo): string {
   }
   if (caps.supported_parameters?.length) {
     parts.push(`supports: ${caps.supported_parameters.join(', ')}`);
+  }
+  if (caps.tool_calling !== undefined) {
+    parts.push(caps.tool_calling ? 'tools: native' : 'tools: not verified');
+  }
+  if (caps.json_output === true) {
+    parts.push('JSON: verified');
+  }
+  if (caps.recommended_vram_gb) {
+    parts.push(`recommended VRAM: ${caps.recommended_vram_gb} GB`);
+  }
+  if (caps.backend_notes) {
+    parts.push(caps.backend_notes);
+  }
+  if (caps.context_length && caps.context_length >= 128_000 && caps.recommended_vram_gb) {
+    parts.push('Warning: full context depends on backend settings and KV cache memory.');
   }
   return parts.length > 0 ? parts.join(' · ') : 'Capability metadata returned, but no specific limits were listed.';
 }
@@ -620,6 +644,12 @@ function ModelCatalogRefresh({
         context windows, modalities, supported parameters, and pricing. Ask Sage
         currently returns model IDs only, so those rows are shown with unknown
         capabilities and are not rejected by compatibility filtering.
+        {provider === 'local_openai' && (
+          <>
+            {' '}Local endpoints often return sparse metadata; model recommendations
+            are best-effort and should be verified with the endpoint check.
+          </>
+        )}
         {provider === 'openrouter' && ' Refresh after changing your OpenRouter account or model access.'}
       </p>
     </div>
