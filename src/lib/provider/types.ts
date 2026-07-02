@@ -13,6 +13,11 @@
 //      routing through the gov tenant. Supports `getModels`, `query`,
 //      and `queryJson` only. Dataset/file/training calls throw.
 //
+//   3. `local_openai` — local OpenAI-compatible servers such as
+//      Ollama, llama.cpp, and LM Studio. Useful for non-CUI offline
+//      drafting experiments. Supports `getModels`, `query`, `queryJson`,
+//      and a best-effort embeddings method when the local backend does.
+//
 // `LLMClient` is the structural surface both providers implement. It
 // covers the methods the drafting/synthesis/refine pipeline relies on.
 // `AskSageClient` is a *subtype* of `LLMClient` (it has all the methods
@@ -21,7 +26,8 @@
 
 import type { ModelInfo, QueryInput, QueryResponse } from '../asksage/types';
 
-export type ProviderId = 'asksage' | 'openrouter';
+export type KnownProviderId = 'asksage' | 'openrouter' | 'local_openai';
+export type ProviderId = string & {};
 
 /**
  * Provider capability flags. Used by callers (drafting chain, preflight,
@@ -51,6 +57,12 @@ export interface ProviderCapabilities {
    * but should not rely on it returning fresh content.
    */
   liveSearch: boolean;
+  /** OpenAI-compatible function/tool calling. */
+  tools?: boolean;
+  /** OpenAI-compatible structured JSON output prompting. */
+  jsonOutput?: boolean;
+  /** OpenAI-compatible embeddings endpoint. */
+  embeddings?: boolean;
 }
 
 /**

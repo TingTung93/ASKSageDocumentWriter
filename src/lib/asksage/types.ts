@@ -47,6 +47,14 @@ export interface ModelCapabilities {
    * our pipeline relies on (currently just `temperature`).
    */
   supported_parameters?: string[];
+  /** True when the model is known to support OpenAI-compatible tool calls. */
+  tool_calling?: boolean;
+  /** True when the model is known to reliably produce strict JSON output. */
+  json_output?: boolean;
+  /** Practical local VRAM tier for this model family and size. */
+  recommended_vram_gb?: 8 | 16 | 24;
+  /** Local backend/runtime notes surfaced in model pickers and probes. */
+  backend_notes?: string;
 }
 
 export interface GetModelsResponse {
