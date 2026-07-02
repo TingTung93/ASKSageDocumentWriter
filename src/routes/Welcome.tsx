@@ -37,6 +37,7 @@ export function Welcome() {
   const [draftKey, setDraftKey] = useState(apiKey ?? '');
   const [draftBase, setDraftBase] = useState(baseUrl);
   const [draftProvider, setDraftProvider] = useState<ProviderId>(provider);
+  const [localPresetId, setLocalPresetId] = useState<LocalPresetId>(() => localPresetIdForBase(baseUrl));
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -44,7 +45,27 @@ export function Welcome() {
     if (next === draftProvider) return;
     const wasOnDefault = draftBase.trim() === defaultBaseUrlFor(draftProvider);
     setDraftProvider(next);
-    if (wasOnDefault) setDraftBase(defaultBaseUrlFor(next));
+    if (wasOnDefault) {
+      const nextBase = defaultBaseUrlFor(next);
+      setDraftBase(nextBase);
+      if (next === 'local_openai') setLocalPresetId(localPresetIdForBase(nextBase));
+    } else if (next === 'local_openai') {
+      setLocalPresetId(localPresetIdForBase(draftBase));
+    }
+  }
+
+  function onPickLocalPreset(next: LocalPresetId) {
+    setLocalPresetId(next);
+    if (next === 'custom') return;
+    const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
+    if (preset) setDraftBase(preset.baseUrl);
+  }
+
+  function onDraftBaseChange(nextBase: string) {
+    setDraftBase(nextBase);
+    if (draftProvider === 'local_openai') {
+      setLocalPresetId(localPresetIdForBase(nextBase));
+    }
   }
 
   async function validate(e: FormEvent) {
@@ -94,7 +115,6 @@ export function Welcome() {
   const connected = (provider === 'local_openai' || !!apiKey) && !!models;
   const hasKey = draftKey.trim().length > 0;
   const canSubmit = draftProvider === 'local_openai' || hasKey;
-  const localBackendPreset = localPresetIdForBase(draftBase);
   const showLocalPrivacyWarning =
     draftProvider === 'local_openai' &&
     draftBase.trim().length > 0 &&
@@ -213,12 +233,8 @@ export function Welcome() {
               <label htmlFor="localBackendPreset">Local backend</label>
               <select
                 id="localBackendPreset"
-                value={localBackendPreset}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
-                  if (preset) setDraftBase(preset.baseUrl);
-                }}
+                value={localPresetId}
+                onChange={(e) => onPickLocalPreset(e.target.value as LocalPresetId)}
                 style={{ fontSize: 14 }}
               >
                 {LOCAL_OPENAI_PRESETS.map((preset) => (
@@ -319,7 +335,7 @@ export function Welcome() {
                 type="text"
                 className="mono"
                 value={draftBase}
-                onChange={(e) => setDraftBase(e.target.value)}
+                onChange={(e) => onDraftBaseChange(e.target.value)}
                 spellCheck={false}
                 autoComplete="off"
               />

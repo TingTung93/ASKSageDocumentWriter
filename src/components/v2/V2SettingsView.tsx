@@ -82,6 +82,7 @@ export function V2SettingsView() {
   const [draftProvider, setDraftProvider] = useState<ProviderId>(provider);
   const [draftKey, setDraftKey] = useState(apiKey ?? '');
   const [draftBase, setDraftBase] = useState(baseUrl);
+  const [localPresetId, setLocalPresetId] = useState<LocalPresetId>(() => localPresetIdForBase(baseUrl));
   const [showKey, setShowKey] = useState(false);
 
   const settings = useLiveQuery(() => loadSettings(), []);
@@ -106,7 +107,6 @@ export function V2SettingsView() {
         ? provider === 'local_openai' ? 'not verified' : 'key set · not verified'
         : 'no key';
   const canTestConnection = draftProvider === 'local_openai' || draftKey.trim().length > 0;
-  const localBackendPreset = localPresetIdForBase(draftBase);
   const showLocalPrivacyWarning =
     draftProvider === 'local_openai' &&
     draftBase.trim().length > 0 &&
@@ -116,7 +116,27 @@ export function V2SettingsView() {
     if (next === draftProvider) return;
     const wasOnDefault = draftBase.trim() === defaultBaseUrlFor(draftProvider);
     setDraftProvider(next);
-    if (wasOnDefault) setDraftBase(defaultBaseUrlFor(next));
+    if (wasOnDefault) {
+      const nextBase = defaultBaseUrlFor(next);
+      setDraftBase(nextBase);
+      if (next === 'local_openai') setLocalPresetId(localPresetIdForBase(nextBase));
+    } else if (next === 'local_openai') {
+      setLocalPresetId(localPresetIdForBase(draftBase));
+    }
+  }
+
+  function onPickLocalPreset(next: LocalPresetId) {
+    setLocalPresetId(next);
+    if (next === 'custom') return;
+    const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
+    if (preset) setDraftBase(preset.baseUrl);
+  }
+
+  function onDraftBaseChange(nextBase: string) {
+    setDraftBase(nextBase);
+    if (draftProvider === 'local_openai') {
+      setLocalPresetId(localPresetIdForBase(nextBase));
+    }
   }
 
   async function onValidate(e: FormEvent) {
@@ -229,12 +249,8 @@ export function V2SettingsView() {
                     <label htmlFor="v2-settings-local-backend">Local backend</label>
                     <select
                       id="v2-settings-local-backend"
-                      value={localBackendPreset}
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
-                        if (preset) setDraftBase(preset.baseUrl);
-                      }}
+                      value={localPresetId}
+                      onChange={(e) => onPickLocalPreset(e.target.value as LocalPresetId)}
                     >
                       {LOCAL_OPENAI_PRESETS.map((preset) => (
                         <option key={preset.id} value={preset.id}>{preset.name}</option>
@@ -299,7 +315,7 @@ export function V2SettingsView() {
                   className="mono"
                   type="url"
                   value={draftBase}
-                  onChange={(e) => setDraftBase(e.target.value)}
+                  onChange={(e) => onDraftBaseChange(e.target.value)}
                   placeholder="https://api.asksage.health.mil"
                 />
                 <div className="hint">

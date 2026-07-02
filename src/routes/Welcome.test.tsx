@@ -132,6 +132,22 @@ describe('Welcome local provider gate', () => {
     expect(getByLabelText(/Server URL/i)).toHaveValue('http://localhost:11434/v1');
   });
 
+  it('keeps the custom local backend selected while leaving the current URL editable', () => {
+    const { getByLabelText } = render(withRouter(<Welcome />));
+    const selector = getByLabelText(/Local backend/i);
+    const serverUrl = getByLabelText(/Server URL/i);
+
+    fireEvent.change(selector, { target: { value: 'custom' } });
+
+    expect(selector).toHaveValue('custom');
+    expect(serverUrl).toHaveValue('http://localhost:11434/v1');
+
+    fireEvent.change(serverUrl, { target: { value: 'http://localhost:9999/v1' } });
+
+    expect(selector).toHaveValue('custom');
+    expect(serverUrl).toHaveValue('http://localhost:9999/v1');
+  });
+
   it('warns when the Local OpenAI base URL is not localhost', () => {
     authMock.state = {
       ...authMock.defaultState(),
