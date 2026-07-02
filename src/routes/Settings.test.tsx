@@ -3,6 +3,17 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ModelInfo } from '../lib/asksage/types';
 
+const mockAuth = vi.hoisted(() => ({
+  state: {
+    apiKey: 'test-key' as string | null,
+    baseUrl: 'https://test',
+    provider: 'asksage',
+    models: [] as ModelInfo[],
+    setModels: vi.fn(),
+    setError: vi.fn(),
+  },
+}));
+
 const MOCK_SETTINGS = {
   models: { synthesis: null, drafting: null, critic: null, cleanup: null, schema_edit: null },
   cost: {
@@ -44,7 +55,7 @@ vi.mock('../lib/settings/store', () => ({
 
 vi.mock('../lib/state/auth', () => ({
   useAuth: (selector: (s: Record<string, unknown>) => unknown) =>
-    selector({ apiKey: 'test-key', baseUrl: 'https://test', provider: 'asksage', models: [] }),
+    selector(mockAuth.state),
 }));
 
 vi.mock('../lib/state/toast', () => ({
@@ -64,6 +75,10 @@ function renderSettings() {
 describe('Settings route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuth.state.apiKey = 'test-key';
+    mockAuth.state.baseUrl = 'https://test';
+    mockAuth.state.provider = 'asksage';
+    mockAuth.state.models = [];
   });
 
   it('renders the heading', () => {
@@ -96,6 +111,17 @@ describe('Settings route', () => {
   it('renders a refresh models and capabilities button', () => {
     renderSettings();
     expect(screen.getByRole('button', { name: /refresh models and capabilities/i })).toBeInTheDocument();
+  });
+
+  it('allows local model refresh without an API key', () => {
+    mockAuth.state.provider = 'local_openai';
+    mockAuth.state.baseUrl = 'http://localhost:11434/v1';
+    mockAuth.state.apiKey = null;
+
+    renderSettings();
+
+    expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /refresh models and capabilities/i })).toBeEnabled();
   });
 });
 

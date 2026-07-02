@@ -83,6 +83,7 @@ export function Settings() {
   // since the free tier has aggressive rate limits.
   const [pricingFilter, setPricingFilter] = useState<PricingFilter>('all');
   const [refreshingModels, setRefreshingModels] = useState(false);
+  const hasProviderAccess = provider === 'local_openai' || !!apiKey;
 
   // Compatibility filter is session-only. ON by default — hides
   // OpenRouter models whose advertised context window / modalities /
@@ -103,14 +104,14 @@ export function Settings() {
   );
 
   async function refreshModels() {
-    if (!apiKey) {
+    if (provider !== 'local_openai' && !apiKey) {
       toast.error('Connect on the Connection tab before refreshing models');
       return;
     }
     setRefreshingModels(true);
     setError(null);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const nextModels = await client.getModels();
       setModels(nextModels);
       const capabilityCount = nextModels.filter((m) => m.capabilities).length;
@@ -147,7 +148,7 @@ export function Settings() {
       </p>
 
       <h2>AI model preferences</h2>
-      {!apiKey && (
+      {!hasProviderAccess && (
         <EmptyState
           title="Not connected"
           body={
@@ -178,7 +179,7 @@ export function Settings() {
         provider={provider}
         models={models ?? []}
         refreshing={refreshingModels}
-        disabled={!apiKey}
+        disabled={!hasProviderAccess}
         onRefresh={() => void refreshModels()}
       />
 
