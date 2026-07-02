@@ -32,6 +32,10 @@ function writeSession(name: string, value: string | null): void {
   }
 }
 
+function normalizeApiKey(apiKey: string | null): string | null {
+  return apiKey === null || apiKey.trim() === '' ? null : apiKey;
+}
+
 function readProvider(): ProviderId {
   const raw = readSession(SESSION_KEY_PROVIDER);
   if (raw === 'local_openai') return 'local_openai';
@@ -59,7 +63,7 @@ interface AuthState {
 
 export const useAuth = create<AuthState>((set, get) => ({
   provider: readProvider(),
-  apiKey: readSession(SESSION_KEY_API),
+  apiKey: normalizeApiKey(readSession(SESSION_KEY_API)),
   baseUrl: readSession(SESSION_KEY_BASE) ?? defaultBaseUrlFor(readProvider()),
   models: null,
   localProbe: null,
@@ -84,7 +88,7 @@ export const useAuth = create<AuthState>((set, get) => ({
     });
   },
   setApiKey: (apiKey) => {
-    const nextApiKey = apiKey === null || apiKey.trim() === '' ? null : apiKey;
+    const nextApiKey = normalizeApiKey(apiKey);
     writeSession(SESSION_KEY_API, nextApiKey);
     set({ apiKey: nextApiKey });
   },

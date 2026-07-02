@@ -71,6 +71,14 @@ describe('auth state local provider support', () => {
     expect(sessionStorage.getItem(SESSION_KEY_API)).toBeNull();
   });
 
+  it('hydrates a whitespace session API key as null', async () => {
+    sessionStorage.setItem(SESSION_KEY_API, '   ');
+
+    const useAuth = await loadAuth();
+
+    expect(useAuth.getState().apiKey).toBeNull();
+  });
+
   it('setLocalProbe stores a probe result and clear removes it', async () => {
     const useAuth = await loadAuth();
     const probe = probeResult();
