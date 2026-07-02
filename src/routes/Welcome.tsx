@@ -3,6 +3,12 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/state/auth';
 import { createLLMClient, defaultBaseUrlFor } from '../lib/provider/factory';
 import type { ProviderId } from '../lib/provider/types';
+import {
+  LOCAL_OPENAI_PRESETS,
+  isLocalhostBaseUrl,
+  probeLocalOpenAIEndpoint,
+  type LocalEndpointProbeResult,
+} from '../lib/provider/local_openai';
 import { Diagnostics } from '../components/Diagnostics';
 import { Spinner } from '../components/Spinner';
 import { StepIndicator } from '../components/StepIndicator';
@@ -15,12 +21,14 @@ export function Welcome() {
     apiKey,
     baseUrl,
     models,
+    localProbe,
     isValidating,
     error,
     setProvider,
     setApiKey,
     setBaseUrl,
     setModels,
+    setLocalProbe,
     setValidating,
     setError,
     clear,
@@ -44,21 +52,33 @@ export function Welcome() {
     setError(null);
     setValidating(true);
     setModels(null);
+    setLocalProbe(null);
     try {
+      const trimmedBase = draftBase.trim();
+      const trimmedKey = draftKey.trim();
       if (draftProvider !== provider) setProvider(draftProvider);
       const client = createLLMClient({
         provider: draftProvider,
-        baseUrl: draftBase.trim(),
-        apiKey: draftKey.trim(),
+        baseUrl: trimmedBase,
+        apiKey: trimmedKey,
       });
       const list = await client.getModels();
-      setBaseUrl(draftBase.trim());
-      setApiKey(draftKey.trim());
+      setBaseUrl(trimmedBase);
+      setApiKey(trimmedKey);
       setModels(list);
+      if (draftProvider === 'local_openai') {
+        const probe = await probeLocalOpenAIEndpoint({
+          baseUrl: trimmedBase,
+          apiKey: trimmedKey,
+          model: list[0]?.id,
+        });
+        setLocalProbe(probe);
+      }
       toast.success(`Connected — ${list.length} models available`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
+      setLocalProbe(null);
       toast.error('Connection failed — see error below');
     } finally {
       setValidating(false);
@@ -74,6 +94,11 @@ export function Welcome() {
   const connected = (provider === 'local_openai' || !!apiKey) && !!models;
   const hasKey = draftKey.trim().length > 0;
   const canSubmit = draftProvider === 'local_openai' || hasKey;
+  const localBackendPreset = localPresetIdForBase(draftBase);
+  const showLocalPrivacyWarning =
+    draftProvider === 'local_openai' &&
+    draftBase.trim().length > 0 &&
+    !isLocalhostBaseUrl(draftBase.trim());
   const connectedProviderLabel =
     provider === 'local_openai'
       ? 'Local OpenAI-compatible (non-CUI, default local endpoint)'
@@ -163,6 +188,15 @@ export function Welcome() {
                 onSelect={onPickProvider}
               />
               <ProviderPickCard
+                provider="local_openai"
+                mark="L"
+                name="Local OpenAI"
+                url="localhost / custom"
+                features={['Non-CUI by default', 'Ollama / llama.cpp']}
+                selected={draftProvider === 'local_openai'}
+                onSelect={onPickProvider}
+              />
+              <ProviderPickCard
                 provider="openrouter"
                 mark="O"
                 name="OpenRouter"
@@ -173,6 +207,40 @@ export function Welcome() {
               />
             </div>
           </fieldset>
+
+          {draftProvider === 'local_openai' && (
+            <div style={{ marginTop: 'var(--space-3)' }}>
+              <label htmlFor="localBackendPreset">Local backend</label>
+              <select
+                id="localBackendPreset"
+                value={localBackendPreset}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
+                  if (preset) setDraftBase(preset.baseUrl);
+                }}
+                style={{ fontSize: 14 }}
+              >
+                {LOCAL_OPENAI_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.name}</option>
+                ))}
+                <option value="custom">Custom</option>
+              </select>
+              <p className="note">
+                Most local backends do not require an API key. Use localhost endpoints for
+                non-CUI drafting experiments unless you have a trusted custom server.
+              </p>
+              {showLocalPrivacyWarning && (
+                <div className="callout" style={{ marginTop: 'var(--space-2)' }}>
+                  <strong>Local endpoint privacy check</strong>
+                  <p className="note" style={{ marginTop: '0.3rem', marginBottom: 0 }}>
+                    This Local OpenAI URL is not a localhost address. Confirm it is an
+                    intended non-CUI local or trusted server before sending document text.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* API key */}
           <label htmlFor="apiKey" style={{ marginTop: 'var(--space-4)' }}>
@@ -190,6 +258,14 @@ export function Welcome() {
                   <p style={{ margin: '0.4rem 0 0', fontSize: 12 }}>
                     Your key stays in this browser tab only and is erased when
                     you close the tab. It is never saved to disk.
+                  </p>
+                </>
+              ) : draftProvider === 'local_openai' ? (
+                <>
+                  <strong>Local OpenAI API key:</strong>
+                  <p style={{ margin: '0.4rem 0 0', fontSize: 12 }}>
+                    Most Ollama, llama.cpp, and LM Studio servers do not require a key.
+                    Leave this blank unless your custom local endpoint requires one.
                   </p>
                 </>
               ) : (
@@ -213,15 +289,18 @@ export function Welcome() {
             placeholder={
               draftProvider === 'asksage'
                 ? 'Paste your Ask Sage API key here'
-                : 'Paste your OpenRouter API key here (starts with sk-or-...)'
+                : draftProvider === 'local_openai'
+                  ? 'Optional for most local backends'
+                  : 'Paste your OpenRouter API key here (starts with sk-or-...)'
             }
             spellCheck={false}
             autoComplete="off"
             style={{ fontSize: 14 }}
           />
           <p className="note">
-            Your key is stored only in this browser tab and is never saved to
-            your computer. Closing the tab erases it.
+            {draftProvider === 'local_openai'
+              ? 'Most local backends do not require an API key. If you enter one, it stays only in this browser tab.'
+              : 'Your key is stored only in this browser tab and is never saved to your computer. Closing the tab erases it.'}
           </p>
 
           {/* Advanced: Base URL (hidden by default) */}
@@ -247,7 +326,9 @@ export function Welcome() {
               <p className="note">
                 {draftProvider === 'asksage'
                   ? 'This points to the DHA health.mil Ask Sage server. Only change it if IT gave you a different address.'
-                  : 'This points to the OpenRouter service. Only change it if you have a custom setup.'}
+                  : draftProvider === 'local_openai'
+                    ? 'This should include /v1 for OpenAI-compatible local servers. Use Custom above for a non-preset endpoint.'
+                    : 'This points to the OpenRouter service. Only change it if you have a custom setup.'}
               </p>
             </div>
           </details>
@@ -270,6 +351,9 @@ export function Welcome() {
             )}
           </div>
         </form>
+        {draftProvider === 'local_openai' && localProbe && (
+          <LocalProbeSummary probe={localProbe} />
+        )}
       </div>
 
       {/* ── Error display (friendlier) ───────────────────────────── */}
@@ -386,6 +470,49 @@ function ProviderPickCard({
           <span key={f}>{f}</span>
         ))}
       </div>
+    </div>
+  );
+}
+
+type LocalPresetId = (typeof LOCAL_OPENAI_PRESETS)[number]['id'] | 'custom';
+
+function localPresetIdForBase(baseUrl: string): LocalPresetId {
+  const normalized = baseUrl.trim();
+  return LOCAL_OPENAI_PRESETS.find((preset) => preset.baseUrl === normalized)?.id ?? 'custom';
+}
+
+function LocalProbeSummary({ probe }: { probe: LocalEndpointProbeResult }) {
+  const rows = [
+    { label: 'Models', ok: probe.capabilities.models },
+    { label: 'Chat', ok: probe.capabilities.chat },
+    { label: 'Tools', ok: probe.capabilities.tools },
+    { label: 'JSON', ok: probe.capabilities.jsonOutput },
+    { label: 'Embeddings', ok: probe.capabilities.embeddings },
+  ];
+  return (
+    <div className="callout" style={{ marginTop: 'var(--space-3)' }}>
+      <strong>Endpoint check</strong>
+      <p className="note" style={{ marginTop: '0.3rem' }}>
+        Local endpoints often expose sparse metadata. Verify chat, tool, JSON,
+        and embeddings support before relying on this backend for drafting.
+      </p>
+      <div className="pc-feats" style={{ marginTop: '0.5rem' }}>
+        {rows.map((row) => (
+          <span key={row.label}>{row.label}: {row.ok ? 'yes' : 'no'}</span>
+        ))}
+      </div>
+      {probe.error && (
+        <p className="note" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+          {probe.error}
+        </p>
+      )}
+      {probe.warnings.length > 0 && (
+        <ul className="note" style={{ marginTop: '0.5rem', marginBottom: 0 }}>
+          {probe.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

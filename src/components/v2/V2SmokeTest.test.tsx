@@ -18,12 +18,14 @@ const authMock = vi.hoisted(() => {
     apiKey: null,
     baseUrl: 'https://api.asksage.health.mil',
     models: null,
+    localProbe: null,
     isValidating: false,
     error: null,
     setProvider: vi.fn(),
     setApiKey: vi.fn(),
     setBaseUrl: vi.fn(),
     setModels: vi.fn(),
+    setLocalProbe: vi.fn(),
     setValidating: vi.fn(),
     setError: vi.fn(),
     clear: vi.fn(),
@@ -131,15 +133,48 @@ describe('V2 view smoke tests', () => {
       apiKey: null,
       baseUrl: 'http://localhost:11434/v1',
       models: [{ id: 'qwen3:14b' }],
+      localProbe: {
+        ok: true,
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'qwen3:14b',
+        capabilities: {
+          models: true,
+          chat: true,
+          tools: false,
+          jsonOutput: true,
+          embeddings: false,
+        },
+        warnings: ['Tool calls were not returned in native OpenAI format.'],
+      },
     };
 
     const { V2SettingsView } = await import('./V2SettingsView');
-    const { getAllByText, getByRole, getByText, queryByText } = render(withRouter(<V2SettingsView />));
+    const { getAllByText, getByLabelText, getByRole, getByText, queryByText } = render(withRouter(<V2SettingsView />));
 
     expect(getByText(/^connected$/i)).not.toBeNull();
+    expect(getByRole('radio', { name: /Local OpenAI/i })).toHaveAttribute('aria-checked', 'true');
+    expect(getByLabelText(/Local backend/i)).toHaveValue('ollama');
     expect(getByRole('button', { name: /Test connection/i })).not.toBeDisabled();
+    expect(getAllByText(/Endpoint check/i).length).toBeGreaterThan(0);
+    expect(getByText(/Tools/i)).not.toBeNull();
     expect(getAllByText(/local model selected in backend/i)).toHaveLength(3);
     expect(queryByText(/qwen3/i)).toBeNull();
+  });
+
+  it('V2SettingsView warns when local provider points away from localhost', async () => {
+    authMock.state = {
+      ...authMock.defaultState(),
+      provider: 'local_openai',
+      apiKey: null,
+      baseUrl: 'http://192.168.1.20:11434/v1',
+      models: null,
+    };
+
+    const { V2SettingsView } = await import('./V2SettingsView');
+    const { getByText } = render(withRouter(<V2SettingsView />));
+
+    expect(getByText(/not a localhost address/i)).not.toBeNull();
+    expect(getByText(/non-CUI local or trusted server/i)).not.toBeNull();
   });
 
   it('V2CommandPalette mounts with focus-capture input', async () => {

@@ -3,6 +3,12 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useAuth } from '../../lib/state/auth';
 import { createLLMClient, defaultBaseUrlFor, defaultModelFor, providerLabel } from '../../lib/provider/factory';
 import type { ProviderId } from '../../lib/provider/types';
+import {
+  LOCAL_OPENAI_PRESETS,
+  isLocalhostBaseUrl,
+  probeLocalOpenAIEndpoint,
+  type LocalEndpointProbeResult,
+} from '../../lib/provider/local_openai';
 import { toast } from '../../lib/state/toast';
 import { loadSettings, saveSettings } from '../../lib/settings/store';
 import type { ModelStage } from '../../lib/settings/types';
@@ -21,19 +27,27 @@ export function V2SettingsView() {
     apiKey,
     baseUrl,
     models,
+    localProbe,
     isValidating,
     error,
     setProvider,
     setApiKey,
     setBaseUrl,
     setModels,
+    setLocalProbe,
     setValidating,
     setError,
     clear,
   } = useAuth();
 
   const providerOptions = useMemo(
-    () =>
+    (): Array<{
+      provider: ProviderId;
+      mark: string;
+      name: string;
+      url: string;
+      features: string[];
+    }> =>
       [
         {
           provider: 'asksage' as ProviderId,
@@ -48,6 +62,13 @@ export function V2SettingsView() {
           name: 'OpenRouter',
           url: 'openrouter.ai/api/v1',
           features: ['non-CUI', 'commercial'],
+        },
+        {
+          provider: 'local_openai' as ProviderId,
+          mark: 'L',
+          name: 'Local OpenAI',
+          url: 'localhost / custom',
+          features: ['non-CUI default', 'Ollama / llama.cpp'],
         },
       ],
     [],
@@ -85,6 +106,11 @@ export function V2SettingsView() {
         ? provider === 'local_openai' ? 'not verified' : 'key set · not verified'
         : 'no key';
   const canTestConnection = draftProvider === 'local_openai' || draftKey.trim().length > 0;
+  const localBackendPreset = localPresetIdForBase(draftBase);
+  const showLocalPrivacyWarning =
+    draftProvider === 'local_openai' &&
+    draftBase.trim().length > 0 &&
+    !isLocalhostBaseUrl(draftBase.trim());
 
   function onPickProvider(next: ProviderId) {
     if (next === draftProvider) return;
@@ -98,21 +124,33 @@ export function V2SettingsView() {
     setError(null);
     setValidating(true);
     setModels(null);
+    setLocalProbe(null);
     try {
+      const trimmedBase = draftBase.trim();
+      const trimmedKey = draftKey.trim();
       if (draftProvider !== provider) setProvider(draftProvider);
       const client = createLLMClient({
         provider: draftProvider,
-        baseUrl: draftBase.trim(),
-        apiKey: draftKey.trim(),
+        baseUrl: trimmedBase,
+        apiKey: trimmedKey,
       });
       const list = await client.getModels();
-      setBaseUrl(draftBase.trim());
-      setApiKey(draftKey.trim());
+      setBaseUrl(trimmedBase);
+      setApiKey(trimmedKey);
       setModels(list);
+      if (draftProvider === 'local_openai') {
+        const probe = await probeLocalOpenAIEndpoint({
+          baseUrl: trimmedBase,
+          apiKey: trimmedKey,
+          model: list[0]?.id,
+        });
+        setLocalProbe(probe);
+      }
       toast.success(`Connected · ${list.length} models available`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
+      setLocalProbe(null);
       toast.error('Connection failed — check base URL and key');
     } finally {
       setValidating(false);
@@ -184,6 +222,46 @@ export function V2SettingsView() {
               ))}
             </div>
 
+            {draftProvider === 'local_openai' && (
+              <>
+                <div className="s-row two">
+                  <div className="s-field">
+                    <label htmlFor="v2-settings-local-backend">Local backend</label>
+                    <select
+                      id="v2-settings-local-backend"
+                      value={localBackendPreset}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        const preset = LOCAL_OPENAI_PRESETS.find((p) => p.id === next);
+                        if (preset) setDraftBase(preset.baseUrl);
+                      }}
+                    >
+                      {LOCAL_OPENAI_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>{preset.name}</option>
+                      ))}
+                      <option value="custom">Custom</option>
+                    </select>
+                    <div className="hint">Most local backends do not require an API key.</div>
+                  </div>
+                  <div className="s-field">
+                    <div className="hint" style={{ marginTop: 24 }}>
+                      Local OpenAI is for non-CUI drafting experiments with Ollama,
+                      llama.cpp, LM Studio, or a trusted custom endpoint.
+                    </div>
+                  </div>
+                </div>
+                {showLocalPrivacyWarning && (
+                  <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--line-strong)', borderRadius: 6 }}>
+                    <strong style={{ fontSize: 12 }}>Local endpoint privacy check</strong>
+                    <div className="hint" style={{ marginTop: 4 }}>
+                      This Local OpenAI URL is not a localhost address. Confirm it is an
+                      intended non-CUI local or trusted server before sending document text.
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
             <div className="s-row two">
               <div className="s-field">
                 <label htmlFor="v2-settings-api-key">API key</label>
@@ -194,7 +272,7 @@ export function V2SettingsView() {
                     type={showKey ? 'text' : 'password'}
                     value={draftKey}
                     onChange={(e) => setDraftKey(e.target.value)}
-                    placeholder="paste your key here"
+                    placeholder={draftProvider === 'local_openai' ? 'optional for most local backends' : 'paste your key here'}
                     autoComplete="off"
                     aria-label="API key"
                   />
@@ -207,19 +285,28 @@ export function V2SettingsView() {
                     {showKey ? 'Hide' : 'Show'}
                   </button>
                 </div>
-                <div className="hint">Stored in sessionStorage. Cleared when the tab closes.</div>
+                <div className="hint">
+                  {draftProvider === 'local_openai'
+                    ? 'Leave blank unless your custom local endpoint requires a key.'
+                    : 'Stored in sessionStorage. Cleared when the tab closes.'}
+                </div>
               </div>
 
               <div className="s-field">
-                <label>Base URL</label>
+                <label htmlFor="v2-settings-base-url">Base URL</label>
                 <input
+                  id="v2-settings-base-url"
                   className="mono"
                   type="url"
                   value={draftBase}
                   onChange={(e) => setDraftBase(e.target.value)}
                   placeholder="https://api.asksage.health.mil"
                 />
-                <div className="hint">Defaults to each provider's production endpoint.</div>
+                <div className="hint">
+                  {draftProvider === 'local_openai'
+                    ? 'Include /v1 for OpenAI-compatible local backends.'
+                    : 'Defaults to each provider\'s production endpoint.'}
+                </div>
               </div>
             </div>
 
@@ -242,13 +329,20 @@ export function V2SettingsView() {
               )}
             </div>
           </form>
+          {draftProvider === 'local_openai' && localProbe && (
+            <LocalProbeSummary probe={localProbe} />
+          )}
         </div>
 
         <div className="s-card">
           <div className="s-head">
             <div>
               <h3>Models &amp; routing</h3>
-              <div className="s-desc">Pick a specific model per stage, or leave blank to use the compiled-in default.</div>
+              <div className="s-desc">
+                {draftProvider === 'local_openai'
+                  ? 'Local endpoints often expose sparse metadata; run endpoint check and verify tool support before routing recipes.'
+                  : 'Pick a specific model per stage, or leave blank to use the compiled-in default.'}
+              </div>
             </div>
           </div>
           {STAGE_META.map((s) => {
@@ -295,6 +389,46 @@ export function V2SettingsView() {
 
         {settings && <V2SettingsAdvanced settings={settings} />}
       </div>
+    </div>
+  );
+}
+
+type LocalPresetId = (typeof LOCAL_OPENAI_PRESETS)[number]['id'] | 'custom';
+
+function localPresetIdForBase(baseUrl: string): LocalPresetId {
+  const normalized = baseUrl.trim();
+  return LOCAL_OPENAI_PRESETS.find((preset) => preset.baseUrl === normalized)?.id ?? 'custom';
+}
+
+function LocalProbeSummary({ probe }: { probe: LocalEndpointProbeResult }) {
+  const rows = [
+    { label: 'Models', ok: probe.capabilities.models },
+    { label: 'Chat', ok: probe.capabilities.chat },
+    { label: 'Tools', ok: probe.capabilities.tools },
+    { label: 'JSON', ok: probe.capabilities.jsonOutput },
+    { label: 'Embeddings', ok: probe.capabilities.embeddings },
+  ];
+  return (
+    <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--line-strong)', borderRadius: 6 }}>
+      <strong style={{ fontSize: 12 }}>Endpoint check</strong>
+      <div className="hint" style={{ marginTop: 4 }}>
+        Verify local chat, tool, JSON, and embeddings behavior before using this backend.
+      </div>
+      <div className="pc-feats" style={{ marginTop: 8 }}>
+        {rows.map((row) => (
+          <span key={row.label}>{row.label}: {row.ok ? 'yes' : 'no'}</span>
+        ))}
+      </div>
+      {probe.error && (
+        <div className="hint" style={{ marginTop: 8, color: 'var(--rose)' }}>{probe.error}</div>
+      )}
+      {probe.warnings.length > 0 && (
+        <ul className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+          {probe.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
