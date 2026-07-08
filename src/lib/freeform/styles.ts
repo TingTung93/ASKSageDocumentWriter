@@ -38,8 +38,9 @@ DOCUMENT STRUCTURE — follow this outline exactly:
 
 WRITING RULES:
 {{TONE}}
+- Produce a complete, useful document for the user's stated need, not a skeletal outline. Add necessary transitions, definitions, tables, action items, and explanatory paragraphs when they make the document usable.
 - Write complete, publication-ready prose. Do not leave placeholders, "[INSERT]" markers, or TODO notes.
-- Every claim must be grounded in the provided context. If context is insufficient, state what is known and note the gap.
+- Every claim must be grounded in the provided context. If context is insufficient for a required fact, state what is known and mark the gap clearly instead of inventing details.
 - Use headings, sub-headings, and numbered/bulleted lists where they improve readability.
 - Do NOT include a title page or cover sheet — start directly with the first heading.
 

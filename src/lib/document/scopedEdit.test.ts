@@ -201,6 +201,22 @@ describe('runScopedEdit', () => {
     expect(sentMessage.slice(0, 200)).toContain('make more formal');
   });
 
+  it('allows insertions and complete paragraph revisions when the selected region needs them', async () => {
+    const client = new MockLLMClient().enqueue({ json: { edits: [] } });
+
+    await runScopedEdit(client, {
+      all_paragraphs: buildDoc(),
+      selected_indices: [3],
+      instruction: 'revise this more completely and add a transition',
+    });
+
+    const systemPrompt = client.calls[0]!.system_prompt ?? '';
+    expect(systemPrompt).toContain('complete paragraph revision');
+    expect(systemPrompt).toContain('Use insert_paragraph_after');
+    expect(systemPrompt).toContain('missing required component');
+    expect(systemPrompt).toContain('Do not force every improvement into a replacement');
+  });
+
   it('renders context paragraphs as [ctx] and selected paragraphs as [edit]', async () => {
     const client = new MockLLMClient().enqueue({ json: { edits: [] } });
 

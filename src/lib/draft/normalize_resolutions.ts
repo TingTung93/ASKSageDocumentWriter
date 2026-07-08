@@ -95,6 +95,7 @@ ARMY MEMO FORMATTING CONVENTIONS:
 GENERIC FALLBACK RULES (when the section type doesn't match an Army memo block):
 - Title case headings, sentence case body prose, ALL CAPS for organizational names that customarily use it.
 - Preserve line break intent — multi-line user input should produce multi-line output.
+- Return the complete value as it should appear in the document field. Add conventional labels, prefixes, punctuation, and line breaks when the section name or description clearly calls for them, but do not add new facts.
 
 Return STRICT JSON only.`;
 

@@ -107,6 +107,17 @@ describe('buildSynthesisPrompt', () => {
     expect(built.system_prompt).toMatch(/style/);
   });
 
+  it('asks synthesis to preserve complete reusable structure without adding subject-specific schema scope', () => {
+    const built = buildSynthesisPrompt({
+      schema: makeSchema(),
+      samples: [],
+      full_body: EMPTY_BODY,
+    });
+    expect(built.system_prompt).toContain('complete reusable structure');
+    expect(built.system_prompt).toContain('natural insertion points');
+    expect(built.system_prompt).toContain('Do not add subject-specific sections');
+  });
+
   it('includes the template name and filename in the message', () => {
     const built = buildSynthesisPrompt({
       schema: makeSchema(),

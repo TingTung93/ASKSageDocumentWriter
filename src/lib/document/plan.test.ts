@@ -26,6 +26,158 @@ function makeParagraph(index: number, text: string): ParagraphInfo {
 }
 
 describe('lowerEditPlan', () => {
+  it('lowers complete paragraph revision to replace_paragraph_text', () => {
+    const result = lowerEditPlan(
+      [
+        {
+          kind: 'complete_paragraph_revision',
+          paragraph_index: 1,
+          new_text: 'This paragraph now fully explains the requirement.',
+          rationale: 'Replace thin prose with complete explanation.',
+        },
+      ],
+      [makeParagraph(1, 'Thin prose.')],
+      new Set(['Normal']),
+    );
+
+    expect(result.ops).toEqual([
+      {
+        op: 'replace_paragraph_text',
+        index: 1,
+        new_text: 'This paragraph now fully explains the requirement.',
+        rationale: 'Replace thin prose with complete explanation.',
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('lowers missing content insertion to insert_paragraph_after', () => {
+    const result = lowerEditPlan(
+      [
+        {
+          kind: 'insert_missing_content',
+          after_paragraph_index: 2,
+          new_text: 'This transition connects the background to the requirement.',
+          rationale: 'Add missing transition.',
+        },
+      ],
+      [makeParagraph(2, 'Background ends here.')],
+      new Set(['Normal']),
+    );
+
+    expect(result.ops).toEqual([
+      {
+        op: 'insert_paragraph_after',
+        index: 2,
+        new_text: 'This transition connects the background to the requirement.',
+        rationale: 'Add missing transition.',
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('lowers structural delete, merge, and split plans', () => {
+    const result = lowerEditPlan(
+      [
+        {
+          kind: 'delete_paragraph',
+          paragraph_index: 3,
+          rationale: 'Remove duplicate heading.',
+        },
+        {
+          kind: 'merge_paragraphs',
+          paragraph_index: 4,
+          separator: ' ',
+          rationale: 'Repair accidental fragmentation.',
+        },
+        {
+          kind: 'split_paragraph',
+          paragraph_index: 5,
+          split_at_text: 'Second idea starts here.',
+          rationale: 'Separate two ideas.',
+        },
+      ],
+      [
+        makeParagraph(3, 'Duplicate heading'),
+        makeParagraph(4, 'First fragment'),
+        makeParagraph(5, 'First idea. Second idea starts here.'),
+      ],
+      new Set(['Normal']),
+    );
+
+    expect(result.ops).toEqual([
+      {
+        op: 'delete_paragraph',
+        index: 3,
+        rationale: 'Remove duplicate heading.',
+      },
+      {
+        op: 'merge_paragraphs',
+        index: 4,
+        separator: ' ',
+        rationale: 'Repair accidental fragmentation.',
+      },
+      {
+        op: 'split_paragraph',
+        index: 5,
+        split_at_text: 'Second idea starts here.',
+        rationale: 'Separate two ideas.',
+      },
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('emits invalid_text when a revision or insertion has no text', () => {
+    const result = lowerEditPlan(
+      [
+        {
+          kind: 'complete_paragraph_revision',
+          paragraph_index: 0,
+          new_text: '   ',
+        },
+        {
+          kind: 'insert_missing_content',
+          after_paragraph_index: 0,
+          new_text: '',
+        },
+      ],
+      [makeParagraph(0, 'Original.')],
+      new Set(['Normal']),
+    );
+
+    expect(result.ops).toEqual([]);
+    expect(result.diagnostics).toHaveLength(2);
+    expect(result.diagnostics[0]).toMatchObject({
+      severity: 'error',
+      code: 'invalid_text',
+    });
+    expect(result.diagnostics[1]).toMatchObject({
+      severity: 'error',
+      code: 'invalid_text',
+    });
+  });
+
+  it('emits split_text_not_found when split marker is absent from the paragraph', () => {
+    const result = lowerEditPlan(
+      [
+        {
+          kind: 'split_paragraph',
+          paragraph_index: 0,
+          split_at_text: 'Missing marker',
+        },
+      ],
+      [makeParagraph(0, 'Original text.')],
+      new Set(['Normal']),
+    );
+
+    expect(result.ops).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0]).toMatchObject({
+      severity: 'error',
+      code: 'split_text_not_found',
+    });
+  });
+
   it('lowers heading role style for paragraph index 0 to Heading1', () => {
     const result = lowerEditPlan(
       [{ kind: 'apply_role_style', paragraph_index: 0, role: 'heading' }],

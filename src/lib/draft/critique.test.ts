@@ -279,6 +279,25 @@ describe('critiqueDraft', () => {
     });
     expect(client.calls[0]!.model).toBe('google-claude-46-opus');
   });
+
+  it('asks for actionable suggested fixes that distinguish revision from insertion', async () => {
+    const client = new MockLLMClient().enqueue({ json: { issues: [] } });
+
+    await critiqueDraft(client, {
+      template: makeTemplate(),
+      section: makeSection(),
+      draft: makeDraft(),
+      project_description: 'X',
+      references_block: null,
+      template_example: null,
+      prior_summaries: [],
+    });
+
+    const systemPrompt = client.calls[0]!.system_prompt ?? '';
+    expect(systemPrompt).toContain('revise an existing paragraph');
+    expect(systemPrompt).toContain('insert a missing paragraph');
+    expect(systemPrompt).toContain('complete revision');
+  });
 });
 
 // ─── formatRevisionNotes ─────────────────────────────────────────

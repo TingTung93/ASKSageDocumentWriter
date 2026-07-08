@@ -224,6 +224,11 @@ WHAT TO LOOK FOR:
      - Empty body paragraphs between sections (delete_paragraph)
      - Duplicate headings (delete_paragraph on the dup)
 
+  8. Missing structural wrappers:
+     - A table that needs a heading or introductory line already present elsewhere in the same section shape
+     - A procedure or list that needs a role/level correction rather than text replacement
+     - Use role, level, table, page-break, or deletion ops for these; do not rewrite content to solve formatting.
+
 WHAT YOU DO NOT TOUCH:
 
   - Content. Do not edit text to change meaning, fix grammar, or add/remove information. Use set_text ONLY to remove leaked markdown noise like ** or _ or to fix obvious typos in formatting (extra whitespace, doubled punctuation introduced by tokenization).

@@ -209,6 +209,7 @@ GENERIC FALLBACK (when section type doesn't match an Army memo block):
 
 GENERAL GUIDANCE:
 - Each field's "value" is the COMPLETE replacement text for that section. Multi-line blocks use literal \\n inside the JSON string.
+- Complete the field in the conventional shape for its section type. Add required prefixes, line breaks, labels, and short prose wrappers when the template convention calls for them; do not merely echo a raw fragment.
 - Respect the section's target_words range if provided. Most metadata fields are 5-30 words; signature blocks 5-15; POC lines 15-30.
 - If a section has explicit format guidance in its intent (e.g. "MEMORANDUM FOR <recipient>"), the convention above takes precedence over the literal example unless the example is more specific.
 - MISSING-CONTEXT POLICY: when you cannot ground a field's value in any of the four sources above, DO NOT omit the field. Instead, return a "value" that contains a SQUARE-BRACKET PLACEHOLDER naming exactly what's missing, e.g. "[INSERT: addressee organization name]" or "MEMORANDUM FOR [INSERT: recipient]". The user gets a complete document with obvious gaps to fill in, instead of fields silently missing. Use placeholders SPARINGLY — exhaust the four sources first.

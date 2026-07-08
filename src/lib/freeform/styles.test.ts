@@ -32,6 +32,13 @@ describe('FREEFORM_STYLES registry', () => {
     }
   });
 
+  it('base prompt asks for a complete useful draft while preserving grounded gaps', () => {
+    const style = FREEFORM_STYLES[0]!;
+    expect(style.system_prompt).toContain('complete, useful document');
+    expect(style.system_prompt).toContain('Add necessary transitions, definitions, tables, action items, and explanatory paragraphs');
+    expect(style.system_prompt).toContain('mark the gap clearly');
+  });
+
   it('exposes the new award_bullets style', () => {
     const award = getFreeformStyle('award_bullets');
     expect(award).toBeDefined();

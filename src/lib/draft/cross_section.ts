@@ -129,7 +129,7 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
       "category": "<one of: contradiction | terminology_drift | missing_reference | redundancy | tone_drift | other>",
       "message": "<one sentence. MUST name the affected section ids verbatim from the spec list>",
       "affected_section_ids": ["<id_1>", "<id_2>", ...],
-      "suggested_fix": "<optional one-sentence suggestion; omit this field if you have nothing concrete to suggest>"
+      "suggested_fix": "<optional one-sentence suggestion; say whether to revise an existing section, insert a missing cross-reference/component, delete redundant text, or standardize terminology; omit this field if you have nothing concrete to suggest>"
     }
   ]
 }
@@ -149,6 +149,8 @@ You NEVER:
   - Invent section ids. The affected_section_ids array MUST contain only ids that appear in the SECTION LIST below.
   - Return more than 12 issues total. If you would emit more than 12, keep the highest-severity 12.
   - Fence your JSON output or add any commentary outside the JSON object.
+
+Suggested fixes must be actionable. If a missing cross-reference or missing document-level component is the problem, say to insert it. If existing language conflicts, say which section should be revised or standardized. Do not make every fix sound like a replacement.
 
 CATEGORIES — one bad and one good example each (placeholder topics, never real ones):
 

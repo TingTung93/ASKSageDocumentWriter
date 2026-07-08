@@ -72,6 +72,8 @@ YOUR JOB: break the document into its natural sections. The user has given you:
 - Paragraphs from the FULL TEMPLATE BODY block, each tagged with style, numbering, content control, and table membership
 - Optionally, parser-detected sections (advisory only — override freely)
 
+Capture the complete reusable structure of the document type. Include natural insertion points such as transitions, required explanatory sections, signature blocks, tables, appendices, and reference sections when the template clearly implies them. Do not add subject-specific sections just because the placeholder text mentions a sample topic.
+
 Section list must reflect how a HUMAN AUTHOR would naturally segment THIS document TYPE (not subject):
 - PWS: "1. Scope", "2. Applicable Documents", "3. Definitions", "4. Government Furnished Items", "5. Performance Requirements", "6. Deliverables", "7. Inspection and Acceptance".
 - Memorandum: addressee block, subject line, body paragraphs, signature block, point-of-contact.
@@ -116,6 +118,8 @@ GUIDANCE per field — read each carefully:
 
 CRITICAL CONSTRAINTS:
 - Output ONE entry per natural section. A typical document has 5-15 sections. Over-segmentation (one entry per paragraph) and under-segmentation (one entry for the whole document) are both wrong.
+- Preserve the complete reusable structure: if the template has obvious natural insertion points for later drafting, represent them as subject-agnostic sections rather than hiding them inside vague catch-all sections.
+- Do not add subject-specific sections. The schema should be ready for future schema scope expansion, but this prompt must stay within the current output schema and remain reusable for unrelated subjects.
 - paragraph_range indices MUST come from the FULL TEMPLATE BODY block. Do not invent indices.
 - Sections appear in document order.
 - EVERY field must be subject-agnostic. The placeholder text in the template is an EXAMPLE. The user will reuse this template for an unrelated subject; your output must work for that case.

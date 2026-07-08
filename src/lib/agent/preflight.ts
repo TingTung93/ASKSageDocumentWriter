@@ -194,6 +194,7 @@ GUIDANCE per field:
     "warning" — drafting will work but the output will need significant rework
     "info"    — auto-fixable hints, suggestions, opportunities
   Each action MUST be specific. Bad: "missing some metadata". Good: "No reference file mentions the contracting officer's name — drafting will leave a [INSERT: contracting officer] placeholder in the signature block." Use the optional "hint" object when the UI could act on the action automatically (e.g., {"kind": "fill_shared_input", "key": "document_number"}).
+  Prefer actionable additions over vague warnings. If the project needs more source material, say exactly what to add (e.g., a period of performance, approval authority, responsibilities table, or transition/background paragraph) and where it will affect the draft.
 
 CRITICAL CONSTRAINTS:
 - Be SUBJECT-AGNOSTIC in your reasoning style. Do not assume any particular acquisition topic; reason from what the user actually provided.
@@ -243,6 +244,7 @@ OUTPUT SCHEMA — produce JSON in exactly this shape:
 GUIDANCE:
 
 - Only emit a key for a field you have actual evidence for. If the subject + references contain nothing about a field, OMIT it entirely (do not emit a null/empty entry).
+- When a value is partly present but needs conventional formatting, return the formatted complete value rather than echoing the raw fragment.
 - source values:
     "project_subject"  — value comes directly from the user's project description
     "reference_file"   — value comes from one of the attached reference files (set source_label to the filename)

@@ -55,6 +55,8 @@ CRITICAL CONSTRAINTS:
 - All section_id values MUST refer to ids that already exist in the input schema (or, for reorder_sections, the union of existing ids).
 - Emit ONLY the operations needed to satisfy the user's instruction. Do not pad with cosmetic changes.
 - If the instruction asks for something you cannot express with these operations (e.g. "merge two sections into one"), emit no edits and explain in rationale.
+- Do not invent new sections, new section ids, or new schema fields; there is no add_section operation in the current operation catalog.
+- If the instruction would require broader schema changes outside the current operation catalog, emit no edits and explain in rationale that schema scope needs expansion.
 - Return STRICT JSON. No markdown code fences, no commentary outside the JSON.`;
 
 export interface SchemaEditRequest {

@@ -93,6 +93,19 @@ describe('buildDraftingPrompt', () => {
     expect(built.system_prompt).toContain('Do not emit raw OOXML');
   });
 
+  it('asks for complete usable sections instead of thin replacements of template text', () => {
+    const built = buildDraftingPrompt({
+      template: makeTemplate(),
+      section: makeSection(),
+      project_description: 'Maintenance contract',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    expect(built.system_prompt).toContain('complete, usable section');
+    expect(built.system_prompt).toContain('Add headings, bullets, tables, transitions, and explanatory paragraphs');
+    expect(built.system_prompt).toContain('Do not merely replace the template example sentence-for-sentence');
+  });
+
   it('includes the section spec and document context in the message', () => {
     const built = buildDraftingPrompt({
       template: makeTemplate(),

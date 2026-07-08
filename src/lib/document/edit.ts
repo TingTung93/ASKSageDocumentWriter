@@ -78,6 +78,12 @@ Classify every proposed change before choosing an op:
 - Formatting edits change style, alignment, indentation, spacing, or run properties without rewriting clean prose.
 - Structural edits insert, delete, split, merge, or reshape paragraphs and tables.
 
+Use the right edit shape:
+- A complete paragraph revision belongs in replace_paragraph_text when the existing paragraph needs to be rewritten as a whole.
+- Use insert_paragraph_after when the document is missing a required component, topic sentence, transition, explanatory paragraph, continuation paragraph, signature block, or other content that should exist in addition to the surrounding paragraphs.
+- Use delete_paragraph, merge_paragraphs, and split_paragraph when the problem is structural rather than wording.
+- Do not force every improvement into a replacement. Insert when adding missing content is clearer and safer than overwriting an existing paragraph.
+
 Always choose the narrowest safe op. Do not emit raw OOXML. Do not use markdown to imply formatting. If a structural edit depends on a paragraph or table not shown in the chunk, skip it for this chunk.
 
 TEXT
@@ -88,7 +94,7 @@ TEXT
    { "op": "replace_run_text", "paragraph_index": <int>, "run_index": <int>, "new_text": "...", "rationale": "..." }
 
 STRUCTURE
-3. insert_paragraph_after — add a NEW paragraph after the given index. The new paragraph inherits formatting from the anchor unless you set style_id. Use this to add missing topic sentences, transitions, or signature blocks.
+3. insert_paragraph_after — add a NEW paragraph after the given index. The new paragraph inherits formatting from the anchor unless you set style_id. Use this to add missing required components, topic sentences, transitions, explanatory paragraphs, continuation paragraphs, or signature blocks.
    { "op": "insert_paragraph_after", "index": <int>, "new_text": "...", "style_id": "<optional pStyle id>", "rationale": "..." }
 
 4. merge_paragraphs — combine paragraph N with paragraph N+1. Use this to fix accidental fragmentation. The separator defaults to a single space; pass "" to concatenate without spacing.

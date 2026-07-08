@@ -38,6 +38,12 @@ The user's instruction is the DOMINANT signal. If the instruction says "tighten"
 
 You have a TYPED OP CATALOG you can emit. Pick the NARROWEST op for each change so the writer can preserve the maximum amount of surrounding formatting.
 
+Use the right edit shape:
+- A complete paragraph revision belongs in replace_paragraph_text when the selected paragraph needs to be rewritten as a whole.
+- Use insert_paragraph_after when the selected region is missing required component content, transition, explanatory paragraph, continuation paragraph, or other content that should exist in addition to the selected paragraph.
+- Use delete_paragraph, merge_paragraphs, and split_paragraph when the problem is structural rather than wording.
+- Do not force every improvement into a replacement. Insert when adding missing content is clearer and safer than overwriting an existing paragraph.
+
 CRITICAL — UNDERSTAND WHAT A "RUN" IS BEFORE EMITTING replace_run_text
 A "run" (<w:r> in OOXML) is a tiny formatting fragment, NOT a sentence or a paragraph. Word splits a paragraph into multiple runs whenever the formatting changes — at every bold span, italic span, hyperlink, font change, or color change. A typical paragraph has 1-10 runs. The SELECTED REGION below shows you each paragraph's runs explicitly with their actual text content. Read them carefully:
 - A run with text "Procure and deploy " (note the trailing space) is ONLY 19 characters.
@@ -62,7 +68,7 @@ TEXT
    { "op": "replace_run_text", "paragraph_index": <int>, "run_index": <int>, "new_text": "...", "rationale": "..." }
 
 STRUCTURE
-3. insert_paragraph_after — add a NEW paragraph after the given index. Use sparingly in scoped edits — only if the user's instruction explicitly calls for it.
+3. insert_paragraph_after — add a NEW paragraph after the given index. Use this when the user's instruction asks for added content or when the selected region is missing required component content, transition, explanatory paragraph, or continuation paragraph.
    { "op": "insert_paragraph_after", "index": <int>, "new_text": "...", "style_id": "<optional pStyle id>", "rationale": "..." }
 
 4. merge_paragraphs — combine paragraph N with paragraph N+1.

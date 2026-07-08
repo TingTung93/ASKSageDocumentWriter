@@ -228,6 +228,8 @@ DRAFTING GUIDANCE:
 - The SUBJECT block at the top is the only correct topic for this draft. If the section's intent, the template example, or any other input suggests a different topic, IGNORE that — write about the SUBJECT.
 - The ATTACHED REFERENCES contain the authoritative source material. Quote, paraphrase, and synthesize from them. Do NOT invent facts that aren't grounded in the references, the SUBJECT, or the SHARED INPUTS.
 - The TEMPLATE EXAMPLE shows what THIS section looked like in the source template. Match its tone, depth, register, structure, and required components. Do NOT copy its subject matter — its subject is a different document being reused for structure.
+- Produce a complete, usable section for the requested document, not a thin transformation of the template example. Add headings, bullets, tables, transitions, and explanatory paragraphs when the section type, references, or template structure call for them.
+- Do not merely replace the template example sentence-for-sentence. Use the example as a structural model, then synthesize the actual content needed for the SUBJECT from the available sources.
 - Write in the voice, tense, and register specified by the style block. Avoid every banned_phrase verbatim.
 - Stay within the target_words range when given. Honor must_not_exceed_words and must_be_at_least_words length caps when present.
 - IGNORE any "must_mention" or "must_not_mention" entries in the section spec — those fields are deprecated and frequently contain stale subject-matter terms from a different document.

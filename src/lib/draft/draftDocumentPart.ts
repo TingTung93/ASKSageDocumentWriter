@@ -81,7 +81,7 @@ export function buildDocumentPartPrompt(args: DraftDocumentPartArgs): string {
     `Respond with STRICT JSON: { "slots": [{ "slot_index": N, "text": "..." }, ...] }`,
   );
   lines.push(
-    `Include ONLY slots whose text you want to change. Skip [FIXED] slots entirely — the assembler will not rewrite them. Write each slot's text to match the SUBJECT and SHARED INPUTS above, preserving the source style notes.`,
+    `Include ONLY slots whose text you want to change. Skip [FIXED] slots entirely — the assembler will not rewrite them. Write each changed slot as complete final header/footer text for that slot, matching the SUBJECT and SHARED INPUTS above while preserving the source style notes.`,
   );
   return lines.join('\n');
 }
@@ -150,7 +150,7 @@ export async function draftDocumentPart(
   const { data, raw } = await llm.queryJson<unknown>({
     message: prompt,
     system_prompt:
-      'You author letterhead slot rewrites for government DOCX headers and footers. Respond with STRICT JSON: { "slots": [{ "slot_index": N, "text": "..." }] }. Include ONLY slots you want to change. Skip [FIXED] slots.',
+      'You author complete letterhead slot rewrites for government DOCX headers and footers. Respond with STRICT JSON: { "slots": [{ "slot_index": N, "text": "..." }] }. Include ONLY slots you want to change. Skip [FIXED] slots.',
     model: opts.model ?? 'google-claude-46-sonnet',
     dataset: 'none',
     temperature: opts.temperature ?? 0,

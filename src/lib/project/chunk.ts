@@ -143,6 +143,7 @@ GUIDANCE:
 - Aim for 5-30 chunks per document. Very short docs may have just 2-3.
 - Each chunk should be ~500-3000 words. Smaller is fine for short structured items (POC blocks, definition lists). Larger only when the content is one coherent block (a whole subsection, a contiguous procedure).
 - Respect natural document structure: numbered subsections, headings, bullet groups, tables, signature blocks. Do NOT split across natural boundaries unless the resulting chunk would be much too large.
+- Preserve complete units of meaning. Keep an introduction with the requirements it introduces, a table with its caption/context, and a procedure with its prerequisite notes when splitting them would make downstream drafting incomplete.
 - title: 5-10 words. Include the section number if the document uses one. Make it specific enough to disambiguate from other chunks ("3.2 Contractor Quality Control" not "Quality").
 - summary: ONE full sentence. Mention the SUBJECT MATTER concretely so a relevance scorer can match it to a drafting section's intent. Bad: "This chunk describes responsibilities." Good: "Defines the COR's authority to inspect contractor deliverables and issue corrective action requests during the period of performance."
 - text: verbatim. Preserve numbers, acronyms, dates, names exactly as written. Do not summarize or rephrase the body — that's what the summary field is for.

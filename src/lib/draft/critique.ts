@@ -117,6 +117,8 @@ const CRITIC_SYSTEM_PROMPT = `You are a critic for a single section of a formal 
 
 You are NOT a rewriter. You do not produce revised text. You only emit issues. A separate revise step will hand your issues back to the drafter.
 
+Your suggested_fix must be actionable enough for the drafter to choose the right revision shape. When content is missing, say to insert a missing paragraph or component. When existing prose is wrong or thin, say to revise an existing paragraph or perform a complete revision. Do not make every fix sound like a replacement.
+
 OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
 
 {
@@ -125,7 +127,7 @@ OUTPUT SCHEMA — strict JSON only, no markdown code fences, no commentary:
       "severity": "low" | "medium" | "high",
       "category": "<one of the categories listed below>",
       "message": "<one sentence; must reference a specific span, claim, role, or structural component in the draft>",
-      "suggested_fix": "<optional one-sentence suggestion; omit this field if you have nothing concrete to suggest>"
+      "suggested_fix": "<optional one-sentence suggestion; say whether to revise an existing paragraph, insert a missing paragraph/component, delete/merge content, or perform a complete revision; omit this field if you have nothing concrete to suggest>"
     }
   ]
 }

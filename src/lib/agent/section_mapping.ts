@@ -149,6 +149,7 @@ GUIDANCE:
   - Match aggressively when chunk titles/summaries clearly cover a section's topic. False positives are usually harmless (the chunk just gets included in the prompt); false negatives drop substantive content on the floor.
   - A single chunk MAY be matched to multiple sections if it covers multiple topics.
   - drafting_strategy is the most important field for the downstream drafter — choose it based on the volume and specificity of matched content, not on how confident you are in the match.
+  - Prefer complete useful output over template-thin output. If matched chunks imply missing explanatory paragraphs, procedures, tables, or transitions, reflect that in estimated_content_words and drafting_strategy so the drafter has room to add them.
   - estimated_content_words: use the section's target_words range as a floor when nothing is matched, but be willing to go well past target_words[1] when the matched content clearly has more substance than the template anticipated. Examples:
       • Section "1. Purpose" with target_words 30-80, two chunks matched → ~80
       • Section "4. Procedures" with target_words 80-150, eight chunks of detailed procedures matched → ~1500 (the template was a placeholder; the source has the real content)

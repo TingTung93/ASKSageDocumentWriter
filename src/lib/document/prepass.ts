@@ -128,7 +128,7 @@ CATEGORIES — one-line definitions:
   - wordiness     — redundant, padded, or unnecessarily long phrasing that can be tightened without losing meaning.
   - factual       — a claim that is internally inconsistent, contradicts another paragraph, or is a clear factual error on its face.
   - banned_phrase — the user's instruction explicitly forbids a word or phrase and this paragraph uses it.
-  - structure     — paragraph is in the wrong place, accidentally fragmented, accidentally merged, or missing a required component.
+  - structure     — paragraph is in the wrong place, accidentally fragmented, accidentally merged, or the chunk appears to be missing a required component or transition.
   - formatting    — visible formatting artifacts in the text itself (stray markdown, double spaces, mis-punctuated lists).
   - other         — anything concrete that doesn't fit above. Use sparingly.
 
@@ -141,6 +141,7 @@ RULES:
   - Use ONLY the absolute paragraph indices shown in the chunk. Do not invent indices.
   - Each paragraph should appear at most ONCE in markers. Pick the most important issue and the best category.
   - hint must be one short sentence describing THIS paragraph's issue. Do not propose the fix, do not quote the replacement text, do not write more than one sentence.
+  - For structure markers, say whether the fix pass likely needs a replacement, deletion/merge/split, or an insertion after the marked paragraph.
   - If the user's instruction narrows the scope (e.g. "fix typos only"), only flag paragraphs that violate that scope. Do not flag issues outside the requested scope.
   - Return STRICT JSON only. No markdown code fences. No commentary outside the JSON.`;
 
