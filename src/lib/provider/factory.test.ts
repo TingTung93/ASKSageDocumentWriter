@@ -53,3 +53,10 @@ describe('provider factory GenAI.mil support', () => {
     expect(client.capabilities.tools).toBe(false);
   });
 });
+
+describe('provider tool capabilities', () => {
+  it('preserves the existing tool loop for Ask Sage and OpenRouter', () => {
+    expect(createLLMClient({ provider: 'asksage', baseUrl: 'https://api.asksage.health.mil', apiKey: 'key' }).capabilities.tools).toBe(true);
+    expect(createLLMClient({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'key' }).capabilities.tools).toBe(true);
+  });
+});

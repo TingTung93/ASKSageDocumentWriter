@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../lib/state/auth';
 import { createLLMClient } from '../lib/provider/factory';
 import { requestDocumentEdits } from '../lib/document/edit';
+import { isValidDocumentEditOp } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
 import { computeAnchor } from '../lib/document/anchors';
@@ -42,6 +43,7 @@ import { ProgressBar } from '../components/ProgressBar';
 import { DocxSkeleton } from '../components/DocxSkeleton';
 import { AgentTraceInspector } from '../components/AgentTraceInspector';
 import { startPromptOnlyEditingTurn } from '../lib/agentic-editing/runner';
+import { resolveDraftingModel } from '../lib/provider/resolve_model';
 import { runAskSageResearch } from '../lib/research/asksage';
 import { validateResearchPack } from '../lib/research/citations';
 import type { ResearchDepth, ResearchPack } from '../lib/research/types';
@@ -453,8 +455,9 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     setRequestError(null);
     setAgentRunning(true);
     try {
-      const model = cleanupModelOverride ?? 'default';
-      const result = await startPromptOnlyEditingTurn(createLLMClient({ provider, baseUrl, apiKey }), {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const model = await resolveDraftingModel(client, cleanupModelOverride, 'cleanup');
+      const result = await startPromptOnlyEditingTurn(client, {
         target: { kind: 'uploaded_document', targetId: doc.id },
         source: { filename: doc.filename, paragraphs },
         instruction: instruction.trim(),
@@ -465,10 +468,16 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         providerId: provider,
         model,
       });
-      const operations = result.turn.proposal?.operations ?? [];
+      const operations = result.turn.status === 'awaiting_user_approval'
+        ? result.turn.proposal?.operations ?? []
+        : [];
+      if (result.turn.status !== 'awaiting_user_approval') {
+        toast.error('The agent critique requested repair or clarification. Review its trace before approving a new plan.');
+      }
       const originalByIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+      const validIndices = new Set(paragraphs.map((paragraph) => paragraph.index));
       const edits: StoredEdit[] = operations.flatMap((item, index) => {
-        if (item.target !== 'uploaded_document') return [];
+        if (item.target !== 'uploaded_document' || !isValidDocumentEditOp(item.operation, validIndices)) return [];
         const paragraphIndex = targetIndexFor(item.operation);
         const sourceParagraph = paragraphIndex === null ? undefined : originalByIndex.get(paragraphIndex);
         const op = sourceParagraph ? { ...item.operation, anchor: computeAnchor(sourceParagraph) } : item.operation;

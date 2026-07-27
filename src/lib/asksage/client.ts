@@ -64,6 +64,9 @@ export class AskSageClient implements LLMClient {
     fileUpload: true,
     dataset: true,
     liveSearch: true,
+    // The established drafting loop sends OpenAI-style tool definitions
+    // through /server/query and handles returned tool calls locally.
+    tools: true,
   };
 
   constructor(

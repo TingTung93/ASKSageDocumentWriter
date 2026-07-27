@@ -7,7 +7,7 @@ import { appendTraceEvent } from './journal';
 import { runPromptOnlyEditing } from './prompt-only';
 import { withAuditedTransport } from './transport';
 import {
-  appendEditingTurn, createEditingSession, putDocumentVersion, updateEditingTurn,
+  appendEditingTurn, createEditingSession, putDocumentVersion, updateEditingSessionStatus, updateEditingTurn,
 } from './store';
 import type { AcceptanceCriterion, EditingTargetRef, EditingTurnRecord } from './types';
 
@@ -81,15 +81,19 @@ export async function startPromptOnlyEditingTurn(
       putTraceArtifact({ sessionId, turnId, kind: 'critique', content: JSON.stringify(result.critique), containsDocumentContent: true }),
     ]);
     await appendTraceEvent({ sessionId, turnId, node: 'plan-propose-critique', type: 'node.completed', status: 'succeeded', summary: `Proposal reviewed: ${result.critique.verdict}.`, inputArtifactIds: [capabilityArtifact.id], outputArtifactIds: artifacts.map((item) => item.id) });
-    const status = result.critique.verdict === 'needs_user' ? 'awaiting_plan_approval' : 'awaiting_user_approval';
+    // A repair verdict is not an approval. Keep it out of the edit queue
+    // until a future repair pass or explicit user intervention resolves it.
+    const status = result.critique.verdict === 'pass' ? 'awaiting_user_approval' : 'awaiting_plan_approval';
     const completed: EditingTurnRecord = { ...turn, plan: result.plan, proposal: result.proposal, critique: result.critique, status };
     await updateEditingTurn(turnId, { plan: result.plan, proposal: result.proposal, critique: result.critique, status });
+    await updateEditingSessionStatus(sessionId, 'awaiting_approval', turnId);
     await appendTraceEvent({ sessionId, turnId, node: 'turn', type: 'turn.completed', status: 'succeeded', summary: 'Proposal is ready for user approval.' });
     return { sessionId, turn: completed };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await putTraceArtifact({ sessionId, turnId, kind: 'error_detail', content: message, containsDocumentContent: false });
     await updateEditingTurn(turnId, { status: 'failed', completed_at: new Date().toISOString() });
+    await updateEditingSessionStatus(sessionId, 'failed');
     await appendTraceEvent({ sessionId, turnId, node: 'plan-propose-critique', type: 'node.failed', status: 'failed', summary: 'Editing turn failed.', error: { code: 'invalid_model_output', message } });
     throw error;
   }

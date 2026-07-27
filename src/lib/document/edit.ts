@@ -513,6 +513,7 @@ function isValidOp(
   validIndices: Set<number>,
   editableIndices: Set<number>,
 ): op is DocumentEditOp {
+  if (!isValidDocumentEditOp(op)) return false;
   if (!op || typeof op !== 'object' || !('op' in op)) return false;
   const o = op as DocumentEditOp;
   switch (o.op) {
@@ -555,6 +556,42 @@ function isValidOp(
       return true;
     default:
       return false;
+  }
+}
+
+/**
+ * Validate an untrusted document operation before it reaches preview or the
+ * DOCX writer. This intentionally checks the payload shape separately from
+ * a particular chunk's editable-index policy so agent proposals can reuse
+ * it against a full parsed document.
+ */
+export function isValidDocumentEditOp(op: unknown, validIndices?: Set<number>): op is DocumentEditOp {
+  if (!op || typeof op !== 'object' || !('op' in op)) return false;
+  const item = op as Record<string, unknown>;
+  const nonNegativeIndex = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  const paragraphIndexIsValid = (value: unknown): value is number =>
+    nonNegativeIndex(value) && (!validIndices || validIndices.has(value));
+  const text = (value: unknown): value is string => typeof value === 'string';
+  switch (item.op) {
+    case 'replace_paragraph_text': return paragraphIndexIsValid(item.index) && text(item.new_text);
+    case 'replace_run_text': return paragraphIndexIsValid(item.paragraph_index) && nonNegativeIndex(item.run_index) && text(item.new_text);
+    case 'set_run_property': return paragraphIndexIsValid(item.paragraph_index) && nonNegativeIndex(item.run_index) && ['bold', 'italic', 'underline', 'strike'].includes(String(item.property)) && typeof item.value === 'boolean';
+    case 'set_cell_text': return nonNegativeIndex(item.table_index) && nonNegativeIndex(item.row_index) && nonNegativeIndex(item.cell_index) && text(item.new_text);
+    case 'insert_table_row': return nonNegativeIndex(item.table_index) && nonNegativeIndex(item.after_row_index) && Array.isArray(item.cells) && item.cells.every(text);
+    case 'delete_table_row': return nonNegativeIndex(item.table_index) && nonNegativeIndex(item.row_index);
+    case 'set_content_control_value': return text(item.tag) && text(item.value);
+    case 'set_paragraph_style': return paragraphIndexIsValid(item.index) && text(item.style_id);
+    case 'set_paragraph_alignment': return paragraphIndexIsValid(item.index) && ['left', 'center', 'right', 'justify', 'both'].includes(String(item.alignment));
+    case 'delete_paragraph': return paragraphIndexIsValid(item.index);
+    case 'insert_paragraph_after': return paragraphIndexIsValid(item.index) && text(item.new_text) && (item.style_id === undefined || text(item.style_id));
+    case 'merge_paragraphs': return paragraphIndexIsValid(item.index) && (item.separator === undefined || text(item.separator));
+    case 'split_paragraph': return paragraphIndexIsValid(item.index) && text(item.split_at_text);
+    case 'set_paragraph_indent': return paragraphIndexIsValid(item.paragraph_index);
+    case 'set_paragraph_spacing': return paragraphIndexIsValid(item.paragraph_index);
+    case 'set_run_font': return paragraphIndexIsValid(item.paragraph_index) && nonNegativeIndex(item.run_index);
+    case 'set_run_color': return paragraphIndexIsValid(item.paragraph_index) && nonNegativeIndex(item.run_index) && (text(item.color) || item.color === null);
+    default: return false;
   }
 }
 

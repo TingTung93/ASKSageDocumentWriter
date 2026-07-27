@@ -21,4 +21,20 @@ describe('startPromptOnlyEditingTurn', () => {
     expect((await listTurnTrace(result.turn.id)).map((event) => event.type)).toContain('route.selected');
     expect(await db.agent_trace_artifacts.where('turnId').equals(result.turn.id).count()).toBeGreaterThan(4);
   });
+
+  it('holds a repair verdict for plan review instead of user approval', async () => {
+    const output = [...rows.slice(0, 2), { verdict: 'repair', score: 40, criteria: [], unsupportedClaims: [], structuralRisks: [], styleIssues: [], repairInstructions: ['Fix it'] }];
+    let index = 0;
+    const client = { capabilities: { fileUpload: false, dataset: false, liveSearch: false }, getModels: async () => [], query: async () => ({ message: '', response: '', status: 200, uuid: '' }), queryJson: async () => ({ data: output[index++]!, raw: { message: '', response: '', status: 200, uuid: '' } }) } as LLMClient;
+    const result = await startPromptOnlyEditingTurn(client, { target: { kind: 'uploaded_document', targetId: 'doc-1' }, source: {}, instruction: 'Improve it', criteria: [], providerId: 'genai_mil', model: 'model' });
+    expect(result.turn.status).toBe('awaiting_plan_approval');
+    expect((await db.editing_sessions.get(result.sessionId))?.status).toBe('awaiting_approval');
+  });
+
+  it('marks the enclosing session failed when a model call fails', async () => {
+    const client = { capabilities: { fileUpload: false, dataset: false, liveSearch: false }, getModels: async () => [], query: async () => ({ message: '', response: '', status: 200, uuid: '' }), queryJson: async () => { throw new Error('provider unavailable'); } } as LLMClient;
+    await expect(startPromptOnlyEditingTurn(client, { target: { kind: 'uploaded_document', targetId: 'doc-1' }, source: {}, instruction: 'Improve it', criteria: [], providerId: 'genai_mil', model: 'model' })).rejects.toThrow('provider unavailable');
+    const session = await db.editing_sessions.toCollection().first();
+    expect(session?.status).toBe('failed');
+  });
 });
