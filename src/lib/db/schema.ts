@@ -3,6 +3,15 @@ import type { TemplateSchema } from '../template/types';
 import type { DraftParagraph } from '../draft/types';
 import type { StoredEdit } from '../document/types';
 import type { AppSettings } from '../settings/types';
+import type {
+  AgentTraceArtifact,
+  AgentTraceEvent,
+  DocumentVersionRecord,
+  EditingSessionRecord,
+  EditingTurnRecord,
+  LearnedPreference,
+  StoredAgentCheckpoint,
+} from '../agentic-editing/types';
 
 // Phase 1a stores template DOCX bytes alongside the parsed schema.
 // Phase 1b adds the semantic half. Phase 2 introduces projects and
@@ -326,6 +335,13 @@ class DocWriterDb extends Dexie {
   audit!: Table<AuditRecord, number>;
   settings!: Table<AppSettings, string>;
   recipe_runs!: Table<import('../agent/recipe').RecipeRun, string>;
+  editing_sessions!: Table<EditingSessionRecord, string>;
+  editing_turns!: Table<EditingTurnRecord, string>;
+  document_versions!: Table<DocumentVersionRecord, string>;
+  agent_trace_events!: Table<AgentTraceEvent, string>;
+  agent_trace_artifacts!: Table<AgentTraceArtifact, string>;
+  agent_checkpoints!: Table<StoredAgentCheckpoint, string>;
+  learned_preferences!: Table<LearnedPreference, string>;
 
   constructor() {
     super('asksage-doc-writer');
@@ -413,6 +429,26 @@ class DocWriterDb extends Dexie {
       audit: '++id, ts, endpoint, ok',
       settings: 'id',
       recipe_runs: 'id, project_id, recipe_id, started_at, status',
+    });
+    // v9 adds durable capability-adaptive editing sessions. Large trace
+    // artifacts and graph checkpoints are stored separately from the
+    // versioned target snapshots so reload recovery never needs to replay
+    // completed model or tool side effects.
+    this.version(9).stores({
+      templates: 'id, name, ingested_at',
+      projects: 'id, name, updated_at',
+      drafts: 'id, [project_id+template_id+section_id], project_id, generated_at',
+      documents: 'id, name, ingested_at',
+      audit: '++id, ts, endpoint, ok',
+      settings: 'id',
+      recipe_runs: 'id, project_id, recipe_id, started_at, status',
+      editing_sessions: 'id, target_kind, target_id, status, updated_at',
+      editing_turns: 'id, session_id, [session_id+created_at], base_version_id, status',
+      document_versions: 'id, target_kind, target_id, parent_version_id, status, created_at',
+      agent_trace_events: 'id, [turnId+sequence], turnId, sessionId, type, timestamp',
+      agent_trace_artifacts: 'id, turnId, sessionId, kind, createdAt, sha256',
+      agent_checkpoints: 'id, [thread_id+checkpoint_ns+checkpoint_id], thread_id, updated_at',
+      learned_preferences: 'id, project_id, document_id, status, created_at',
     });
   }
 }

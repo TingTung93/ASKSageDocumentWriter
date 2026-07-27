@@ -10,7 +10,7 @@ function makeClient(
   let callCount = 0;
   return {
     provider: 'asksage',
-    capabilities: { dataset: true, liveSearch: false, fileUpload: false },
+    capabilities: { dataset: true, liveSearch: false, fileUpload: false, tools: true },
     query: vi.fn().mockImplementation(async (_input: QueryInput) => {
       const q = queries[callCount++];
       if (!q) throw new Error(`Unexpected query call ${callCount}`);
@@ -65,6 +65,29 @@ const mockSection = {
 } as any;
 
 describe('drafter tools', () => {
+  it('omits tools and completes in one call when the provider does not support them', async () => {
+    const client = makeClient([
+      {
+        message: '```json\n{"paragraphs": [{"role": "BodyText", "text": "Prompt-only draft"}]}\n```',
+      },
+    ]);
+    client.capabilities.tools = false;
+
+    const result = await draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+
+    const calls = vi.mocked(client.query).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0].tools).toBeUndefined();
+    expect(calls[0]![0].tool_choice).toBeUndefined();
+    expect(result.paragraphs[0]?.text).toBe('Prompt-only draft');
+  });
+
   it('executes calculate_math', async () => {
     const client = makeClient([
       {

@@ -38,6 +38,7 @@ function normalizeApiKey(apiKey: string | null): string | null {
 
 function readProvider(): ProviderId {
   const raw = readSession(SESSION_KEY_PROVIDER);
+  if (raw === 'genai_mil') return 'genai_mil';
   if (raw === 'local_openai') return 'local_openai';
   return raw === 'openrouter' ? 'openrouter' : 'asksage';
 }

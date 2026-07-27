@@ -130,6 +130,8 @@ export function Welcome() {
   const connectedProviderLabel =
     provider === 'local_openai'
       ? 'Local OpenAI-compatible (non-CUI, default local endpoint)'
+      : provider === 'genai_mil'
+        ? 'GenAI.mil (STARK gateway, no tool calling)'
       : provider === 'openrouter'
         ? 'OpenRouter'
         : 'Ask Sage';
@@ -148,7 +150,7 @@ export function Welcome() {
         steps={[
           {
             label: 'Connect an AI provider',
-            description: 'Use Ask Sage for CUI work or OpenRouter for non-CUI workflows.',
+            description: 'Use Ask Sage, GenAI.mil, OpenRouter, or a local OpenAI-compatible service.',
             done: connected,
             active: !connected,
           },
@@ -216,6 +218,15 @@ export function Welcome() {
                 onSelect={onPickProvider}
               />
               <ProviderPickCard
+                provider="genai_mil"
+                mark="G"
+                name="GenAI.mil"
+                url="STARK API gateway"
+                features={['Models + chat', 'No tool calling']}
+                selected={draftProvider === 'genai_mil'}
+                onSelect={onPickProvider}
+              />
+              <ProviderPickCard
                 provider="local_openai"
                 mark="L"
                 name="Local OpenAI"
@@ -265,6 +276,16 @@ export function Welcome() {
               )}
             </div>
           )}
+          {draftProvider === 'genai_mil' && (
+            <div className="callout" style={{ marginTop: 'var(--space-3)' }}>
+              <strong>Completion-only API</strong>
+              <p className="note" style={{ marginTop: '0.3rem', marginBottom: 0 }}>
+                The current GenAI.mil STARK API does not support tool calling.
+                Drafting remains available using prompt-only JSON generation; tool,
+                dataset, live-search, and embedding fields are not sent.
+              </p>
+            </div>
+          )}
 
           {/* API key */}
           <label htmlFor="apiKey" style={{ marginTop: 'var(--space-4)' }}>
@@ -282,6 +303,14 @@ export function Welcome() {
                   <p style={{ margin: '0.4rem 0 0', fontSize: 12 }}>
                     Your key stays in this browser tab only and is erased when
                     you close the tab. It is never saved to disk.
+                  </p>
+                </>
+              ) : draftProvider === 'genai_mil' ? (
+                <>
+                  <strong>GenAI.mil STARK API key:</strong>
+                  <p style={{ margin: '0.4rem 0 0', fontSize: 12 }}>
+                    Create a scoped key in the GenAI.mil portal and paste the full key
+                    supplied by the one-time key retrieval flow.
                   </p>
                 </>
               ) : draftProvider === 'local_openai' ? (
@@ -313,6 +342,8 @@ export function Welcome() {
             placeholder={
               draftProvider === 'asksage'
                 ? 'Paste your Ask Sage API key here'
+                : draftProvider === 'genai_mil'
+                  ? 'Paste your GenAI.mil STARK API key here'
                 : draftProvider === 'local_openai'
                   ? 'Optional for most local backends'
                   : 'Paste your OpenRouter API key here (starts with sk-or-...)'
@@ -350,6 +381,8 @@ export function Welcome() {
               <p className="note">
                 {draftProvider === 'asksage'
                   ? 'This points to the DHA health.mil Ask Sage server. Only change it if IT gave you a different address.'
+                  : draftProvider === 'genai_mil'
+                    ? 'This should include /v1. Change it if your GenAI.mil portal provides a different STARK gateway address.'
                   : draftProvider === 'local_openai'
                     ? 'This should include /v1 for OpenAI-compatible local servers. Use Custom above for a non-preset endpoint.'
                     : 'This points to the OpenRouter service. Only change it if you have a custom setup.'}

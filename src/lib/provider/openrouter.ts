@@ -107,6 +107,8 @@ export class OpenRouterClient implements LLMClient {
     fileUpload: false,
     dataset: false,
     liveSearch: true,
+    // OpenRouter forwards the existing OpenAI-compatible tool payload.
+    tools: true,
   };
 
   constructor(

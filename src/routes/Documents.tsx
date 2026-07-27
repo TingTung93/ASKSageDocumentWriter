@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../lib/state/auth';
 import { createLLMClient } from '../lib/provider/factory';
 import { requestDocumentEdits } from '../lib/document/edit';
+import { isValidDocumentEditOp } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
 import type { DocumentEditOp, StoredEdit } from '../lib/document/types';
 import { computeAnchor } from '../lib/document/anchors';
@@ -40,6 +41,11 @@ import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
 import { ProgressBar } from '../components/ProgressBar';
 import { DocxSkeleton } from '../components/DocxSkeleton';
+import { AgentTraceInspector } from '../components/AgentTraceInspector';
+import { startPromptOnlyEditingTurn } from '../lib/agentic-editing/runner';
+import { resolveDraftingModel } from '../lib/provider/resolve_model';
+import { appendTraceEvent, listTurnTrace } from '../lib/agentic-editing/journal';
+import { updateEditingSessionStatus, updateEditingTurn } from '../lib/agentic-editing/store';
 import { runAskSageResearch } from '../lib/research/asksage';
 import { validateResearchPack } from '../lib/research/citations';
 import type { ResearchDepth, ResearchPack } from '../lib/research/types';
@@ -245,6 +251,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   } | null>(null);
   const [attachingRef, setAttachingRef] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
 
   const onAskSage = provider === 'asksage';
   const referenceFiles = doc.reference_files ?? [];
@@ -438,6 +445,71 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     }
   }
 
+  async function onRunAuditableEdit() {
+    if (!apiKey) {
+      setRequestError('Connect on the Connection tab first.');
+      return;
+    }
+    if (!paragraphs) {
+      setRequestError('Document is still parsing. Try again in a moment.');
+      return;
+    }
+    setRequestError(null);
+    setAgentRunning(true);
+    try {
+      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const model = await resolveDraftingModel(client, cleanupModelOverride, 'cleanup');
+      const result = await startPromptOnlyEditingTurn(client, {
+        target: { kind: 'uploaded_document', targetId: doc.id },
+        source: { filename: doc.filename, paragraphs },
+        instruction: instruction.trim(),
+        criteria: [
+          { id: 'preserve-intent', description: 'Preserve the author\'s intent and document formatting.', kind: 'content', required: true, source: 'system' },
+          { id: 'surgical', description: 'Make only narrow, supportable edits.', kind: 'style', required: true, source: 'system' },
+        ],
+        providerId: provider,
+        model,
+      });
+      const operations = result.turn.status === 'awaiting_user_approval'
+        ? result.turn.proposal?.operations ?? []
+        : [];
+      if (result.turn.status !== 'awaiting_user_approval') {
+        toast.error('The agent critique requested repair or clarification. Review its trace before approving a new plan.');
+      }
+      const originalByIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+      const validIndices = new Set(paragraphs.map((paragraph) => paragraph.index));
+      const edits: StoredEdit[] = operations.flatMap((item, index) => {
+        if (item.target !== 'uploaded_document' || !isValidDocumentEditOp(item.operation, validIndices)) return [];
+        const paragraphIndex = targetIndexFor(item.operation);
+        const sourceParagraph = paragraphIndex === null ? undefined : originalByIndex.get(paragraphIndex);
+        const op = sourceParagraph ? { ...item.operation, anchor: computeAnchor(sourceParagraph) } : item.operation;
+        return [{ id: `agent_${result.turn.id}_${index}`, op, status: 'proposed' as const, before_text: sourceParagraph?.text, rationale: item.operation.rationale, created_at: new Date().toISOString() }];
+      });
+      const trace = await listTurnTrace(result.turn.id);
+      const tokensIn = trace.reduce((total, event) => total + (event.tokensIn ?? 0), 0);
+      const tokensOut = trace.reduce((total, event) => total + (event.tokensOut ?? 0), 0);
+      if (edits.length > 0 || tokensIn > 0 || tokensOut > 0) {
+        await db.transaction('rw', db.documents, async () => {
+          const latest = await db.documents.get(doc.id);
+          if (!latest) throw new Error('Document was removed while the agent was running.');
+          await db.documents.put({
+            ...latest,
+            edits: [...latest.edits, ...edits],
+            last_edit_model: model,
+            total_tokens_in: latest.total_tokens_in + tokensIn,
+            total_tokens_out: latest.total_tokens_out + tokensOut,
+          });
+        });
+      }
+      toast.success(edits.length > 0 ? `Auditable agent proposed ${edits.length} edit${edits.length === 1 ? '' : 's'}.` : 'Auditable agent found no edits to propose.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRequestError(`Auditable agent failed: ${message}`);
+    } finally {
+      setAgentRunning(false);
+    }
+  }
+
   async function onRunDocumentResearch(input: {
     objective: string;
     focus_questions: string;
@@ -625,6 +697,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       edits: doc.edits.map((e) => (e.id === id ? { ...e, status } : e)),
     };
     await db.documents.put(updated);
+    await persistAgentDecisions(updated.edits);
   }
 
   async function onAcceptAll() {
@@ -634,6 +707,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       edits: doc.edits.map((e) => (e.status === 'proposed' ? { ...e, status: 'accepted' } : e)),
     };
     await db.documents.put(updated);
+    await persistAgentDecisions(updated.edits);
     if (proposedCount > 0) toast.success(`Accepted ${proposedCount} edit${proposedCount === 1 ? '' : 's'}`);
   }
 
@@ -641,10 +715,28 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     const proposedCount = doc.edits.filter((e) => e.status === 'proposed').length;
     const updated: DocumentRecord = {
       ...doc,
-      edits: doc.edits.filter((e) => e.status !== 'proposed'),
+      edits: doc.edits.map((e) => (e.status === 'proposed' ? { ...e, status: 'rejected' } : e)),
     };
     await db.documents.put(updated);
+    await persistAgentDecisions(updated.edits);
     if (proposedCount > 0) toast.info(`Rejected ${proposedCount} proposed edit${proposedCount === 1 ? '' : 's'}`);
+  }
+
+  async function persistAgentDecisions(edits: StoredEdit[]): Promise<void> {
+    const turnIds = new Set(
+      edits.map((edit) => edit.id.match(/^agent_(.+)_\d+$/)?.[1]).filter((id): id is string => Boolean(id)),
+    );
+    for (const turnId of turnIds) {
+      const turnEdits = edits.filter((edit) => edit.id.startsWith(`agent_${turnId}_`));
+      if (turnEdits.length === 0 || turnEdits.some((edit) => edit.status === 'proposed')) continue;
+      const turn = await db.editing_turns.get(turnId);
+      if (!turn || turn.status !== 'awaiting_user_approval') continue;
+      const decision = turnEdits.some((edit) => edit.status === 'accepted') ? 'accepted' : 'rejected';
+      await updateEditingTurn(turnId, { status: 'completed', user_decision: decision, completed_at: new Date().toISOString() });
+      await updateEditingSessionStatus(turn.session_id, 'completed');
+      await appendTraceEvent({ sessionId: turn.session_id, turnId, node: 'user-approval', type: 'user.decision', status: 'succeeded', summary: `User ${decision} the agent proposal.` });
+      await appendTraceEvent({ sessionId: turn.session_id, turnId, node: 'turn', type: 'turn.completed', status: 'succeeded', summary: 'Editing turn completed after user decision.' });
+    }
   }
 
   async function onExport() {
@@ -702,7 +794,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         researchDefaultObjective={documentResearchDefaultObjective(instruction)}
         researching={researching}
         attaching={attachingRef}
-        disabled={running}
+        disabled={running || agentRunning}
         onChange={onCleanupContextChange}
         onAttach={onAttachReference}
         onRemove={onRemoveReference}
@@ -752,7 +844,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
             border: '1px solid #ccc',
             borderRadius: 4,
           }}
-          disabled={running || !apiKey}
+          disabled={running || agentRunning || !apiKey}
         />
         <p className="note">
           Examples: <em>"Fix typos and grammar only"</em> · <em>"Tighten the
@@ -772,7 +864,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
                 checked={usePrepass}
                 onChange={(e) => setUsePrepass(e.target.checked)}
                 style={{ width: 'auto' }}
-                disabled={running}
+                disabled={running || agentRunning}
               />
               Scan first (identify problem paragraphs, then focus the review on those)
             </label>
@@ -782,7 +874,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
                 value={chunkConcurrency}
                 onChange={(e) => setChunkConcurrency(Number(e.target.value))}
                 style={{ flex: '0 0 5rem' }}
-                disabled={running}
+                disabled={running || agentRunning}
               >
                 <option value="1">1 (sequential)</option>
                 <option value="2">2</option>
@@ -807,13 +899,13 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
               onChange={(e) => setScopedRangeText(e.target.value)}
               placeholder='e.g. "37" or "37-42" or "5,7,9"'
               style={{ flex: 1, minWidth: 200 }}
-              disabled={scopedRunning || running || !apiKey}
+              disabled={scopedRunning || running || agentRunning || !apiKey}
             />
             <button
               type="button"
               className="btn-secondary btn-sm"
               onClick={onOpenScopedPopover}
-              disabled={scopedRunning || running || !apiKey || !paragraphs}
+              disabled={scopedRunning || running || agentRunning || !apiKey || !paragraphs}
             >
               fix this region…
             </button>
@@ -823,7 +915,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           </p>
         </details>
 
-        <button type="submit" disabled={running || !apiKey}>
+        <button type="submit" disabled={running || agentRunning || !apiKey}>
           {running ? (
             <Spinner
               light
@@ -845,6 +937,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           />
         )}
       </form>
+      <div style={{ marginTop: '0.6rem' }}>
+        <button type="button" className="btn-secondary" onClick={() => void onRunAuditableEdit()} disabled={agentRunning || scopedRunning || running || !apiKey || !paragraphs}>
+          {agentRunning ? 'Planning and critiquing edits…' : 'Run auditable agent edit'}
+        </button>
+        <p className="note">Creates a visible plan → proposal → critique trace, then places only proposed edits in the normal approval queue.</p>
+      </div>
       {requestError && <div className="error">Request failed: {requestError}</div>}
 
       {scopedPopoverOpen && (
@@ -917,6 +1015,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         formatting (page setup, styles, numbering, headers/footers, content
         controls) is preserved unchanged.
       </p>
+      <AgentTraceInspector targetKind="uploaded_document" targetId={doc.id} />
     </section>
   );
 }

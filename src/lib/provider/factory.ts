@@ -8,6 +8,7 @@
 // `state.provider === 'asksage'` — guard the affordance in the UI.
 
 import { AskSageClient } from '../asksage/client';
+import { GENAI_MIL_DEFAULT_BASE_URL, GenAIMilClient } from './genai_mil';
 import { LocalOpenAIClient } from './local_openai';
 import { OpenRouterClient } from './openrouter';
 import type { LLMClient, ProviderId } from './types';
@@ -21,6 +22,9 @@ export interface ProviderState {
 
 /** Build the right client for the active provider. */
 export function createLLMClient(state: ProviderState): LLMClient {
+  if (state.provider === 'genai_mil') {
+    return new GenAIMilClient(state.baseUrl, state.apiKey);
+  }
   if (state.provider === 'local_openai') {
     return new LocalOpenAIClient(state.baseUrl, state.apiKey);
   }
@@ -36,6 +40,8 @@ export function createLLMClient(state: ProviderState): LLMClient {
  */
 export function defaultBaseUrlFor(provider: ProviderId): string {
   switch (provider) {
+    case 'genai_mil':
+      return GENAI_MIL_DEFAULT_BASE_URL;
     case 'local_openai':
       return 'http://localhost:11434/v1';
     case 'openrouter':
@@ -48,6 +54,8 @@ export function defaultBaseUrlFor(provider: ProviderId): string {
 /** Human-readable label for UI. */
 export function providerLabel(provider: ProviderId): string {
   switch (provider) {
+    case 'genai_mil':
+      return 'GenAI.mil (STARK gateway — no tool calling)';
     case 'local_openai':
       return 'Local OpenAI-compatible (Ollama, llama.cpp, LM Studio — non-CUI only)';
     case 'openrouter':
@@ -77,7 +85,7 @@ export function defaultModelFor(provider: ProviderId, stage: ModelStage): string
       ? LOCAL_OPENAI_FAST_DEFAULT
       : LOCAL_OPENAI_STRONG_DEFAULT;
   }
-  if (provider === 'openrouter') {
+  if (provider === 'openrouter' || provider === 'genai_mil') {
     return stage === 'synthesis'
       ? OPENROUTER_SYNTHESIS_SUGGESTION
       : OPENROUTER_DRAFTING_SUGGESTION;

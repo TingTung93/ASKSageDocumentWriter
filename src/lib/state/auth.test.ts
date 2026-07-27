@@ -41,6 +41,15 @@ describe('auth state local provider support', () => {
     expect(useAuth.getState().baseUrl).toBe('http://localhost:11434/v1');
   });
 
+  it('reads genai_mil from sessionStorage', async () => {
+    sessionStorage.setItem(SESSION_KEY_PROVIDER, 'genai_mil');
+
+    const useAuth = await loadAuth();
+
+    expect(useAuth.getState().provider).toBe('genai_mil');
+    expect(useAuth.getState().baseUrl).toBe('https://api.genai.mil/v1');
+  });
+
   it('switching to local_openai uses the Ollama default if the old URL was default', async () => {
     sessionStorage.setItem(SESSION_KEY_PROVIDER, 'openrouter');
     sessionStorage.setItem(SESSION_KEY_BASE, 'https://openrouter.ai/api/v1');

@@ -64,6 +64,13 @@ export function V2SettingsView() {
           features: ['non-CUI', 'commercial'],
         },
         {
+          provider: 'genai_mil' as ProviderId,
+          mark: 'G',
+          name: 'GenAI.mil',
+          url: 'api.genai.mil/v1',
+          features: ['STARK gateway', 'completion-only'],
+        },
+        {
           provider: 'local_openai' as ProviderId,
           mark: 'L',
           name: 'Local OpenAI',
@@ -76,6 +83,7 @@ export function V2SettingsView() {
   const providerRefs = useRef<Record<ProviderId, HTMLDivElement | null>>({
     asksage: null,
     openrouter: null,
+    genai_mil: null,
     local_openai: null,
   });
 
@@ -285,6 +293,16 @@ export function V2SettingsView() {
                 )}
               </>
             )}
+            {draftProvider === 'genai_mil' && (
+              <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--line-strong)', borderRadius: 6 }}>
+                <strong style={{ fontSize: 12 }}>Completion-only integration</strong>
+                <div className="hint" style={{ marginTop: 4 }}>
+                  The current STARK API supports models and chat completions but not tool
+                  calling. Drafting will use prompt-only JSON generation and will not send
+                  tools, tool_choice, datasets, live search, or embeddings.
+                </div>
+              </div>
+            )}
 
             <div className="s-row two">
               <div className="s-field">
@@ -365,6 +383,8 @@ export function V2SettingsView() {
               <div className="s-desc">
                 {draftProvider === 'local_openai'
                   ? 'Local endpoints often expose sparse metadata; run endpoint check and verify tool support before routing recipes.'
+                  : draftProvider === 'genai_mil'
+                    ? 'GenAI.mil models are completion-only in the current STARK API; recipes run without native tools.'
                   : 'Pick a specific model per stage, or leave blank to use the compiled-in default.'}
               </div>
             </div>
@@ -374,7 +394,7 @@ export function V2SettingsView() {
             const suggested = showLocalNeutralRouting ? '' : defaultModelFor(draftProvider, s.stage);
             const modelHint = showLocalNeutralRouting
               ? 'local model selected in backend'
-              : `${draftProvider === 'openrouter' ? 'suggested' : 'default'}: ${suggested}`;
+              : `${draftProvider === 'openrouter' || draftProvider === 'genai_mil' ? 'suggested' : 'default'}: ${suggested}`;
             return (
               <div key={s.stage} className="model-row">
                 <div>
@@ -395,9 +415,9 @@ export function V2SettingsView() {
               </div>
             );
           })}
-          {draftProvider === 'openrouter' && (
+          {(draftProvider === 'openrouter' || draftProvider === 'genai_mil') && (
             <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 8 }}>
-              OpenRouter has no universal fallback — the suggestions above are just hints. Save an explicit model per stage before running a recipe.
+              This provider has no universal fallback — the suggestions above are just hints. Save an explicit model per stage before running a recipe.
             </div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>

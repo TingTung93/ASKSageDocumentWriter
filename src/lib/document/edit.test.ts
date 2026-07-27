@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { requestDocumentEdits } from './edit';
+import { isValidDocumentEditOp, requestDocumentEdits } from './edit';
 import type { LLMClient } from '../provider/types';
 import type { ModelInfo, QueryInput, QueryResponse } from '../asksage/types';
 import type { ParagraphInfo } from '../template/parser';
@@ -106,5 +106,14 @@ describe('requestDocumentEdits', () => {
     expect(systemPrompt).toContain('missing required component');
     expect(systemPrompt).toContain('Use insert_paragraph_after');
     expect(systemPrompt).toContain('Do not force every improvement into a replacement');
+  });
+});
+
+describe('isValidDocumentEditOp', () => {
+  it('rejects malformed and out-of-range agent proposals', () => {
+    expect(isValidDocumentEditOp({ op: 'replace_paragraph_text', index: 9 }, new Set([0]))).toBe(false);
+    expect(isValidDocumentEditOp({ op: 'replace_paragraph_text', index: 9, new_text: 'x' }, new Set([0]))).toBe(false);
+    expect(isValidDocumentEditOp({ op: 'not_an_operation' }, new Set([0]))).toBe(false);
+    expect(isValidDocumentEditOp({ op: 'replace_paragraph_text', index: 0, new_text: 'x' }, new Set([0]))).toBe(true);
   });
 });

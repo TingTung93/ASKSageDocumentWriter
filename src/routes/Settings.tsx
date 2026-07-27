@@ -154,6 +154,8 @@ export function Settings() {
           body={
             provider === 'openrouter'
               ? 'Connect to OpenRouter on the Connection tab to see the available models in the picker.'
+              : provider === 'genai_mil'
+                ? 'Connect to GenAI.mil on the Connection tab to see the available models in the picker.'
               : 'Connect to Ask Sage on the Connection tab to see the available models in the picker.'
           }
         />
@@ -643,6 +645,7 @@ function ModelCatalogRefresh({
           </>
         )}
         {provider === 'openrouter' && ' Refresh after changing your OpenRouter account or model access.'}
+        {provider === 'genai_mil' && ' GenAI.mil does not expose tool calling in the current STARK API.'}
       </p>
     </div>
   );
