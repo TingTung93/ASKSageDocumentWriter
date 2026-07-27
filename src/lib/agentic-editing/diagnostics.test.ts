@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { db } from '../db/schema';
 import { putTraceArtifact } from './artifacts';
 import { exportEditingDiagnostics } from './diagnostics';
+import { appendTraceEvent } from './journal';
 import { createEditingSession, appendEditingTurn } from './store';
 
 afterEach(async () => { await db.delete(); await db.open(); });
@@ -10,9 +11,12 @@ describe('exportEditingDiagnostics', () => {
     await createEditingSession({ id: 's', target_kind: 'uploaded_document', target_id: 'd', status: 'completed', created_at: '2026-01-01', updated_at: '2026-01-01' });
     await appendEditingTurn({ id: 't', session_id: 's', target: { kind: 'uploaded_document', targetId: 'd' }, base_version_id: 'v', instruction: 'Sensitive instruction', acceptance_criteria: [], proposal: { summary: 'Sensitive replacement text', operations: [], criterionCoverage: [], evidence: [], assumptions: [], unresolvedQuestions: [] }, provider_id: 'genai_mil', models_used: [], status: 'completed', created_at: '2026-01-01' });
     await putTraceArtifact({ sessionId: 's', turnId: 't', kind: 'rendered_prompt', content: 'Sensitive document words', containsDocumentContent: true });
+    await appendTraceEvent({ sessionId: 's', turnId: 't', node: 'model', type: 'model.response', status: 'failed', summary: 'Failed', reason: 'Sensitive routing detail', error: { code: 'invalid_model_output', message: 'Sensitive provider response' } });
     expect(await exportEditingDiagnostics('s', 'sanitized')).not.toContain('Sensitive document words');
     expect(await exportEditingDiagnostics('s', 'sanitized')).not.toContain('Sensitive instruction');
     expect(await exportEditingDiagnostics('s', 'sanitized')).not.toContain('Sensitive replacement text');
+    expect(await exportEditingDiagnostics('s', 'sanitized')).not.toContain('Sensitive provider response');
+    expect(await exportEditingDiagnostics('s', 'sanitized')).not.toContain('Sensitive routing detail');
     expect(await exportEditingDiagnostics('s', 'full')).toContain('Sensitive document words');
   });
 });
