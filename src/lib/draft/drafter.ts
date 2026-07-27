@@ -102,8 +102,9 @@ export async function draftSection(
     queryInput.live = opts.live ?? 0;
   }
 
-  // Define the complete suite of drafting tools
-  queryInput.tools = [
+  // Define the complete suite only for providers that advertise native
+  // tool calling. GenAI.mil's STARK schema rejects tools/tool_choice.
+  if (client.capabilities.tools) queryInput.tools = [
     {
       type: 'function',
       function: {

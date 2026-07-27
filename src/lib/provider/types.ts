@@ -1,6 +1,6 @@
 // Provider abstraction.
 //
-// Two backends are supported:
+// Four backends are supported:
 //
 //   1. `asksage` — the DHA health.mil tenant, used for CUI work. Goes
 //      through `AskSageClient` and the /server/* surface. This is the
@@ -18,6 +18,10 @@
 //      drafting experiments. Supports `getModels`, `query`, `queryJson`,
 //      and a best-effort embeddings method when the local backend does.
 //
+//   4. `genai_mil` — the GenAI.mil STARK OpenAI-compatible gateway.
+//      Supports models and chat completions, but not tool calling,
+//      datasets, live search, file ingest, or embeddings.
+//
 // `LLMClient` is the structural surface both providers implement. It
 // covers the methods the drafting/synthesis/refine pipeline relies on.
 // `AskSageClient` is a *subtype* of `LLMClient` (it has all the methods
@@ -26,7 +30,7 @@
 
 import type { ModelInfo, QueryInput, QueryResponse } from '../asksage/types';
 
-export type ProviderId = 'asksage' | 'openrouter' | 'local_openai';
+export type ProviderId = 'asksage' | 'openrouter' | 'local_openai' | 'genai_mil';
 
 /**
  * Provider capability flags. Used by callers (drafting chain, preflight,

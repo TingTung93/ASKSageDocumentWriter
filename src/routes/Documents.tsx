@@ -40,6 +40,8 @@ import { toast } from '../lib/state/toast';
 import { Spinner } from '../components/Spinner';
 import { ProgressBar } from '../components/ProgressBar';
 import { DocxSkeleton } from '../components/DocxSkeleton';
+import { AgentTraceInspector } from '../components/AgentTraceInspector';
+import { startPromptOnlyEditingTurn } from '../lib/agentic-editing/runner';
 import { runAskSageResearch } from '../lib/research/asksage';
 import { validateResearchPack } from '../lib/research/citations';
 import type { ResearchDepth, ResearchPack } from '../lib/research/types';
@@ -245,6 +247,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   } | null>(null);
   const [attachingRef, setAttachingRef] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
 
   const onAskSage = provider === 'asksage';
   const referenceFiles = doc.reference_files ?? [];
@@ -435,6 +438,49 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
       );
     } finally {
       setAttachingRef(false);
+    }
+  }
+
+  async function onRunAuditableEdit() {
+    if (!apiKey) {
+      setRequestError('Connect on the Connection tab first.');
+      return;
+    }
+    if (!paragraphs) {
+      setRequestError('Document is still parsing. Try again in a moment.');
+      return;
+    }
+    setRequestError(null);
+    setAgentRunning(true);
+    try {
+      const model = cleanupModelOverride ?? 'default';
+      const result = await startPromptOnlyEditingTurn(createLLMClient({ provider, baseUrl, apiKey }), {
+        target: { kind: 'uploaded_document', targetId: doc.id },
+        source: { filename: doc.filename, paragraphs },
+        instruction: instruction.trim(),
+        criteria: [
+          { id: 'preserve-intent', description: 'Preserve the author\'s intent and document formatting.', kind: 'content', required: true, source: 'system' },
+          { id: 'surgical', description: 'Make only narrow, supportable edits.', kind: 'style', required: true, source: 'system' },
+        ],
+        providerId: provider,
+        model,
+      });
+      const operations = result.turn.proposal?.operations ?? [];
+      const originalByIndex = new Map(paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+      const edits: StoredEdit[] = operations.flatMap((item, index) => {
+        if (item.target !== 'uploaded_document') return [];
+        const paragraphIndex = targetIndexFor(item.operation);
+        const sourceParagraph = paragraphIndex === null ? undefined : originalByIndex.get(paragraphIndex);
+        const op = sourceParagraph ? { ...item.operation, anchor: computeAnchor(sourceParagraph) } : item.operation;
+        return [{ id: `agent_${result.turn.id}_${index}`, op, status: 'proposed' as const, before_text: sourceParagraph?.text, rationale: item.operation.rationale, created_at: new Date().toISOString() }];
+      });
+      if (edits.length > 0) await db.documents.put({ ...doc, edits: [...doc.edits, ...edits], last_edit_model: model });
+      toast.success(edits.length > 0 ? `Auditable agent proposed ${edits.length} edit${edits.length === 1 ? '' : 's'}.` : 'Auditable agent found no edits to propose.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRequestError(`Auditable agent failed: ${message}`);
+    } finally {
+      setAgentRunning(false);
     }
   }
 
@@ -845,6 +891,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           />
         )}
       </form>
+      <div style={{ marginTop: '0.6rem' }}>
+        <button type="button" className="btn-secondary" onClick={() => void onRunAuditableEdit()} disabled={agentRunning || running || !apiKey || !paragraphs}>
+          {agentRunning ? 'Planning and critiquing edits…' : 'Run auditable agent edit'}
+        </button>
+        <p className="note">Creates a visible plan → proposal → critique trace, then places only proposed edits in the normal approval queue.</p>
+      </div>
       {requestError && <div className="error">Request failed: {requestError}</div>}
 
       {scopedPopoverOpen && (
@@ -917,6 +969,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         formatting (page setup, styles, numbering, headers/footers, content
         controls) is preserved unchanged.
       </p>
+      <AgentTraceInspector targetKind="uploaded_document" targetId={doc.id} />
     </section>
   );
 }
