@@ -14,13 +14,15 @@ const mocks = vi.hoisted(() => ({
   listTurns: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
   listVersions: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
   commitVersion: vi.fn(async () => ({})),
+  commitFreeformVersion: vi.fn(async () => ({})),
   currentVersion: vi.fn<(...args: any[]) => Promise<any>>(async () => undefined),
   undoVersion: vi.fn(async () => ({})),
+  undoFreeformVersion: vi.fn(async () => ({})),
 }));
 const {
   commitVersion, currentVersion, findSession, getVersion, listTurns,
   listVersions, putVersion, setTurnStatus, startTurn, undoVersion,
-  updateTurn,
+  updateTurn, commitFreeformVersion, undoFreeformVersion,
 } = mocks;
 
 vi.mock('../../../lib/agentic-editing/runner', () => ({
@@ -38,8 +40,10 @@ vi.mock('../../../lib/agentic-editing/store', () => ({
 }));
 vi.mock('../../../lib/agentic-editing/versions', () => ({
   commitTemplateDraftVersion: mocks.commitVersion,
+  commitFreeformDraftVersion: mocks.commitFreeformVersion,
   getCurrentAcceptedVersion: mocks.currentVersion,
   undoTemplateDraftVersion: mocks.undoVersion,
+  undoFreeformDraftVersion: mocks.undoFreeformVersion,
 }));
 
 const client = {} as LLMClient;
@@ -189,6 +193,46 @@ describe('useDraftEditingSession', () => {
       draftId: 'draft-1',
       expectedParentVersionId: 'current',
       restoreVersionId: 'old',
+    });
+  });
+
+  it('uses the same proposal lifecycle with atomic freeform commit and undo adapters', async () => {
+    currentVersion.mockResolvedValue({ id: 'freeform-current' });
+    const { result } = renderHook(() => useDraftEditingSession({
+      target: {
+        kind: 'freeform_draft',
+        targetId: 'project-1',
+        projectId: 'project-1',
+        sectionId: 'block-1',
+      },
+      source,
+      client: () => client,
+      providerId: 'asksage',
+      model: 'model',
+      applyProposal: async () => [{ role: 'body', text: 'Freeform revision.' }],
+    }));
+
+    await act(() => result.current.propose('Revise block'));
+    await act(() => result.current.accept());
+    expect(commitFreeformVersion).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: 'project-1',
+      paragraphs: [{ role: 'body', text: 'Freeform revision.' }],
+      sourceTurnId: 'turn-1',
+    }));
+
+    await act(() => result.current.undo({
+      id: 'freeform-old',
+      target_kind: 'freeform_draft',
+      target_id: 'project-1',
+      label: 'Initial freeform draft',
+      status: 'accepted',
+      snapshot_json: JSON.stringify(source),
+      created_at: '2026-07-27T00:00:00.000Z',
+    }));
+    expect(undoFreeformVersion).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      expectedParentVersionId: 'freeform-current',
+      restoreVersionId: 'freeform-old',
     });
   });
 });

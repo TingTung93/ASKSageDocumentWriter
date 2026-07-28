@@ -20,11 +20,17 @@ import type {
   EditingTurnRecord,
   DocumentVersionRecord,
 } from '../../../lib/agentic-editing/types';
+import type { ResolvedSourceScope } from '../../../lib/agentic-editing/context/source-scope';
+import type { SelectedGroundingChunk } from '../../../lib/agentic-editing/context/relevance';
+import { validateCitationProvenance } from '../../../lib/agentic-editing/validation/citations';
 import {
   commitTemplateDraftVersion,
+  commitFreeformDraftVersion,
   getCurrentAcceptedVersion,
   undoTemplateDraftVersion,
+  undoFreeformDraftVersion,
 } from '../../../lib/agentic-editing/versions';
+import type { DraftEditOp } from '../../../lib/edit/types';
 
 export interface DraftEditingPreview {
   before: DraftParagraph[];
@@ -35,12 +41,23 @@ export interface DraftEditingPreview {
 }
 
 export interface DraftEditingSessionOptions {
-  target: EditingTargetRef & { templateId: string; sectionId: string };
+  target: EditingTargetRef;
   source: DraftParagraph[];
   client: () => LLMClient;
   providerId: EditingTurnRecord['provider_id'];
   model: string;
   onDocumentChanged?: (change: 'accepted' | 'restored') => void;
+  grounding?: {
+    scope: ResolvedSourceScope;
+    contents: Array<{ sourceId: string; text: string }>;
+    selectedChunks?: SelectedGroundingChunk[];
+    targetSelection?: unknown;
+  };
+  applyProposal?: (
+    edits: DraftEditOp[],
+    current: DraftParagraph[],
+    baseVersionId: string,
+  ) => Promise<DraftParagraph[]>;
 }
 
 export function useDraftEditingSession(options: DraftEditingSessionOptions) {
@@ -123,6 +140,7 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
       const result = await startPromptOnlyEditingTurn(options.client(), {
         target: options.target,
         source: options.source,
+        context: options.grounding,
         instruction,
         criteria,
         providerId: options.providerId,
@@ -133,20 +151,18 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
         .filter((operation) => operation.target === 'draft_paragraphs')
         .map((operation) => operation.operation);
       if (edits.length === 0) throw new Error('The model proposed no applicable draft changes.');
-      const applied = applyDraftEdits(
-        { edits },
-        {
-          get: (templateId, sectionId) =>
-            templateId === options.target.templateId &&
-            sectionId === options.target.sectionId
-              ? options.source
-              : undefined,
-        },
-      );
-      const failures = applied.applied.filter((item) => !item.success);
-      const after = applied.updated.get(`${options.target.templateId}::${options.target.sectionId}`);
-      if (failures.length || !after) {
-        throw new Error(failures[0]?.error ?? 'The proposal did not change the selected section.');
+      const after = options.applyProposal
+        ? await options.applyProposal(edits, options.source, result.turn.base_version_id)
+        : applySectionProposal(edits, options);
+      if (options.grounding) {
+        const citations = validateCitationProvenance({
+          beforeText: options.source.map((paragraph) => paragraph.text).join('\n'),
+          afterText: after.map((paragraph) => paragraph.text).join('\n'),
+          sourceScope: options.grounding.scope,
+          selectedChunks: options.grounding.selectedChunks ?? [],
+          evidence: result.turn.proposal?.evidence,
+        });
+        if (!citations.ok) throw new Error(citations.errors.join(' '));
       }
       const previewVersionId = makeAgentId('version');
       await putDocumentVersion({
@@ -180,13 +196,17 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
     setBusy(true);
     setError(null);
     try {
-      await commitTemplateDraftVersion({
-        draftId: options.target.targetId,
+      const commit = {
         expectedParentVersionId: preview.turn.base_version_id,
         paragraphs: preview.after,
         sourceTurnId: preview.turn.id,
         summary: preview.turn.proposal?.summary || preview.turn.instruction,
-      });
+      };
+      if (options.target.kind === 'freeform_draft') {
+        await commitFreeformDraftVersion({ ...commit, projectId: options.target.targetId });
+      } else {
+        await commitTemplateDraftVersion({ ...commit, draftId: options.target.targetId });
+      }
       await updateEditingSessionStatus(preview.sessionId, 'completed', preview.turn.id);
       setPreview(null);
       await refreshVersions();
@@ -220,11 +240,15 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
     try {
       const current = await getCurrentAcceptedVersion(options.target.kind, options.target.targetId);
       if (!current) throw new Error('There is no current revision to undo.');
-      await undoTemplateDraftVersion({
-        draftId: options.target.targetId,
+      const undoInput = {
         expectedParentVersionId: current.id,
         restoreVersionId: version.id,
-      });
+      };
+      if (options.target.kind === 'freeform_draft') {
+        await undoFreeformDraftVersion({ ...undoInput, projectId: options.target.targetId });
+      } else {
+        await undoTemplateDraftVersion({ ...undoInput, draftId: options.target.targetId });
+      }
       await refreshVersions();
       options.onDocumentChanged?.('restored');
     } catch (cause) {
@@ -235,6 +259,33 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
   }, [options, refreshVersions]);
 
   return { accept, busy, error, preview, propose, reject, undo, versions };
+}
+
+function applySectionProposal(
+  edits: DraftEditOp[],
+  options: DraftEditingSessionOptions,
+): DraftParagraph[] {
+  if (!options.target.templateId || !options.target.sectionId) {
+    throw new Error('This target requires a proposal adapter.');
+  }
+  const applied = applyDraftEdits(
+    { edits },
+    {
+      get: (templateId, sectionId) =>
+        templateId === options.target.templateId &&
+        sectionId === options.target.sectionId
+          ? options.source
+          : undefined,
+    },
+  );
+  const failure = applied.applied.find((item) => !item.success);
+  const after = applied.updated.get(
+    `${options.target.templateId}::${options.target.sectionId}`,
+  );
+  if (failure || !after) {
+    throw new Error(failure?.error ?? 'The proposal did not change the selected target.');
+  }
+  return after;
 }
 
 function parseParagraphSnapshot(snapshot: string): DraftParagraph[] | null {

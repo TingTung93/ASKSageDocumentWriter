@@ -1,4 +1,5 @@
 import type { DraftParagraph } from '../../../lib/draft/types';
+import type { DraftEditOp } from '../../../lib/edit/types';
 import type { LLMClient } from '../../../lib/provider/types';
 import type { EditingTargetRef, EditingTurnRecord } from '../../../lib/agentic-editing/types';
 import { paragraphsToMarkdown } from '../../../lib/freeform/drafter';
@@ -7,24 +8,55 @@ import { DraftDiffPreview } from './DraftDiffPreview';
 import { InstructionComposer } from './InstructionComposer';
 import { useDraftEditingSession } from './useDraftEditingSession';
 import { RevisionTimeline } from './RevisionTimeline';
+import { CitationProvenance } from './CitationProvenance';
+import { SourceScopePicker } from './SourceScopePicker';
+import type { DraftGroundingSource } from './grounding';
+import { resolveAgentCapabilities } from '../../../lib/agentic-editing/capabilities';
+import { resolveSourceScope } from '../../../lib/agentic-editing/context/source-scope';
+import { useMemo, useState } from 'react';
 
 export function EditSessionPanel({
   client,
   model,
   providerId,
   onDocumentChanged,
+  groundingSources = [],
   source,
   target,
+  targetSelection,
+  applyProposal,
 }: {
   client: () => LLMClient;
   model: string;
   onDocumentChanged?: (change: 'accepted' | 'restored') => void;
+  groundingSources?: DraftGroundingSource[];
   providerId: EditingTurnRecord['provider_id'];
   source: DraftParagraph[];
-  target: EditingTargetRef & { templateId: string; sectionId: string };
+  target: EditingTargetRef;
+  targetSelection?: unknown;
+  applyProposal?: (
+    edits: DraftEditOp[],
+    current: DraftParagraph[],
+    baseVersionId: string,
+  ) => Promise<DraftParagraph[]>;
 }) {
+  const capabilities = useMemo(() => resolveAgentCapabilities(client()), [client]);
+  const [sourceScope, setSourceScope] = useState(() => resolveSourceScope({
+    sources: groundingSources,
+    maxContextCharacters: 24_000,
+  }, capabilities));
+  const grounding = useMemo(() => ({
+    scope: sourceScope,
+    targetSelection,
+    contents: sourceScope.entries
+      .filter((entry) => entry.included && entry.allocatedCharacters > 0)
+      .flatMap((entry) => {
+        const text = groundingSources.find((source) => source.id === entry.id)?.promptText;
+        return text ? [{ sourceId: entry.id, text: text.slice(0, entry.allocatedCharacters) }] : [];
+      }),
+  }), [groundingSources, sourceScope, targetSelection]);
   const session = useDraftEditingSession({
-    client, model, onDocumentChanged, providerId, source, target,
+    applyProposal, client, grounding, model, onDocumentChanged, providerId, source, target,
   });
   return (
     <aside style={{
@@ -44,6 +76,14 @@ export function EditSessionPanel({
           <div style={{ marginTop: 10 }}>
             <InstructionComposer busy={session.busy} onSubmit={session.propose} />
           </div>
+          <div style={{ marginTop: 10 }}>
+            <SourceScopePicker
+              capabilities={capabilities}
+              onChange={setSourceScope}
+              scope={sourceScope}
+              sources={groundingSources}
+            />
+          </div>
         </>
       ) : (
         <>
@@ -51,6 +91,11 @@ export function EditSessionPanel({
             after={paragraphsToMarkdown(session.preview.after)}
             before={paragraphsToMarkdown(session.preview.before)}
             summary={session.preview.turn.proposal?.summary}
+          />
+          <CitationProvenance
+            after={paragraphsToMarkdown(session.preview.after)}
+            before={paragraphsToMarkdown(session.preview.before)}
+            evidence={session.preview.turn.proposal?.evidence ?? []}
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
             <button className="btn btn-primary btn-sm" disabled={session.busy} onClick={session.accept}>

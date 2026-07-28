@@ -14,6 +14,8 @@ import type { AcceptanceCriterion, EditingTargetRef, EditingTurnRecord } from '.
 export interface StartEditingTurnInput {
   target: EditingTargetRef;
   source: unknown;
+  /** Provider-neutral, resolved grounding context kept separate from the version snapshot. */
+  context?: unknown;
   instruction: string;
   criteria: AcceptanceCriterion[];
   providerId: EditingTurnRecord['provider_id'];
@@ -66,10 +68,22 @@ export async function startPromptOnlyEditingTurn(
   await appendEditingTurn(turn);
   await appendTraceEvent({ sessionId, turnId, node: 'turn', type: 'turn.started', status: 'running', summary: 'Editing turn started.' });
   await appendTraceEvent({ sessionId, turnId, node: 'route', type: 'route.selected', status: 'succeeded', summary: 'Using auditable prompt-only workflow.', reason: `${capabilities.evidence.map((item) => item.reason).join(' ')} This editing flow intentionally uses its provider-neutral prompt-only baseline.` });
-  const capabilityArtifact = await putTraceArtifact({ sessionId, turnId, kind: 'context_manifest', content: JSON.stringify({ capabilities, target: input.target }), containsDocumentContent: false });
+  const contextManifest = input.context && typeof input.context === 'object' && 'scope' in input.context
+    ? {
+        scope: (input.context as { scope: unknown }).scope,
+        targetSelection: summarizeTargetSelection(
+          (input.context as { targetSelection?: unknown }).targetSelection,
+        ),
+      }
+    : input.context === undefined ? undefined : { provided: true };
+  const capabilityArtifact = await putTraceArtifact({ sessionId, turnId, kind: 'context_manifest', content: JSON.stringify({ capabilities, target: input.target, context: contextManifest }), containsDocumentContent: false });
   try {
     const result = await runPromptOnlyEditing(withAuditedTransport(client, { sessionId, turnId }), {
-      target: input.target, source: input.source, instruction: input.instruction,
+      target: input.target,
+      source: input.context === undefined
+        ? input.source
+        : { target: input.source, grounding: input.context },
+      instruction: input.instruction,
       criteria: input.criteria, model: input.model,
     });
     const artifacts = await Promise.all([
@@ -97,4 +111,10 @@ export async function startPromptOnlyEditingTurn(
     await appendTraceEvent({ sessionId, turnId, node: 'plan-propose-critique', type: 'node.failed', status: 'failed', summary: 'Editing turn failed.', error: { code: 'invalid_model_output', message } });
     throw error;
   }
+}
+
+function summarizeTargetSelection(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  const { paragraph: _paragraph, ...metadata } = value as Record<string, unknown>;
+  return metadata;
 }

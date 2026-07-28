@@ -14,6 +14,7 @@ import {
   templateSectionSelection,
   type DraftSelectionScope,
 } from './drafting/selection';
+import { chunkFreeformByH1 } from './helpers';
 
 export function V2ProjectWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -50,6 +51,7 @@ export function V2ProjectWorkspace() {
       id: template.id,
       sectionIds: template.schema_json.sections.map((section) => section.id),
     })),
+    freeformBlockIds: chunkFreeformByH1(project.freeform_draft ?? []).map((chunk) => chunk.id),
   };
 
   return (

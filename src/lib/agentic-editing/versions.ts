@@ -1,4 +1,4 @@
-import { db, type DraftRecord } from '../db/schema';
+import { db, type DraftRecord, type ProjectRecord } from '../db/schema';
 import type { DraftParagraph } from '../draft/types';
 import { makeAgentId } from './ids';
 import type { DocumentVersionRecord } from './types';
@@ -34,10 +34,34 @@ export interface UndoTemplateDraftVersionInput {
   now?: string;
 }
 
+export interface CommitFreeformDraftVersionInput {
+  projectId: string;
+  expectedParentVersionId?: string;
+  paragraphs: DraftParagraph[];
+  sourceTurnId?: string;
+  summary: string;
+  now?: string;
+}
+
+export interface UndoFreeformDraftVersionInput {
+  projectId: string;
+  expectedParentVersionId: string;
+  restoreVersionId: string;
+  sourceTurnId?: string;
+  summary?: string;
+  now?: string;
+}
+
 export interface VersionCommitResult {
   version: DocumentVersionRecord;
   initialVersion?: DocumentVersionRecord;
   draft: DraftRecord;
+}
+
+export interface FreeformVersionCommitResult {
+  version: DocumentVersionRecord;
+  initialVersion?: DocumentVersionRecord;
+  project: ProjectRecord & { freeform_draft: DraftParagraph[] };
 }
 
 export async function getCurrentAcceptedVersion(
@@ -167,6 +191,103 @@ export async function undoTemplateDraftVersion(
   );
 }
 
+/**
+ * Atomically appends a freeform document version and updates the project row
+ * used by preview and export. The target ID is always ProjectRecord.id.
+ */
+export async function commitFreeformDraftVersion(
+  input: CommitFreeformDraftVersionInput,
+): Promise<FreeformVersionCommitResult> {
+  return db.transaction(
+    'rw',
+    db.projects,
+    db.document_versions,
+    db.editing_turns,
+    async () => {
+      const project = await requireFreeformProject(input.projectId);
+      const versions = await acceptedVersions('freeform_draft', input.projectId);
+      const current = findAcceptedLeaf(versions);
+      assertExpectedParent(input.expectedParentVersionId, current?.id);
+      const now = input.now ?? new Date().toISOString();
+      let parent = current;
+      let initialVersion: DocumentVersionRecord | undefined;
+      if (!parent) {
+        initialVersion = makeFreeformVersion({
+          projectId: input.projectId,
+          snapshot: project.freeform_draft,
+          label: 'Initial draft',
+          now,
+        });
+        await db.document_versions.add(initialVersion);
+        parent = initialVersion;
+      }
+      const version = makeFreeformVersion({
+        projectId: input.projectId,
+        parentVersionId: parent.id,
+        sourceTurnId: input.sourceTurnId,
+        snapshot: input.paragraphs,
+        label: requireSummary(input.summary),
+        now,
+      });
+      const updatedProject = {
+        ...project,
+        freeform_draft: clone(input.paragraphs),
+        freeform_draft_generated_at: now,
+        updated_at: now,
+      };
+      await db.document_versions.add(version);
+      await db.projects.put(updatedProject);
+      await completeSourceTurn(input.sourceTurnId, version.id, now);
+      return {
+        version,
+        ...(initialVersion ? { initialVersion } : {}),
+        project: updatedProject,
+      };
+    },
+  );
+}
+
+export async function undoFreeformDraftVersion(
+  input: UndoFreeformDraftVersionInput,
+): Promise<FreeformVersionCommitResult> {
+  return db.transaction(
+    'rw',
+    db.projects,
+    db.document_versions,
+    db.editing_turns,
+    async () => {
+      const project = await requireFreeformProject(input.projectId);
+      const versions = await acceptedVersions('freeform_draft', input.projectId);
+      const current = findAcceptedLeaf(versions);
+      assertExpectedParent(input.expectedParentVersionId, current?.id);
+      const restore = versions.find((version) => version.id === input.restoreVersionId);
+      if (!restore) {
+        throw new Error('Restore version is not an accepted version for this freeform draft.');
+      }
+      const paragraphs = parseParagraphSnapshot(restore.snapshot_json);
+      const now = input.now ?? new Date().toISOString();
+      const version = makeFreeformVersion({
+        projectId: input.projectId,
+        parentVersionId: current!.id,
+        sourceTurnId: input.sourceTurnId,
+        snapshot: paragraphs,
+        label: input.summary?.trim() || `Undo to ${restore.label}`,
+        now,
+      });
+      const updatedProject = {
+        ...project,
+        freeform_draft: clone(paragraphs),
+        freeform_draft_generated_at: now,
+        updated_at: now,
+      };
+      await db.document_versions.add(version);
+      await db.projects.put(updatedProject);
+      await completeSourceTurn(input.sourceTurnId, version.id, now);
+      return { version, project: updatedProject };
+    },
+  );
+}
+
 export async function listAcceptedVersionLineage(
   targetKind: DocumentVersionRecord['target_kind'],
   targetId: string,
@@ -194,6 +315,27 @@ function makeVersion(input: {
     id: makeAgentId('version'),
     target_kind: 'template_draft',
     target_id: input.targetId,
+    ...(input.parentVersionId ? { parent_version_id: input.parentVersionId } : {}),
+    ...(input.sourceTurnId ? { source_turn_id: input.sourceTurnId } : {}),
+    label: input.label,
+    status: 'accepted',
+    snapshot_json: JSON.stringify(clone(input.snapshot)),
+    created_at: input.now,
+  };
+}
+
+function makeFreeformVersion(input: {
+  projectId: string;
+  parentVersionId?: string;
+  sourceTurnId?: string;
+  snapshot: DraftParagraph[];
+  label: string;
+  now: string;
+}): DocumentVersionRecord {
+  return {
+    id: makeAgentId('version'),
+    target_kind: 'freeform_draft',
+    target_id: input.projectId,
     ...(input.parentVersionId ? { parent_version_id: input.parentVersionId } : {}),
     ...(input.sourceTurnId ? { source_turn_id: input.sourceTurnId } : {}),
     label: input.label,
@@ -236,6 +378,29 @@ async function requireDraft(id: string): Promise<DraftRecord> {
   const draft = await db.drafts.get(id);
   if (!draft) throw new Error(`Draft "${id}" was not found.`);
   return draft;
+}
+
+async function requireFreeformProject(id: string) {
+  const project = await db.projects.get(id);
+  if (!project) throw new Error(`Project "${id}" was not found.`);
+  if ((project.mode ?? 'template') !== 'freeform' || !project.freeform_draft) {
+    throw new Error(`Project "${id}" does not contain a freeform draft.`);
+  }
+  return project as typeof project & { freeform_draft: DraftParagraph[] };
+}
+
+async function completeSourceTurn(
+  sourceTurnId: string | undefined,
+  versionId: string,
+  now: string,
+): Promise<void> {
+  if (!sourceTurnId) return;
+  await db.editing_turns.update(sourceTurnId, {
+    result_version_id: versionId,
+    user_decision: 'accepted',
+    status: 'completed',
+    completed_at: now,
+  });
 }
 
 function parseParagraphSnapshot(value: string): DraftParagraph[] {

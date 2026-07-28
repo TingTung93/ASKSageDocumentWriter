@@ -24,7 +24,9 @@ function Harness() {
     <div>
       <output data-testid="selection">
         {selection.selection
-          ? `${selection.origin}:${selection.selection.projectId}:${selection.selection.sectionId}`
+          ? `${selection.origin}:${selection.selection.projectId}:${
+              'sectionId' in selection.selection ? selection.selection.sectionId : selection.selection.blockId
+            }`
           : 'none'}
       </output>
       <button onClick={() => selection.observeSelection(

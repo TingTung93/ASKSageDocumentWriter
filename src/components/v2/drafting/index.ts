@@ -4,4 +4,7 @@ export * from './DraftDiffPreview';
 export * from './EditSessionPanel';
 export * from './InstructionComposer';
 export * from './RevisionTimeline';
+export * from './SourceScopePicker';
+export * from './CitationProvenance';
+export * from './grounding';
 export * from './useDraftEditingSession';
