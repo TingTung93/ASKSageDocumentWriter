@@ -404,7 +404,7 @@ export function Welcome() {
                 {draftProvider === 'asksage'
                   ? 'This points to the DHA health.mil Ask Sage server. Only change it if IT gave you a different address.'
                   : draftProvider === 'genai_mil'
-                    ? 'This should include /v1. Change it if your GenAI.mil portal provides a different STARK gateway address.'
+                    ? 'The default same-origin /api/genai/v1 route requires npm run preview or npm run serve:proxy. It securely forwards requests to the STARK gateway without browser CORS.'
                   : draftProvider === 'local_openai'
                     ? 'This should include /v1 for OpenAI-compatible local servers. Use Custom above for a non-preset endpoint.'
                     : 'This points to the OpenRouter service. Only change it if you have a custom setup.'}

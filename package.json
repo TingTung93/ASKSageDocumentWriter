@@ -3,11 +3,12 @@
   "private": true,
   "version": "0.4.2",
   "type": "module",
-  "description": "Provider-neutral, zero-backend workspace for drafting and revising structured Word documents with user-selected AI providers",
+  "description": "Provider-neutral workspace for drafting and revising structured Word documents with user-selected AI providers",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "serve:proxy": "npm run build && node server/genai-proxy.mjs",
     "test": "vitest run",
     "test:browser": "playwright test",
     "test:release": "npm run build && npm run test:artifact && npm run test:browser",

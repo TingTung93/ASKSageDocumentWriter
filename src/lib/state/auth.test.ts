@@ -48,7 +48,17 @@ describe('auth state local provider support', () => {
     const useAuth = await loadAuth();
 
     expect(useAuth.getState().provider).toBe('genai_mil');
-    expect(useAuth.getState().baseUrl).toBe('https://api.genai.mil/v1');
+    expect(useAuth.getState().baseUrl).toBe('/api/genai/v1');
+  });
+
+  it('migrates the old direct GenAI.mil URL to the same-origin proxy', async () => {
+    sessionStorage.setItem(SESSION_KEY_PROVIDER, 'genai_mil');
+    sessionStorage.setItem(SESSION_KEY_BASE, 'https://api.genai.mil/v1');
+
+    const useAuth = await loadAuth();
+
+    expect(useAuth.getState().baseUrl).toBe('/api/genai/v1');
+    expect(sessionStorage.getItem(SESSION_KEY_BASE)).toBe('/api/genai/v1');
   });
 
   it('switching to local_openai uses the Ollama default if the old URL was default', async () => {

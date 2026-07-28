@@ -82,6 +82,19 @@ function readProvider(): ProviderId {
   return raw === 'openrouter' ? 'openrouter' : 'asksage';
 }
 
+function readBaseUrl(provider: ProviderId): string {
+  const stored = readSession(SESSION_KEY_BASE);
+  if (
+    provider === 'genai_mil' &&
+    stored?.replace(/\/$/, '') === 'https://api.genai.mil/v1'
+  ) {
+    const proxyUrl = defaultBaseUrlFor(provider);
+    writeSession(SESSION_KEY_BASE, proxyUrl);
+    return proxyUrl;
+  }
+  return stored ?? defaultBaseUrlFor(provider);
+}
+
 export interface AuthState {
   provider: ProviderId;
   apiKey: string | null;
@@ -108,10 +121,12 @@ export function getAuthConnection(state: Pick<
   return getProviderConnection(state);
 }
 
+const initialProvider = readProvider();
+
 export const useAuth = create<AuthState>((set, get) => ({
-  provider: readProvider(),
+  provider: initialProvider,
   apiKey: normalizeApiKey(readSession(SESSION_KEY_API)),
-  baseUrl: readSession(SESSION_KEY_BASE) ?? defaultBaseUrlFor(readProvider()),
+  baseUrl: readBaseUrl(initialProvider),
   models: readSessionJson(SESSION_KEY_MODELS, isModelInfoList),
   localProbe: readSessionJson(SESSION_KEY_LOCAL_PROBE, isLocalProbe),
   isValidating: false,

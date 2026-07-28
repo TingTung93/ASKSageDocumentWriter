@@ -1,6 +1,6 @@
 # Draft Workspace
 
-Provider-neutral, zero-backend single-page application that parses DOCX templates, drafts structured Word content, and edits finished DOCX files with the user's chosen AI provider. Current adapters include [Ask Sage](https://asksage.ai/), GenAI.mil, [OpenRouter](https://openrouter.ai/), and OpenAI-compatible local services.
+Provider-neutral single-page application that parses DOCX templates, drafts structured Word content, and edits finished DOCX files with the user's chosen AI provider. Current adapters include [Ask Sage](https://asksage.ai/), GenAI.mil, [OpenRouter](https://openrouter.ai/), and OpenAI-compatible local services.
 
 > **Brand and affiliation:** Draft Workspace is an independent product working name. Ask Sage is one supported provider and retains its own name wherever provider-specific capabilities are described. This project is not affiliated with, endorsed by, or sponsored by Ask Sage or the Defense Health Agency. No proprietary or sensitive information is included in this repository.
 
@@ -10,10 +10,16 @@ Provider-neutral, zero-backend single-page application that parses DOCX template
 npm install
 npm run dev          # Vite dev server at localhost:5173
 npm run build        # Produces release/index.html (single-file SPA)
+npm run serve:proxy  # Build and serve with the GenAI.mil proxy at localhost:4173
 npm test             # Vitest suite
 ```
 
-The production artifact is **`release/index.html`** — a single self-contained HTML file (~2.5 MB, ~745 KB gzipped) that runs from `file://`, an internal share, or any static server. No backend required; all state lives in the browser's IndexedDB.
+The production artifact is **`release/index.html`** — a single self-contained
+HTML file that runs from `file://`, an internal share, or any static server for
+providers that allow direct browser requests. GenAI.mil currently rejects
+browser CORS preflights, so use `npm run serve:proxy` and open
+`http://127.0.0.1:4173` when using that provider. All application state still
+lives in the browser's IndexedDB.
 
 ## What it does
 
@@ -61,9 +67,13 @@ src/
 | **OpenAI-compatible** | Optional | Hosted or local completion; structured output/tools enabled only after verification |
 
 You bring your own credentials. Secret values are held only in browser session
-storage and are sent only to the configured provider. Non-secret model and
-capability results may be retained locally. Provider suitability depends on
-your organization's data-classification and authorization rules.
+storage and are sent only to the configured provider. For GenAI.mil, the
+loopback proxy forwards the bearer key to the fixed
+`https://api.genai.mil` upstream without logging or persisting it. The proxy
+binds to `127.0.0.1` by default and accepts only the models and chat-completions
+routes. Non-secret model and capability results may be retained locally.
+Provider suitability depends on your organization's data-classification and
+authorization rules.
 
 See [User Guide](docs/user-guide.md), [Local LLM Setup](docs/local-llm-setup.md),
 and [Route Ownership](docs/route-ownership.md).

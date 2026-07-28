@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AskSageError } from '../asksage/types';
-import { GenAIMilClient } from './genai_mil';
+import { GENAI_MIL_DEFAULT_BASE_URL, GenAIMilClient } from './genai_mil';
 
 vi.mock('../asksage/audit', () => ({
   writeAuditEntry: vi.fn().mockResolvedValue(undefined),
@@ -24,6 +24,10 @@ describe('GenAIMilClient', () => {
   it('requires both a base URL and API key', () => {
     expect(() => new GenAIMilClient('', 'key')).toThrow(/baseUrl/);
     expect(() => new GenAIMilClient('https://stark.example.mil/v1', '')).toThrow(/apiKey/);
+  });
+
+  it('uses the bundled same-origin proxy by default', () => {
+    expect(GENAI_MIL_DEFAULT_BASE_URL).toBe('/api/genai/v1');
   });
 
   it('lists models with Bearer auth and marks tool calling unsupported', async () => {

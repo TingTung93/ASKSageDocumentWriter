@@ -34,8 +34,8 @@ describe('provider factory local_openai support', () => {
 });
 
 describe('provider factory GenAI.mil support', () => {
-  it('uses the GenAI.mil OpenAI-compatible API default', () => {
-    expect(defaultBaseUrlFor('genai_mil')).toBe('https://api.genai.mil/v1');
+  it('uses the bundled same-origin GenAI.mil proxy by default', () => {
+    expect(defaultBaseUrlFor('genai_mil')).toBe('/api/genai/v1');
   });
 
   it('labels GenAI.mil as lacking tool calling', () => {

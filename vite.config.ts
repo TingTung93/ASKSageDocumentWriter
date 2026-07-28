@@ -153,6 +153,24 @@ const classicifyEntryScript = {
 export default defineConfig({
   plugins: [react(), viteSingleFile(), classicifyEntryScript],
   base: './',
+  server: {
+    proxy: {
+      '/api/genai': {
+        target: 'https://api.genai.mil',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/genai/, ''),
+      },
+    },
+  },
+  preview: {
+    proxy: {
+      '/api/genai': {
+        target: 'https://api.genai.mil',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/genai/, ''),
+      },
+    },
+  },
   build: {
     // Output to release/ rather than the conventional dist/ because the
     // user's global .gitignore excludes dist/ and we need this artifact

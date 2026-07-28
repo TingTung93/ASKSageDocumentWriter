@@ -15,7 +15,12 @@ import {
 
 const defaultFetch: typeof fetch = (input, init) => globalThis.fetch(input, init);
 
-export const GENAI_MIL_DEFAULT_BASE_URL = 'https://api.genai.mil/v1';
+/**
+ * Same-origin route exposed by the bundled proxy server. STARK does not
+ * currently handle browser CORS preflights, so direct browser requests to
+ * https://api.genai.mil/v1 cannot succeed even with a valid API key.
+ */
+export const GENAI_MIL_DEFAULT_BASE_URL = '/api/genai/v1';
 export const GENAI_MIL_TIMEOUT_MS = 5 * 60 * 1000;
 
 interface GenAIMilModelsResponse {
