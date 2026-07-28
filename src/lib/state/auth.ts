@@ -3,6 +3,7 @@ import type { ModelInfo } from '../asksage/types';
 import { defaultBaseUrlFor } from '../provider/factory';
 import type { LocalEndpointProbeResult } from '../provider/local_openai';
 import type { ProviderId } from '../provider/types';
+import { getProviderConnection } from '../provider/connection';
 
 // Phase 0: API key lives in memory + sessionStorage for tab-refresh
 // tolerance. Encrypted IndexedDB persistence (with a user passphrase via
@@ -43,7 +44,7 @@ function readProvider(): ProviderId {
   return raw === 'openrouter' ? 'openrouter' : 'asksage';
 }
 
-interface AuthState {
+export interface AuthState {
   provider: ProviderId;
   apiKey: string | null;
   baseUrl: string;
@@ -60,6 +61,13 @@ interface AuthState {
   setValidating: (v: boolean) => void;
   setError: (msg: string | null) => void;
   clear: () => void;
+}
+
+export function getAuthConnection(state: Pick<
+  AuthState,
+  'provider' | 'apiKey' | 'baseUrl' | 'models' | 'localProbe' | 'error'
+>) {
+  return getProviderConnection(state);
 }
 
 export const useAuth = create<AuthState>((set, get) => ({

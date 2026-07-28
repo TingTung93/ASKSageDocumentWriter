@@ -13,7 +13,7 @@ import { V2IngestModal } from './V2IngestModal';
 import { V2LibraryView } from './V2LibraryView';
 import { V2AuditView } from './V2AuditView';
 import { V2SettingsView } from './V2SettingsView';
-import { useAuth } from '../../lib/state/auth';
+import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { toast } from '../../lib/state/toast';
 
 const FIRST_RUN_DISMISSED_KEY = 'asksage:v2:first-run-dismissed';
@@ -31,7 +31,8 @@ function V2LayoutInner() {
   const [showCP, setShowCP] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
-  const apiKey = useAuth((s) => s.apiKey);
+  const auth = useAuth();
+  const connection = getAuthConnection(auth);
   const storageWarnedRef = useRef(false);
   const warnStorageOnce = () => {
     if (storageWarnedRef.current) return;
@@ -41,16 +42,29 @@ function V2LayoutInner() {
   const [firstRunDismissed, setFirstRunDismissed] = useState<boolean>(() => {
     try { return sessionStorage.getItem(FIRST_RUN_DISMISSED_KEY) === '1'; } catch { return false; }
   });
-  const showFirstRun = !apiKey && !firstRunDismissed;
+  const showFirstRun = !connection.canGenerate && !firstRunDismissed;
   const dismissFirstRun = () => {
     try { sessionStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1'); } catch { warnStorageOnce(); }
     setFirstRunDismissed(true);
   };
   const { id } = useParams<{ id: string }>();
-  const project = useLiveQuery(() => (id ? db.projects.get(id) : undefined), [id]);
+  const project = useLiveQuery(
+    async () => (id ? (await db.projects.get(id)) ?? null : null),
+    [id],
+  );
   const allTemplates = useLiveQuery(() => db.templates.toArray(), []);
 
-  const { startRecipe, isRunning, recipeStageMessage, currentRun, resumeRecipe } = useRecipe();
+  const {
+    startRecipe,
+    isRunning,
+    recipeStageMessage,
+    currentRun,
+    recoveredRunStatus,
+    isRecoveringRun,
+    resumeRecipe,
+    retryRecipe,
+  } = useRecipe();
+  const effectiveRunStatus = recoveredRunStatus ?? currentRun?.status ?? null;
 
   useEffect(() => {
     const handleK = (e: KeyboardEvent) => {
@@ -66,49 +80,34 @@ function V2LayoutInner() {
       }
     };
     const openExport = () => setShowExport(true);
-    const regen = () => toast.info('Regenerating active section…');
-    const accept = () => toast.success('Findings applied');
     const openIngest = () => setShowIngest(true);
-    const slashRegen = () => toast.info('↻ Regenerating active section…');
-    const slashExpand = () => toast.info('⇱ Expanding active section…');
-    const slashTighten = () => toast.info('⇲ Tightening active section…');
-    const slashCite = () => toast.info('⁂ Strengthening citations…');
-    const slashRewrite = () => toast.info('✎ Rewrite — pick a target tone');
 
     window.addEventListener('keydown', handleK);
     window.addEventListener('v2:open-export', openExport);
-    window.addEventListener('v2:regen-active', regen);
-    window.addEventListener('v2:accept-findings', accept);
     window.addEventListener('v2:open-ingest', openIngest);
-    window.addEventListener('v2:slash-regen', slashRegen);
-    window.addEventListener('v2:slash-expand', slashExpand);
-    window.addEventListener('v2:slash-tighten', slashTighten);
-    window.addEventListener('v2:slash-cite', slashCite);
-    window.addEventListener('v2:slash-rewrite', slashRewrite);
     return () => {
       window.removeEventListener('keydown', handleK);
       window.removeEventListener('v2:open-export', openExport);
-      window.removeEventListener('v2:regen-active', regen);
-      window.removeEventListener('v2:accept-findings', accept);
       window.removeEventListener('v2:open-ingest', openIngest);
-      window.removeEventListener('v2:slash-regen', slashRegen);
-      window.removeEventListener('v2:slash-expand', slashExpand);
-      window.removeEventListener('v2:slash-tighten', slashTighten);
-      window.removeEventListener('v2:slash-cite', slashCite);
-      window.removeEventListener('v2:slash-rewrite', slashRewrite);
     };
   }, []);
 
   const handleStart = async () => {
-    if (!project || !allTemplates) return;
+    if (!project || !allTemplates || isRunning) return;
     const projectTemplates = allTemplates.filter((t) => project.template_ids.includes(t.id));
     await startRecipe(project, projectTemplates);
   };
 
   const handleResume = async () => {
-    if (!project || !allTemplates) return;
+    if (!project || !allTemplates || isRunning) return;
     const projectTemplates = allTemplates.filter((t) => project.template_ids.includes(t.id));
     await resumeRecipe(project, projectTemplates);
+  };
+
+  const handleRetry = async () => {
+    if (!project || !allTemplates || isRunning) return;
+    const projectTemplates = allTemplates.filter((t) => project.template_ids.includes(t.id));
+    await retryRecipe(project, projectTemplates);
   };
 
   return (
@@ -142,13 +141,32 @@ function V2LayoutInner() {
                     <span className="spinner-small" />
                     {recipeStageMessage || 'Running...'}
                   </div>
-                ) : currentRun?.status === 'paused' ? (
+                ) : isRecoveringRun ? (
+                  <div className="status-badge">
+                    <span className="spinner-small" />
+                    Recovering last run…
+                  </div>
+                ) : effectiveRunStatus === 'paused' || effectiveRunStatus === 'interrupted' ? (
                   <button className="btn btn-accent" onClick={handleResume}>▶ Resume drafting</button>
+                ) : effectiveRunStatus === 'failed' ? (
+                  <button className="btn btn-accent" onClick={handleRetry}>↻ Retry drafting</button>
                 ) : (
-                  <button className="btn btn-accent" onClick={handleStart}>✦ Auto-draft</button>
+                  <button
+                    className="btn btn-accent"
+                    onClick={handleStart}
+                    disabled={!project || !allTemplates}
+                  >
+                    ✦ Auto-draft
+                  </button>
                 )}
                 <button className="btn btn-ghost" onClick={() => setShowCP(true)}>⌘K Palette</button>
-                <button className="btn btn-ghost" onClick={() => setShowExport(true)}>⇣ Export</button>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setShowExport(true)}
+                  disabled={!project || !allTemplates}
+                >
+                  ⇣ Export
+                </button>
               </>
             )}
           </div>

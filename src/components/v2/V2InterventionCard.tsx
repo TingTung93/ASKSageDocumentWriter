@@ -8,7 +8,7 @@ import {
 } from '../../lib/draft/placeholders';
 import { normalizePlaceholderResolutions } from '../../lib/draft/normalize_resolutions';
 import { createLLMClient } from '../../lib/provider/factory';
-import { useAuth } from '../../lib/state/auth';
+import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { toast } from '../../lib/state/toast';
 import { addProjectNote } from '../../lib/project/context';
 
@@ -18,8 +18,19 @@ interface PlaceholderOccurrenceWithDraft extends PlaceholderOccurrence {
   section_name: string;
 }
 
-interface PlaceholderStageOutput {
+export interface PlaceholderStageOutput {
   occurrences: PlaceholderOccurrenceWithDraft[];
+}
+
+export function isPlaceholderStageOutput(value: unknown): value is PlaceholderStageOutput {
+  if (typeof value !== 'object' || value === null) return false;
+  const occurrences = (value as { occurrences?: unknown }).occurrences;
+  return Array.isArray(occurrences) && occurrences.every((occurrence) => (
+    typeof occurrence === 'object'
+    && occurrence !== null
+    && typeof (occurrence as { draft_id?: unknown }).draft_id === 'string'
+    && typeof (occurrence as { description?: unknown }).description === 'string'
+  ));
 }
 
 interface NormalizationRequest {
@@ -44,9 +55,9 @@ export function V2InterventionCard({
   onApplied,
   isRunning,
 }: V2InterventionCardProps) {
-  const apiKey = useAuth((s) => s.apiKey);
-  const baseUrl = useAuth((s) => s.baseUrl);
-  const provider = useAuth((s) => s.provider);
+  const auth = useAuth();
+  const { apiKey, baseUrl, provider } = auth;
+  const connection = getAuthConnection(auth);
 
   const groups = useMemo(() => {
     const byDraft = new Map<string, PlaceholderOccurrenceWithDraft[]>();
@@ -109,9 +120,9 @@ export function V2InterventionCard({
         normalizationRequests.map((r) => [r.input_key, r.raw_value]),
       );
       let changedByNormalizer = 0;
-      if (apiKey && normalizationRequests.length > 0) {
+      if (connection.canGenerate && normalizationRequests.length > 0) {
         try {
-          const client = createLLMClient({ provider, baseUrl, apiKey });
+          const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
           const documentKind = templates
               .filter((t) => project.template_ids.includes(t.id))
               .map((t) => t.name)

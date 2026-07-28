@@ -1,5 +1,27 @@
 # UI/UX & Quality Audit — 2026-04-23
 
+## Reliability follow-up — 2026-07-27
+
+The cohesion/reliability audit is tracked by
+`docs/superpowers/plans/2026-07-27-spa-cohesion-reliability.md`.
+
+Implemented in the first remediation pass:
+
+- Shared capability-aware provider connection state across connection, navigation, onboarding, and V2 generation paths.
+- Verified keyless Local OpenAI connections can draft and use section-level AI actions.
+- Newest registered recipe runs are recovered per project; stale `running` rows are presented as interrupted and can be resumed without automatic replay.
+- Paused and failed runs expose Resume and Retry actions after reload.
+- Missing V2 project IDs resolve to an actionable not-found state.
+- Non-functional global draft commands and the decorative context chip were removed.
+- Placeholder intervention output is runtime-validated before rendering.
+- The debug console is opt-in in production, defaults closed, and redacts credential-like log content.
+
+Remaining product consolidation work:
+
+- Add broader browser-level coverage across the complete draft/pause/reload/resume/export lifecycle.
+- Introduce typed active-section workspace actions if global rewrite commands return.
+- Continue extracting shared pure helpers before retiring the explicit legacy project route.
+
 Tracker for findings from the V2 audit. File:line refs were captured at audit time.
 
 **Status: all P0/P1/P2/P3 items landed. Typecheck + all 454 tests pass.**

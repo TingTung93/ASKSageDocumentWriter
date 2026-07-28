@@ -15,6 +15,7 @@ import { StepIndicator } from '../components/StepIndicator';
 import { HelpTip } from '../components/HelpTip';
 import { toast } from '../lib/state/toast';
 import { debugLog } from '../lib/debug/log';
+import { getProviderConnection } from '../lib/provider/connection';
 
 export function Welcome() {
   const {
@@ -119,9 +120,24 @@ export function Welcome() {
     toast.info('Stored API key cleared');
   }
 
-  const connected = (provider === 'local_openai' || !!apiKey) && !!models;
-  const hasKey = draftKey.trim().length > 0;
-  const canSubmit = draftProvider === 'local_openai' || hasKey;
+  const connection = getProviderConnection({
+    provider,
+    apiKey,
+    baseUrl,
+    models,
+    localProbe,
+    error,
+  });
+  const draftConnection = getProviderConnection({
+    provider: draftProvider,
+    apiKey: draftKey,
+    baseUrl: draftBase,
+    models: draftProvider === provider && draftBase.trim() === baseUrl ? models : null,
+    localProbe,
+    error: null,
+  });
+  const connected = connection.state === 'verified';
+  const canSubmit = draftConnection.canValidate;
   const showLocalPrivacyWarning =
     draftProvider === 'local_openai' &&
     draftBase.trim().length > 0 &&

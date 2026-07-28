@@ -1,11 +1,22 @@
-import { useSyncExternalStore, useState } from 'react';
-import { debugLog, type LogEntry } from '../lib/debug/log';
+import { useEffect, useSyncExternalStore, useState } from 'react';
+import {
+  debugLog,
+  isDiagnosticsEnabled,
+  isStartupFailure,
+  type LogEntry,
+} from '../lib/debug/log';
 
-// Fixed-position panel at the bottom of every screen. Always rendered.
-// Subscribes to debugLog and rerenders on every captured entry.
 export function DebugPanel() {
   const entries = useSyncExternalStore(debugLog.subscribe, debugLog.getSnapshot);
-  const [open, setOpen] = useState(true);
+  const startupFailure = entries.some(isStartupFailure);
+  const enabled = isDiagnosticsEnabled() || startupFailure;
+  const [open, setOpen] = useState(startupFailure);
+
+  useEffect(() => {
+    if (startupFailure) setOpen(true);
+  }, [startupFailure]);
+
+  if (!enabled) return null;
 
   const errCount = entries.filter((e) => e.level === 'error').length;
   const warnCount = entries.filter((e) => e.level === 'warn').length;

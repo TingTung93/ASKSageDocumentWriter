@@ -1,6 +1,6 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../lib/db/schema';
-import { useAuth } from '../../lib/state/auth';
+import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { useNavigate, useParams } from 'react-router-dom';
 
 interface V2SidebarProps {
@@ -13,11 +13,10 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
   const projects = useLiveQuery(() => db.projects.orderBy('updated_at').reverse().toArray(), []);
   const navigate = useNavigate();
   
-  const apiKey = useAuth((s) => s.apiKey);
-  const baseUrl = useAuth((s) => s.baseUrl);
-  const models = useAuth((s) => s.models);
-
-  const connected = !!apiKey;
+  const auth = useAuth();
+  const { baseUrl, models } = auth;
+  const connection = getAuthConnection(auth);
+  const connected = connection.state === 'verified';
   const host = (() => {
     try {
       return new URL(baseUrl).host;
@@ -77,11 +76,11 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
       </div>
 
       <div className="rail-foot">
-        <div className="conn" title={connected ? `Connected to ${host}` : 'Not connected'}>
+        <div className="conn" title={connected ? `Connected to ${host}` : connection.label}>
           <span className={`conn-dot ${connected ? '' : 'is-off'}`} style={{ background: connected ? 'var(--sage)' : 'var(--rose)' }} />
           <div className="conn-body">
             <span className="conn-host">{host || 'not connected'}</span>
-            <span className="conn-meta">{connected ? `${models?.length ?? 0} models` : 'offline'}</span>
+            <span className="conn-meta">{connected ? `${models?.length ?? 0} models` : connection.label}</span>
           </div>
           <button className="conn-cog" title="Connection settings" onClick={() => setView("settings")}>⚙</button>
         </div>

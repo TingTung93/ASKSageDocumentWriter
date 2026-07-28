@@ -666,20 +666,66 @@ export async function loadRecipeRun(run_id: string): Promise<RecipeRun | undefin
 export async function loadRecipeRunsForProject(
   project_id: string,
 ): Promise<RecipeRun[]> {
-  const table = getRecipeRunsTable();
-  if (!table) return [];
   try {
-    let rows: RecipeRun[];
-    if (table.where) {
-      rows = await table.where('project_id').equals(project_id).toArray();
-    } else {
-      const all = await table.toArray();
-      rows = all.filter((r) => r.project_id === project_id);
-    }
-    // Newest first by started_at.
-    rows.sort((a, b) => (a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0));
-    return rows;
+    return await queryRecipeRunsForProject(project_id);
   } catch {
     return [];
   }
+}
+
+async function queryRecipeRunsForProject(project_id: string): Promise<RecipeRun[]> {
+  const table = getRecipeRunsTable();
+  if (!table) return [];
+  let rows: RecipeRun[];
+  if (table.where) {
+    rows = await table.where('project_id').equals(project_id).toArray();
+  } else {
+    const all = await table.toArray();
+    rows = all.filter((r) => r.project_id === project_id);
+  }
+  // Newest first by started_at. The id is a deterministic tie-breaker for
+  // imported rows that happen to share a timestamp.
+  rows.sort((a, b) => {
+    const byStartedAt = b.started_at.localeCompare(a.started_at);
+    return byStartedAt !== 0 ? byStartedAt : b.id.localeCompare(a.id);
+  });
+  return rows;
+}
+
+/**
+ * Select the newest run whose recipe is available in this build.
+ *
+ * Persisted rows can outlive a renamed or removed recipe. Skipping those rows
+ * avoids restoring a run that the current application could neither resume nor
+ * explain. The input need not already be sorted.
+ */
+export function selectNewestRegisteredRecipeRun(
+  runs: readonly RecipeRun[],
+): RecipeRun | undefined {
+  let newest: RecipeRun | undefined;
+  for (const run of runs) {
+    if (!getRegisteredRecipe(run.recipe_id)) continue;
+    if (
+      !newest ||
+      run.started_at > newest.started_at ||
+      (run.started_at === newest.started_at && run.id > newest.id)
+    ) {
+      newest = run;
+    }
+  }
+  return newest;
+}
+
+/**
+ * Load the newest restorable run for a project.
+ *
+ * Unlike the history-oriented loadRecipeRunsForProject(), this focused query
+ * lets storage errors reach the recovery UI instead of turning them into an
+ * indistinguishable "no prior run" result.
+ */
+export async function loadNewestRegisteredRecipeRunForProject(
+  project_id: string,
+): Promise<RecipeRun | undefined> {
+  const runs = await queryRecipeRunsForProject(project_id);
+  return selectNewestRegisteredRecipeRun(runs);
 }

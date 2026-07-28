@@ -30,8 +30,6 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
     { group: 'Navigate', ic: '▸', label: 'Switch project', desc: 'Back to project list', trail: '', run: () => navigate('/projects') },
     { group: 'Actions', ic: '⇣', label: 'Export document…', desc: 'Word, PDF, or Markdown', trail: '⌘E', run: () => window.dispatchEvent(new CustomEvent('v2:open-export')) },
     { group: 'Actions', ic: '＋', label: 'Upload DOCX template', desc: 'Parse structure and placeholders', trail: '', run: () => { setView('library'); setTimeout(() => window.dispatchEvent(new CustomEvent('v2:open-ingest')), 100); } },
-    { group: 'Actions', ic: '↻', label: 'Regenerate active section', desc: 'Re-draft with current context', trail: '⌘R', run: () => window.dispatchEvent(new CustomEvent('v2:regen-active')) },
-    { group: 'Actions', ic: '✓', label: 'Accept all findings', desc: 'Apply cross-section review fixes', trail: '', run: () => window.dispatchEvent(new CustomEvent('v2:accept-findings')) },
   ], [navigate, setView]);
 
   const items = useMemo(() => {

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
-import { useAuth } from '../lib/state/auth';
+import { getAuthConnection, useAuth } from '../lib/state/auth';
 
 interface ShellProps {
   children: ReactNode;
@@ -17,11 +17,10 @@ const NAV_ITEMS: { to: string; label: string; title: string; end?: boolean }[] =
 ];
 
 export function Shell({ children }: ShellProps) {
-  const apiKey = useAuth((s) => s.apiKey);
-  const baseUrl = useAuth((s) => s.baseUrl);
-  const models = useAuth((s) => s.models);
-
-  const connected = !!apiKey;
+  const auth = useAuth();
+  const { baseUrl, models } = auth;
+  const connection = getAuthConnection(auth);
+  const connected = connection.state === 'verified';
   const host = (() => {
     try {
       return new URL(baseUrl).host;
@@ -49,10 +48,10 @@ export function Shell({ children }: ShellProps) {
           className="status"
           role="status"
           aria-live="polite"
-          title={connected ? `Connected to ${host}` : 'Not connected — go to the Connection tab to set up'}
+          title={connected ? `Connected to ${host}` : `${connection.label} — go to the Connection tab`}
         >
           <span className={`status-dot ${connected ? 'is-on' : 'is-off'}`} aria-hidden="true" />
-          {connected ? `${host} · ${models?.length ?? 0} models` : 'not connected'}
+          {connected ? `${host} · ${models?.length ?? 0} models` : connection.label}
         </span>
       </nav>
       {children}

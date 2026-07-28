@@ -18,6 +18,8 @@ import {
   cancelRecipeRun,
   loadRecipeRun,
   loadRecipeRunsForProject,
+  loadNewestRegisteredRecipeRunForProject,
+  selectNewestRegisteredRecipeRun,
   registerRecipe,
   __clearRecipeRegistry,
   type Recipe,
@@ -328,6 +330,52 @@ describe('recipe runner', () => {
     // Newest first: run2 should precede run1.
     expect(all[0]!.id).toBe(run2.id);
     expect(all[1]!.id).toBe(run1.id);
+  });
+
+  it('selects the newest run with a recipe registered in this build', async () => {
+    const project = fakeProject();
+    const knownRecipe = makeRecipe(
+      [makeStage('known', { kind: 'ok', output: 1 })],
+      'known-recipe',
+    );
+    registerRecipe(knownRecipe);
+
+    const known = await runRecipe({
+      client: fakeClient() as never,
+      project,
+      templates: [],
+      recipe: knownRecipe,
+    });
+    const unknown: RecipeRun = {
+      ...known,
+      id: 'unknown-newer',
+      recipe_id: 'removed-recipe',
+      started_at: '2099-01-01T00:00:00.000Z',
+    };
+    await recipeRunsTable.put(unknown);
+
+    expect(selectNewestRegisteredRecipeRun([known, unknown])?.id).toBe(known.id);
+    expect((await loadNewestRegisteredRecipeRunForProject(project.id))?.id).toBe(
+      known.id,
+    );
+  });
+
+  it('does not restore a run belonging to another project', async () => {
+    const recipe = makeRecipe(
+      [makeStage('s1', { kind: 'ok', output: 1 })],
+      'known-recipe',
+    );
+    registerRecipe(recipe);
+    await runRecipe({
+      client: fakeClient() as never,
+      project: { ...fakeProject(), id: 'project-a' },
+      templates: [],
+      recipe,
+    });
+
+    expect(
+      await loadNewestRegisteredRecipeRunForProject('project-b'),
+    ).toBeUndefined();
   });
 
   it('rolls up tokens across stages into the run totals', async () => {

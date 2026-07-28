@@ -12,6 +12,28 @@ export interface LogEntry {
 }
 
 const MAX_ENTRIES = 500;
+const MAX_MESSAGE_LENGTH = 4_000;
+
+export function isDiagnosticsEnabled(
+  location: Pick<Location, 'search' | 'hash'> = window.location,
+  development = import.meta.env.DEV,
+): boolean {
+  if (development) return true;
+
+  const search = new URLSearchParams(location.search);
+  const hashQuery = location.hash.includes('?')
+    ? new URLSearchParams(location.hash.slice(location.hash.indexOf('?') + 1))
+    : null;
+  return search.get('diagnostics') === '1' || hashQuery?.get('diagnostics') === '1';
+}
+
+export function isStartupFailure(entry: LogEntry): boolean {
+  return (
+    entry.level === 'error' &&
+    (entry.message.startsWith('[main] crash during init:') ||
+      entry.message.startsWith('[ErrorBoundary]'))
+  );
+}
 
 class DebugLog {
   private entries: LogEntry[] = [];
@@ -68,9 +90,10 @@ class DebugLog {
   }
 
   add(level: LogLevel, message: string): void {
+    const safeMessage = redactLogMessage(message);
     // Replace the array (immutable) so React.useSyncExternalStore sees a
     // new reference and re-renders.
-    this.entries = [...this.entries, { ts: Date.now(), level, message }];
+    this.entries = [...this.entries, { ts: Date.now(), level, message: safeMessage }];
     if (this.entries.length > MAX_ENTRIES) {
       this.entries = this.entries.slice(-MAX_ENTRIES);
     }
@@ -96,6 +119,18 @@ class DebugLog {
       .map((e) => `${new Date(e.ts).toISOString()} [${e.level}] ${e.message}`)
       .join('\n');
   }
+}
+
+export function redactLogMessage(message: string): string {
+  const redacted = message
+    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [REDACTED]')
+    .replace(
+      /(["']?(?:api[_-]?key|authorization|token)["']?\s*[:=]\s*)["']?[^"',\s}]+["']?/gi,
+      '$1[REDACTED]',
+    );
+
+  if (redacted.length <= MAX_MESSAGE_LENGTH) return redacted;
+  return `${redacted.slice(0, MAX_MESSAGE_LENGTH)}\n[log content truncated]`;
 }
 
 function stringify(v: unknown): string {

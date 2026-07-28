@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type ProjectRecord, type DraftRecord, type TemplateRecord, type ReferenceChunk } from '../../lib/db/schema';
 import type { DraftParagraph } from '../../lib/draft/types';
-import { useAuth } from '../../lib/state/auth';
+import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { createLLMClient } from '../../lib/provider/factory';
 import { draftAndValidateSection } from '../../lib/draft/draftAndValidateSection';
 import { getContextItems } from '../../lib/project/context';
@@ -213,15 +213,19 @@ function Section({ project, template, section, draft, allDrafts }: {
 }) {
   const [busy, setBusy] = useState(false);
   const auth = useAuth();
+  const connection = getAuthConnection(auth);
 
   const handleFix = async (finding?: string) => {
-    if (!auth.apiKey || busy) return;
+    if (!connection.canGenerate || busy) {
+      if (!busy) toast.error(`Provider unavailable: ${connection.label}.`);
+      return;
+    }
     setBusy(true);
     try {
       const client = createLLMClient({
         provider: auth.provider,
         baseUrl: auth.baseUrl,
-        apiKey: auth.apiKey,
+        apiKey: auth.apiKey ?? '',
       });
       const settings = await loadSettings();
 
@@ -492,6 +496,7 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
   const [instruction, setInstruction] = useState('');
   const [showRegen, setShowRegen] = useState(false);
   const auth = useAuth();
+  const connection = getAuthConnection(auth);
 
   // Re-sync the textarea if the underlying chunk changes (e.g. after
   // a regen of this block or a neighbor shifting indexes).
@@ -532,8 +537,8 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
   };
 
   const handleRegen = async () => {
-    if (!auth.apiKey) {
-      toast.error('Connect a provider on the Connection tab first.');
+    if (!connection.canGenerate) {
+      toast.error(`Provider unavailable: ${connection.label}. Check Connection settings.`);
       return;
     }
     const style = project.freeform_style ? getFreeformStyle(project.freeform_style) : undefined;
@@ -546,7 +551,7 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
       const client = createLLMClient({
         provider: auth.provider,
         baseUrl: auth.baseUrl,
-        apiKey: auth.apiKey,
+        apiKey: auth.apiKey ?? '',
       });
       const settings = await loadSettings();
       const contextItems = getContextItems(project);

@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useAuth } from '../../lib/state/auth';
+import { getProviderConnection } from '../../lib/provider/connection';
 import { createLLMClient, defaultBaseUrlFor, defaultModelFor, providerLabel } from '../../lib/provider/factory';
 import type { ProviderId } from '../../lib/provider/types';
 import {
@@ -103,18 +104,23 @@ export function V2SettingsView() {
     return settings?.models?.[stage] ?? '';
   }
 
-  const connectionStatus = useMemo<'connected' | 'unverified' | 'none'>(() => {
-    if (models && models.length > 0) return 'connected';
-    if (provider === 'local_openai' || apiKey) return 'unverified';
-    return 'none';
-  }, [apiKey, models, provider]);
-  const connectionStatusLabel =
-    connectionStatus === 'connected'
-      ? 'connected'
-      : connectionStatus === 'unverified'
-        ? provider === 'local_openai' ? 'not verified' : 'key set · not verified'
-        : 'no key';
-  const canTestConnection = draftProvider === 'local_openai' || draftKey.trim().length > 0;
+  const connection = useMemo(() => getProviderConnection({
+    provider,
+    apiKey,
+    baseUrl,
+    models,
+    localProbe,
+    error,
+  }), [apiKey, baseUrl, error, localProbe, models, provider]);
+  const draftConnection = useMemo(() => getProviderConnection({
+    provider: draftProvider,
+    apiKey: draftKey,
+    baseUrl: draftBase,
+    models: draftProvider === provider && draftBase.trim() === baseUrl ? models : null,
+    localProbe,
+    error: null,
+  }), [baseUrl, draftBase, draftKey, draftProvider, localProbe, models, provider]);
+  const canTestConnection = draftConnection.canValidate;
   const showLocalPrivacyWarning =
     draftProvider === 'local_openai' &&
     draftBase.trim().length > 0 &&
@@ -219,8 +225,8 @@ export function V2SettingsView() {
         <h1 className="settings-title">Connection &amp; models</h1>
         <p className="settings-lead">
           Configure your AI provider, key, and per-stage model routing. Keys live in this
-          browser's sessionStorage and never leave the workstation. Scroll down for advanced quality,
-          cost, and reset controls.
+          browser's sessionStorage and are sent only to the configured provider. Scroll down for
+          advanced quality, cost, and reset controls.
         </p>
 
         <div className="s-card">
@@ -229,9 +235,9 @@ export function V2SettingsView() {
               <h3>Connection</h3>
               <div className="s-desc">{providerLabel(provider)}</div>
             </div>
-            <span className={"s-status " + (connectionStatus === 'connected' ? '' : 'warn')}>
+            <span className={"s-status " + (connection.state === 'verified' ? '' : 'warn')}>
               <span className="d" />
-              {connectionStatusLabel}
+              {connection.label}
             </span>
           </div>
 

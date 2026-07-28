@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { useAuth } from '../../lib/state/auth';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { useParams } from 'react-router-dom';
+import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { type ProjectRecord, type TemplateRecord } from '../../lib/db/schema';
 import { createLLMClient } from '../../lib/provider/factory';
 import {
@@ -18,9 +19,15 @@ import { computeRunCost } from '../../lib/usage';
 import { actualUsdFromPricing, resolveModelPricing } from '../../lib/settings/cost';
 import { loadSettings } from '../../lib/settings/store';
 import { ASK_SAGE_DEFAULT_DRAFTING_MODEL } from '../../lib/provider/resolve_model';
+import {
+  useProjectRecipeRun,
+  type RecoveredRunStatus,
+} from './useProjectRecipeRun';
 
 interface RecipeContextValue {
   currentRun: RecipeRun | null;
+  recoveredRunStatus: RecoveredRunStatus | null;
+  isRecoveringRun: boolean;
   isRunning: boolean;
   recipeStageMessage: string | null;
   startRecipe: (project: ProjectRecord, templates: TemplateRecord[]) => Promise<void>;
@@ -33,20 +40,44 @@ interface RecipeContextValue {
 const RecipeContext = createContext<RecipeContextValue | undefined>(undefined);
 
 export function RecipeProvider({ children }: { children: ReactNode }) {
+  const { id: projectId } = useParams<{ id: string }>();
   const [currentRun, setCurrentRun] = useState<RecipeRun | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [recipeStageMessage, setRecipeStageMessage] = useState<string | null>(null);
 
-  const apiKey = useAuth((s) => s.apiKey);
-  const baseUrl = useAuth((s) => s.baseUrl);
-  const provider = useAuth((s) => s.provider);
-  const availableModels = useAuth((s) => s.models);
+  const auth = useAuth();
+  const { apiKey, baseUrl, provider, models: availableModels } = auth;
+  const connection = getAuthConnection(auth);
+  const recoveredRun = useProjectRecipeRun(
+    projectId,
+    isRunning ? currentRun?.id : null,
+  );
   const settings = useLiveQuery(() => loadSettings(), []);
 
   const onAskSage = provider === 'asksage';
   const draftingModelOverride = settings?.models.drafting ?? null;
   const effectiveDraftingModelId = draftingModelOverride ?? (onAskSage ? ASK_SAGE_DEFAULT_DRAFTING_MODEL : null);
   const draftingPricing = resolveModelPricing(availableModels, effectiveDraftingModelId);
+  const recoveredRunStatus = recoveredRun.status === 'ready'
+    ? recoveredRun.recoveredStatus
+    : null;
+
+  useEffect(() => {
+    if (isRunning) return;
+    if (recoveredRun.status === 'ready') {
+      setCurrentRun(recoveredRun.run);
+    } else if (
+      recoveredRun.status === 'none'
+      && currentRun?.project_id !== projectId
+    ) {
+      setCurrentRun(null);
+    } else if (
+      recoveredRun.status === 'loading'
+      && currentRun?.project_id !== projectId
+    ) {
+      setCurrentRun(null);
+    }
+  }, [currentRun?.project_id, isRunning, projectId, recoveredRun]);
 
   const onStageStart = useCallback((stage: RecipeStage, index: number, total: number) => {
     setRecipeStageMessage(`${index + 1}/${total} · ${stage.name}`);
@@ -59,15 +90,15 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
-    if (!apiKey) {
-      toast.error('Connect a provider on the Connection tab first.');
+    if (!connection.canGenerate) {
+      toast.error(`Provider unavailable: ${connection.label}. Check Connection settings.`);
       return;
     }
     setIsRunning(true);
     setCurrentRun(null);
     setRecipeStageMessage(null);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const isFreeform = project.mode === 'freeform';
       const recipe = isFreeform ? FREEFORM_RECIPE : PWS_RECIPE;
 
@@ -104,13 +135,13 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [apiKey, provider, baseUrl, availableModels, draftingPricing, onStageStart, onStageProgress, onStageError]);
+  }, [apiKey, provider, baseUrl, availableModels, draftingPricing, connection.canGenerate, connection.label, onStageStart, onStageProgress, onStageError]);
 
   const resumeRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
-    if (!currentRun || !apiKey) return;
+    if (!currentRun || !connection.canGenerate) return;
     setIsRunning(true);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const run = await resumeRecipeRun({
         client,
         project,
@@ -127,7 +158,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [currentRun, apiKey, provider, baseUrl, onStageStart, onStageProgress]);
+  }, [currentRun, apiKey, provider, baseUrl, connection.canGenerate, onStageStart, onStageProgress]);
 
   const cancelRecipe = useCallback(async () => {
     if (!currentRun) return;
@@ -141,10 +172,10 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   }, [currentRun]);
 
   const retryRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
-    if (!currentRun || !apiKey) return;
+    if (!currentRun || !connection.canGenerate) return;
     setIsRunning(true);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const run = await retryRecipeRun({
         client,
         project,
@@ -161,11 +192,13 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsRunning(false);
     }
-  }, [currentRun, apiKey, provider, baseUrl, onStageStart, onStageProgress]);
+  }, [currentRun, apiKey, provider, baseUrl, connection.canGenerate, onStageStart, onStageProgress]);
 
   return (
     <RecipeContext.Provider value={{
       currentRun,
+      recoveredRunStatus,
+      isRecoveringRun: recoveredRun.status === 'loading',
       isRunning,
       recipeStageMessage,
       startRecipe,

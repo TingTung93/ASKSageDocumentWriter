@@ -34,8 +34,9 @@ registerRecipe(FREEFORM_RECIPE);
 // HashRouter (not BrowserRouter) so the built app works from file://,
 // from an internal share, or from any static server without rewrite rules.
 //
-// DebugPanel is rendered OUTSIDE the ErrorBoundary so it stays visible
-// even if the rest of the tree crashes.
+// DebugPanel is rendered OUTSIDE the ErrorBoundary so an opted-in
+// diagnostics view (or a startup failure) remains available if the
+// application tree crashes.
 export function App() {
   return (
     <>
@@ -50,22 +51,18 @@ export function App() {
               path="*"
               element={
                 <Shell>
-                  {/* DebugPanel is a fixed 40vh overlay at the bottom; pad
-                      so the last of page content clears it. */}
-                  <div style={{ paddingBottom: '40vh' }}>
-                    <Routes>
-                      <Route path="/" element={<Welcome />} />
-                      <Route path="/documents" element={<Documents />} />
-                      <Route path="/templates" element={<Templates />} />
-                      <Route path="/datasets" element={<Datasets />} />
-                      <Route path="/projects" element={<Projects />} />
-                      <Route path="/projects/:id" element={<ProjectDetailRedirect />} />
-                      <Route path="/legacy/projects/:id" element={<ProjectDetail />} />
-                      <Route path="/audit" element={<AuditLog />} />
-                      <Route path="/settings" element={<Settings />} />
-                      <Route path="*" element={<Navigate to="/" replace />} />
-                    </Routes>
-                  </div>
+                  <Routes>
+                    <Route path="/" element={<Welcome />} />
+                    <Route path="/documents" element={<Documents />} />
+                    <Route path="/templates" element={<Templates />} />
+                    <Route path="/datasets" element={<Datasets />} />
+                    <Route path="/projects" element={<Projects />} />
+                    <Route path="/projects/:id" element={<ProjectDetailRedirect />} />
+                    <Route path="/legacy/projects/:id" element={<ProjectDetail />} />
+                    <Route path="/audit" element={<AuditLog />} />
+                    <Route path="/settings" element={<Settings />} />
+                    <Route path="*" element={<Navigate to="/" replace />} />
+                  </Routes>
                 </Shell>
               }
             />

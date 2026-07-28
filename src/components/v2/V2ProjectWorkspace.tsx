@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../lib/db/schema';
 import { V2SourcesPane } from './V2SourcesPane';
@@ -8,7 +9,11 @@ import { V2DraftPane } from './V2DraftPane';
 
 export function V2ProjectWorkspace() {
   const { id } = useParams<{ id: string }>();
-  const project = useLiveQuery(() => (id ? db.projects.get(id) : undefined), [id]);
+  const navigate = useNavigate();
+  const project = useLiveQuery(
+    async () => (id ? (await db.projects.get(id)) ?? null : null),
+    [id],
+  );
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -28,7 +33,18 @@ export function V2ProjectWorkspace() {
   }, [project]);
 
   if (!id) return <div>Missing project id</div>;
-  if (!project) return <div>Loading project…</div>;
+  if (project === undefined) return <div>Loading project…</div>;
+  if (project === null) {
+    return (
+      <div className="empty-state">
+        <h2>Project not found</h2>
+        <p>This project may have been deleted or belongs to another browser profile.</p>
+        <button className="btn btn-primary" onClick={() => navigate('/projects')}>
+          Back to projects
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="panes" data-screen-label="01 Workspace">
