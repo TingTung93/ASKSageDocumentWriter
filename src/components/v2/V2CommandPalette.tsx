@@ -1,10 +1,14 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from './Modal';
+import { DRAFT_ACTIONS } from './drafting/actions';
+import { useDraftActionController } from './drafting';
 
 interface V2CommandPaletteProps {
   onClose: () => void;
   setView: (view: string) => void;
+  onOpenExport: () => void;
+  onOpenIngest: () => void;
 }
 
 type Cmd = {
@@ -16,11 +20,17 @@ type Cmd = {
   run: () => void;
 };
 
-export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
+export function V2CommandPalette({
+  onClose,
+  onOpenExport,
+  onOpenIngest,
+  setView,
+}: V2CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [idx, setIdx] = useState(0);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
+  const draftActions = useDraftActionController();
 
   const baseItems = useMemo<Cmd[]>(() => [
     { group: 'Navigate', ic: '▸', label: 'Draft workspace', desc: 'Three-pane co-writer view', trail: 'G D', run: () => setView('workspace') },
@@ -28,9 +38,28 @@ export function V2CommandPalette({ onClose, setView }: V2CommandPaletteProps) {
     { group: 'Navigate', ic: '▸', label: 'Activity log', desc: 'Audit trail of model calls', trail: 'G A', run: () => setView('audit') },
     { group: 'Navigate', ic: '▸', label: 'Settings', desc: 'Connection, models, privacy', trail: 'G ,', run: () => setView('settings') },
     { group: 'Navigate', ic: '▸', label: 'Switch project', desc: 'Back to project list', trail: '', run: () => navigate('/projects') },
-    { group: 'Actions', ic: '⇣', label: 'Export document…', desc: 'Word, PDF, or Markdown', trail: '⌘E', run: () => window.dispatchEvent(new CustomEvent('v2:open-export')) },
-    { group: 'Actions', ic: '＋', label: 'Upload DOCX template', desc: 'Parse structure and placeholders', trail: '', run: () => { setView('library'); setTimeout(() => window.dispatchEvent(new CustomEvent('v2:open-ingest')), 100); } },
-  ], [navigate, setView]);
+    { group: 'Actions', ic: '⇣', label: 'Export document…', desc: 'Word, PDF, or Markdown', trail: '⌘E', run: onOpenExport },
+    { group: 'Actions', ic: '＋', label: 'Upload DOCX template', desc: 'Parse structure and placeholders', trail: '', run: () => { setView('library'); onOpenIngest(); } },
+    ...(draftActions.active && !draftActions.active.busy ? DRAFT_ACTIONS.map((action): Cmd => ({
+      group: 'Edit selected target',
+      ic: '✦',
+      label: action.label,
+      desc: draftActions.active?.scopeLabel,
+      run: () => { draftActions.run(action.id); },
+    })) : []),
+    ...(draftActions.active?.hasProposal && !draftActions.active.busy ? [
+      {
+        group: 'Review proposal', ic: '✓', label: 'Accept proposal',
+        desc: draftActions.active.scopeLabel, trail: 'Ctrl ⇧ Enter',
+        run: () => { draftActions.run('accept_proposal'); },
+      },
+      {
+        group: 'Review proposal', ic: '×', label: 'Reject proposal',
+        desc: draftActions.active.scopeLabel, trail: 'Ctrl ⇧ ⌫',
+        run: () => { draftActions.run('reject_proposal'); },
+      },
+    ] satisfies Cmd[] : []),
+  ], [draftActions.active, draftActions.run, navigate, onOpenExport, onOpenIngest, setView]);
 
   const items = useMemo(() => {
     const q = query.toLowerCase().trim();

@@ -179,8 +179,18 @@ describe('V2 view smoke tests', () => {
 
   it('V2CommandPalette mounts with focus-capture input', async () => {
     const { V2CommandPalette } = await import('./V2CommandPalette');
+    const { DraftActionControllerProvider } = await import('./drafting');
     const { container, getByPlaceholderText } = render(
-      withRouter(<V2CommandPalette onClose={() => {}} setView={() => {}} />),
+      withRouter(
+        <DraftActionControllerProvider>
+          <V2CommandPalette
+            onClose={() => {}}
+            onOpenExport={() => {}}
+            onOpenIngest={() => {}}
+            setView={() => {}}
+          />
+        </DraftActionControllerProvider>,
+      ),
     );
     expect(container.querySelector('.cmdk-scrim')).not.toBeNull();
     expect(container.querySelector('.cmdk-card')).not.toBeNull();

@@ -1,15 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function InstructionComposer({
   busy,
   initialInstruction = '',
   onSubmit,
+  focusRequest = 0,
 }: {
   busy?: boolean;
   initialInstruction?: string;
   onSubmit: (instruction: string) => void;
+  focusRequest?: number;
 }) {
   const [instruction, setInstruction] = useState(initialInstruction);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (focusRequest > 0) inputRef.current?.focus();
+  }, [focusRequest]);
   const trimmed = instruction.trim();
   return (
     <form
@@ -22,6 +28,7 @@ export function InstructionComposer({
       <label style={{ flex: 1 }}>
         <span className="sr-only">Custom editing instruction</span>
         <textarea
+          ref={inputRef}
           aria-label="Custom editing instruction"
           disabled={busy}
           onChange={(event) => setInstruction(event.target.value)}

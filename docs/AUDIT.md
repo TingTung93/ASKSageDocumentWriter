@@ -22,6 +22,33 @@ Remaining product consolidation work:
 - Introduce typed active-section workspace actions if global rewrite commands return.
 - Continue extracting shared pure helpers before retiring the explicit legacy project route.
 
+## Drafting Workbench program follow-up — 2026-07-27
+
+Implemented and covered at the domain/integration boundary:
+
+- Product identity is separate from provider identity.
+- Portable provider contracts normalize completion, structured output, tools,
+  embeddings, errors, and effective capability evidence.
+- Template-section, stable paragraph, freeform block, and freeform paragraph
+  adapters fail closed when a target is stale or ambiguous.
+- Proposal application remains speculative until explicit acceptance.
+- Template and freeform acceptance/undo use atomic, append-only version lineage.
+- An integrated V2 workflow test exercises provider-boundary generation,
+  preview-without-mutation, reload recovery, accept, durable reload, undo, and
+  reject-without-mutation.
+
+Open release risks are tracked in
+`docs/release-migration-checklist.md`. The standalone Documents surface remains
+the owner of existing-DOCX structural editing. V2 owns project drafting. The
+legacy ProjectDetail route is maintenance-only and will not be removed until a
+validated release confirms data and export parity.
+
+Object URL review found that interactive download helpers revoke their URLs.
+The legacy `assemble-docx` recipe stage still records transient blob URLs in
+diagnostic run output. Durable downloads already reconstruct from IndexedDB;
+the legacy field should not be treated as recoverable state. It remains
+unchanged in this release to avoid silently breaking old run inspectors.
+
 Tracker for findings from the V2 audit. File:line refs were captured at audit time.
 
 **Status: all P0/P1/P2/P3 items landed. Typecheck + all 454 tests pass.**

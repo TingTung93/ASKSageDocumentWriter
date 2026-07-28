@@ -7,4 +7,5 @@ export * from './RevisionTimeline';
 export * from './SourceScopePicker';
 export * from './CitationProvenance';
 export * from './grounding';
+export * from './DraftActionController';
 export * from './useDraftEditingSession';

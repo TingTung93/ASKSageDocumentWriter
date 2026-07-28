@@ -360,12 +360,22 @@ function Section({ project, template, section, draft, allDrafts }: {
           )}
           {connection.canGenerate && editModel && draft.status === 'ready' && (
             <EditSessionPanel
+              active={
+                (
+                  selection?.kind === 'template_section' &&
+                  selection.templateId === template.id &&
+                  selection.sectionId === section.id
+                ) || selectedParagraphIndex !== undefined
+              }
               client={() => createLLMClient({
                 provider: auth.provider,
                 baseUrl: auth.baseUrl,
                 apiKey: auth.apiKey ?? '',
               })}
               model={editModel}
+              scopeLabel={selectedParagraphIndex === undefined
+                ? `section ${section.name}`
+                : `paragraph ${selectedParagraphIndex + 1} in ${section.name}`}
               groundingSources={projectGroundingSources(project)}
               onDocumentChanged={(change) => {
                 toast.success(
@@ -860,12 +870,16 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
           )}
           {selected && connection.canGenerate && editModel && (
             <EditSessionPanel
+              active
               client={() => createLLMClient({
                 provider: auth.provider,
                 baseUrl: auth.baseUrl,
                 apiKey: auth.apiKey ?? '',
               })}
               model={editModel}
+              scopeLabel={selection?.kind === 'freeform_paragraph'
+                ? `paragraph in ${chunk.heading}`
+                : `block ${chunk.heading}`}
               groundingSources={projectGroundingSources(project)}
               onDocumentChanged={(change) => toast.success(
                 change === 'restored'

@@ -248,11 +248,18 @@
     .btn .kbd { font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); margin-left: 4px; padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); }
 
     /* ─── Three-pane workspace ─────────────────────────────────── */
-    .panes {
-      display: grid;
-      grid-template-columns: 300px 1fr 1fr;
+    .workspace-stage {
       min-height: 0;
       min-width: 0;
+      position: relative;
+    }
+    .workspace-pane-tabs { display: none; }
+    .panes {
+      display: grid;
+      grid-template-columns: minmax(240px, 280px) minmax(280px, .72fr) minmax(480px, 1.28fr);
+      min-height: 0;
+      min-width: 0;
+      height: 100%;
     }
     .pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
     .pane + .pane { border-left: 1px solid var(--line); }
@@ -1266,3 +1273,224 @@
 
     /* Keyboard hint */
     .kbd-hint { font-family:var(--font-mono); font-size:10px; color:var(--ink-3); padding:1px 5px; border-radius:3px; background:var(--surface); border:1px solid var(--line); }
+
+    /* ─── Operational states and editing approval ─────────────── */
+    .workspace-state {
+      align-self: center;
+      justify-self: center;
+      width: min(520px, calc(100% - 32px));
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      border-radius: var(--radius);
+      background: var(--paper);
+      box-shadow: var(--shadow-sm);
+    }
+    .workspace-state h2 { margin: 0 0 4px; font-size: 16px; }
+    .workspace-state p { margin: 0 0 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+    .workspace-state.compact {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .workspace-state.compact p { margin: 2px 0 0; }
+    .state-loading { border-left-color: var(--accent); }
+    .state-running { border-color: var(--gold); background: var(--gold-soft); }
+    .state-warning, .state-interrupted { border-left-color: var(--gold); background: var(--gold-soft); }
+    .state-error, .state-rejected { border-left-color: var(--rose); background: var(--rose-soft); }
+    .state-awaiting-approval { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .state-accepted { border-left-color: var(--sage); background: var(--sage-soft); }
+    .state-empty, .state-unavailable { border-left-color: var(--line-strong); background: var(--surface); }
+
+    .edit-session-panel {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin-top: 14px;
+      padding: 12px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .approval-actions {
+      position: sticky;
+      bottom: 0;
+      z-index: 5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px -12px -2px;
+      padding: 10px 12px;
+      background: color-mix(in oklch, var(--paper) 94%, transparent);
+      border-top: 1px solid var(--line);
+      box-shadow: 0 -8px 18px color-mix(in oklch, var(--ink) 7%, transparent);
+      backdrop-filter: blur(6px);
+    }
+    .approval-actions .btn { min-height: 38px; }
+
+    .mobile-navigation-toggle,
+    .navigation-scrim { display: none; }
+
+    /* Keep the document primary on laptop-sized workspaces. */
+    @media (max-width: 1280px) {
+      :root { --rail: 208px; }
+      .panes {
+        grid-template-columns: minmax(210px, 240px) minmax(260px, 320px) minmax(440px, 1fr);
+      }
+      .topbar { padding-inline: 14px; }
+      .topbar-actions .btn-ghost { padding-inline: 8px; }
+    }
+
+    /* Sources and context become state-preserving drawers. The document
+       remains mounted and visible beneath them. */
+    @media (max-width: 1050px) {
+      .workspace-pane-tabs {
+        position: absolute;
+        top: 8px;
+        left: 10px;
+        z-index: 20;
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--paper);
+        box-shadow: var(--shadow-sm);
+      }
+      .workspace-pane-tabs button {
+        min-height: 36px;
+        padding: 6px 10px;
+        border-radius: 5px;
+        color: var(--ink-2);
+        font-weight: 600;
+      }
+      .workspace-pane-tabs button.active {
+        color: var(--accent-ink);
+        background: var(--accent-soft);
+      }
+      .panes { display: block; position: relative; }
+      .panes > .pane:nth-child(3) { height: 100%; }
+      .panes > .pane:nth-child(1),
+      .panes > .pane:nth-child(2) {
+        display: none;
+        position: absolute;
+        z-index: 18;
+        top: 56px;
+        bottom: 8px;
+        left: 8px;
+        width: min(360px, calc(100% - 16px));
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: var(--shadow-lg);
+        overflow: hidden;
+      }
+      .workspace-stage.support-sources .panes > .pane:nth-child(1),
+      .workspace-stage.support-chat .panes > .pane:nth-child(2) { display: flex; }
+      .draft-head { padding-left: 190px; }
+    }
+
+    /* At high zoom and phone widths, navigation becomes a modal drawer and
+       controls wrap instead of forcing horizontal page overflow. */
+    @media (max-width: 760px) {
+      body:has(.app) { overflow: hidden; }
+      .app { grid-template-columns: 1fr; width: 100%; }
+      .rail {
+        display: none;
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 60;
+        width: min(320px, calc(100vw - 44px));
+        box-shadow: var(--shadow-lg);
+      }
+      .app.navigation-open .rail { display: flex; }
+      .navigation-scrim {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 55;
+        width: 100%;
+        height: 100%;
+        background: oklch(0.18 0.01 260 / .42);
+      }
+      .mobile-navigation-toggle {
+        display: inline-grid;
+        place-items: center;
+        flex: 0 0 40px;
+        width: 40px;
+        height: 40px;
+        margin-left: -8px;
+        border-radius: 6px;
+      }
+      .workspace { grid-template-rows: auto minmax(0, 1fr); }
+      .topbar {
+        min-height: 54px;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+        padding: 6px 10px;
+      }
+      .crumbs { min-height: 40px; }
+      .topbar-actions {
+        overflow-x: auto;
+        padding-bottom: 4px;
+        scrollbar-width: thin;
+      }
+      .topbar-actions .btn { min-height: 40px; }
+      .draft-head {
+        min-height: 104px;
+        padding: 54px 10px 8px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .draft-toc { overflow-x: auto; }
+      .draft-doc { padding-inline: clamp(16px, 5vw, 32px); }
+      .doc-title { font-size: clamp(22px, 7vw, 28px); overflow-wrap: anywhere; }
+      .workspace-state { flex-direction: column; }
+      .workspace-state.compact { align-items: stretch; }
+      .review-summary { padding-inline: 16px; }
+      .review-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .approval-actions .btn { flex: 1 1 140px; justify-content: center; }
+    }
+
+    @media (max-width: 420px) {
+      .workspace-pane-tabs {
+        left: 6px;
+        right: 6px;
+      }
+      .workspace-pane-tabs button { flex: 1; }
+      .panes > .pane:nth-child(1),
+      .panes > .pane:nth-child(2) {
+        left: 4px;
+        right: 4px;
+        width: auto;
+      }
+      .review-stats { grid-template-columns: 1fr; }
+    }
+
+    @media (hover: none), (pointer: coarse) {
+      .btn,
+      .icon-btn,
+      .rail-item,
+      .rail-nav button,
+      .sources-subnav button,
+      .send-btn,
+      .sec-toolbar button {
+        min-height: 44px;
+      }
+      .sec-toolbar { opacity: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }

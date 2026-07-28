@@ -15,19 +15,23 @@ import { V2AuditView } from './V2AuditView';
 import { V2SettingsView } from './V2SettingsView';
 import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { toast } from '../../lib/state/toast';
+import { DraftActionControllerProvider } from './drafting';
 
 const FIRST_RUN_DISMISSED_KEY = 'asksage:v2:first-run-dismissed';
 
 export function V2Layout() {
   return (
     <RecipeProvider>
-      <V2LayoutInner />
+      <DraftActionControllerProvider>
+        <V2LayoutInner />
+      </DraftActionControllerProvider>
     </RecipeProvider>
   );
 }
 
 function V2LayoutInner() {
   const [view, setView] = useState("workspace");
+  const [showNavigation, setShowNavigation] = useState(false);
   const [showCP, setShowCP] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
@@ -79,16 +83,9 @@ function V2LayoutInner() {
         return;
       }
     };
-    const openExport = () => setShowExport(true);
-    const openIngest = () => setShowIngest(true);
-
     window.addEventListener('keydown', handleK);
-    window.addEventListener('v2:open-export', openExport);
-    window.addEventListener('v2:open-ingest', openIngest);
     return () => {
       window.removeEventListener('keydown', handleK);
-      window.removeEventListener('v2:open-export', openExport);
-      window.removeEventListener('v2:open-ingest', openIngest);
     };
   }, []);
 
@@ -111,12 +108,33 @@ function V2LayoutInner() {
   };
 
   return (
-    <div className="app">
-      <V2Sidebar view={view} setView={setView} />
+    <div className={`app${showNavigation ? ' navigation-open' : ''}`}>
+      <V2Sidebar
+        view={view}
+        setView={(nextView) => {
+          setView(nextView);
+          setShowNavigation(false);
+        }}
+      />
+      {showNavigation && (
+        <button
+          className="navigation-scrim"
+          aria-label="Close navigation"
+          onClick={() => setShowNavigation(false)}
+        />
+      )}
 
       <main className="workspace">
         <div className="topbar">
           <div className="crumbs">
+            <button
+              className="mobile-navigation-toggle"
+              aria-expanded={showNavigation}
+              aria-label="Open workspace navigation"
+              onClick={() => setShowNavigation((open) => !open)}
+            >
+              ☰
+            </button>
             {view === 'settings' ? (
               <><span>Workspace</span><span className="sep">/</span><span className="current">Settings</span></>
             ) : view === 'library' ? (
@@ -137,12 +155,12 @@ function V2LayoutInner() {
             ) : (
               <>
                 {isRunning ? (
-                  <div className="status-badge running">
+                  <div className="status-badge state-running" role="status" aria-live="polite">
                     <span className="spinner-small" />
                     {recipeStageMessage || 'Running...'}
                   </div>
                 ) : isRecoveringRun ? (
-                  <div className="status-badge">
+                  <div className="status-badge state-loading" role="status" aria-live="polite">
                     <span className="spinner-small" />
                     Recovering last run…
                   </div>
@@ -186,6 +204,8 @@ function V2LayoutInner() {
       {showCP && (
         <V2CommandPalette
           onClose={() => setShowCP(false)}
+          onOpenExport={() => setShowExport(true)}
+          onOpenIngest={() => setShowIngest(true)}
           setView={setView}
         />
       )}

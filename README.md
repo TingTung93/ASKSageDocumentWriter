@@ -23,6 +23,7 @@ The production artifact is **`release/index.html`** — a single self-contained 
 4. **Drafting** — The orchestrator walks sections in dependency order. Each section gets a tailored prompt with prior-section summaries, relevant reference chunks (selected via embedding-based cosine similarity or Jaccard fallback), and template example text. The prompt contract emits semantic roles, rich runs, tables, lists, and page breaks rather than raw OOXML.
 5. **Validation + review** — Deterministic validators repair safe structure issues before export, while LLM review checks assembled drafts for contradictions, terminology drift, and missing cross-references.
 6. **Assembly + export** — Drafts are spliced back into the original DOCX skeleton preserving formatting, headers, footers, tables, and page breaks. Finished-document cleanup uses typed edit operations so accepted edits preserve surrounding Word structure.
+7. **Approval-gated revision** — Select a drafted section or supported paragraph/block target, enter an instruction, inspect the proposal and provenance, then explicitly accept or reject it. Accepted changes create immutable versions; Undo creates another version rather than erasing history.
 
 ## Architecture
 
@@ -41,7 +42,7 @@ src/
     edit/         Schema-level edit operations
     export/       DOCX assembly + download
     project/      Project context, chunking, reference selection
-    provider/     LLM client abstraction (Ask Sage + OpenRouter)
+    provider/     Portable provider contract, adapters, capability probes, local presets
     settings/     Persistent settings store (IndexedDB)
     share/        Bundle import/export (.asdbundle.json)
     state/        Zustand stores (auth, toast)
@@ -54,15 +55,23 @@ src/
 
 | Provider | Auth | Features |
 |----------|------|----------|
-| **Ask Sage** | API key | CUI-authorized completion, datasets, file extraction, RAG, web search |
-| **OpenRouter** | Bearer token | Non-CUI completion, embeddings, web search plugins, browser-side file extraction |
+| **Ask Sage** | API key | Tenant-dependent completion, datasets, file extraction, RAG, web search |
+| **GenAI.mil** | API key | Completion-first STARK gateway |
+| **OpenRouter** | Bearer token | Commercial model routing, embeddings, optional web search |
+| **OpenAI-compatible** | Optional | Hosted or local completion; structured output/tools enabled only after verification |
 
-You bring your own API key. Keys are stored only in browser session storage and never leave your machine except to authenticate with your chosen provider.
+You bring your own credentials. Secret values are held only in browser session
+storage and are sent only to the configured provider. Non-secret model and
+capability results may be retained locally. Provider suitability depends on
+your organization's data-classification and authorization rules.
+
+See [User Guide](docs/user-guide.md), [Local LLM Setup](docs/local-llm-setup.md),
+and [Route Ownership](docs/route-ownership.md).
 
 ## Testing
 
 ```bash
-npm test             # Run all 530 tests
+npm test             # Run the full suite
 npm run test:watch   # Watch mode
 npm run typecheck    # tsc --noEmit
 ```

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
@@ -30,11 +30,29 @@ export function V2ProjectWorkspace() {
     [project?.id, project?.template_ids],
   );
 
-  if (!id) return <div>Missing project id</div>;
-  if (project === undefined) return <div>Loading project…</div>;
+  if (!id) {
+    return (
+      <div className="workspace-state state-error" role="alert">
+        <h2>No project selected</h2>
+        <p>Choose a project to open its drafting workspace.</p>
+        <button className="btn btn-primary" onClick={() => navigate('/projects')}>Choose a project</button>
+      </div>
+    );
+  }
+  if (project === undefined) {
+    return (
+      <div className="workspace-state state-loading" role="status" aria-live="polite">
+        <span className="spinner-small" aria-hidden="true" />
+        <div>
+          <h2>Opening project</h2>
+          <p>Loading the draft, sources, and editing history…</p>
+        </div>
+      </div>
+    );
+  }
   if (project === null) {
     return (
-      <div className="empty-state">
+      <div className="workspace-state state-error" role="alert">
         <h2>Project not found</h2>
         <p>This project may have been deleted or belongs to another browser profile.</p>
         <button className="btn btn-primary" onClick={() => navigate('/projects')}>
@@ -43,7 +61,17 @@ export function V2ProjectWorkspace() {
       </div>
     );
   }
-  if (templates === undefined) return <div>Loading project…</div>;
+  if (templates === undefined) {
+    return (
+      <div className="workspace-state state-loading" role="status" aria-live="polite">
+        <span className="spinner-small" aria-hidden="true" />
+        <div>
+          <h2>Loading document structure</h2>
+          <p>Preparing templates and saved drafts…</p>
+        </div>
+      </div>
+    );
+  }
 
   const scope: DraftSelectionScope = {
     projectId: project.id,
@@ -68,6 +96,7 @@ function WorkspacePanes({
   project: ProjectRecord;
   templates: TemplateRecord[];
 }) {
+  const [supportPane, setSupportPane] = useState<'closed' | 'sources' | 'chat'>('closed');
   const { observeSelection } = useDraftSelection();
   const sectionTargets = useMemo(() => new Map(
     templates.flatMap((template) => template.schema_json.sections.map((section) => [
@@ -93,10 +122,28 @@ function WorkspacePanes({
   }, [observeSelection, sectionTargets]);
 
   return (
-    <div className="panes" data-screen-label="01 Workspace">
-      <V2SourcesPane project={project} />
-      <V2ChatPane project={project} />
-      <V2DraftPane project={project} />
+    <div className={`workspace-stage support-${supportPane}`} data-screen-label="01 Workspace">
+      <div className="workspace-pane-tabs" aria-label="Workspace panels">
+        <button
+          className={supportPane === 'sources' ? 'active' : ''}
+          aria-pressed={supportPane === 'sources'}
+          onClick={() => setSupportPane((current) => current === 'sources' ? 'closed' : 'sources')}
+        >
+          Sources
+        </button>
+        <button
+          className={supportPane === 'chat' ? 'active' : ''}
+          aria-pressed={supportPane === 'chat'}
+          onClick={() => setSupportPane((current) => current === 'chat' ? 'closed' : 'chat')}
+        >
+          Context notes
+        </button>
+      </div>
+      <div className="panes">
+        <V2SourcesPane project={project} />
+        <V2ChatPane project={project} />
+        <V2DraftPane project={project} />
+      </div>
     </div>
   );
 }
