@@ -164,6 +164,30 @@ export function filterModelsForStage(
   return models.filter((m) => validateModelForStage(m, stage).compatible);
 }
 
+/**
+ * Resolve a persisted stage preference against the active provider catalog.
+ * Model preferences are stored globally, so a provider switch can leave (for
+ * example) an Ask Sage Claude id selected while vLLM is active. Never send a
+ * model id that the active provider did not advertise.
+ */
+export function selectAvailableModelForStage(
+  models: ModelInfo[] | null,
+  preferredModel: string | null | undefined,
+  stage: ModelStage,
+): string | null {
+  const preferred = preferredModel?.trim() ?? '';
+
+  // Remote credentials remain usable after refresh before their session-only
+  // model catalog is reloaded. In that state we cannot disprove the preference.
+  if (models === null) return preferred || null;
+
+  if (preferred && models.some((model) => model.id === preferred)) {
+    return preferred;
+  }
+
+  return filterModelsForStage(models, stage)[0]?.id ?? models[0]?.id ?? null;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────
 
 function missingModalities(

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { filterModelsForStage, validateModelForStage } from './capabilities';
+import {
+  filterModelsForStage,
+  selectAvailableModelForStage,
+  validateModelForStage,
+} from './capabilities';
 import type { ModelInfo } from '../asksage/types';
 
 function model(id: string, capabilities?: ModelInfo['capabilities']): ModelInfo {
@@ -141,5 +145,52 @@ describe('filterModelsForStage', () => {
     ];
     const filtered = filterModelsForStage(models, 'drafting');
     expect(filtered.map((m) => m.id)).toEqual(['ask-sage/sonnet', 'big/200k']);
+  });
+});
+
+describe('selectAvailableModelForStage', () => {
+  it('replaces a stale provider-specific preference with an available model', () => {
+    const local = model('local-qwen');
+
+    expect(
+      selectAvailableModelForStage(
+        [local],
+        'google-claude-46-sonnet',
+        'cleanup',
+      ),
+    ).toBe('local-qwen');
+  });
+
+  it('preserves a preference advertised by the active provider', () => {
+    expect(
+      selectAvailableModelForStage(
+        [model('local-qwen'), model('local-llama')],
+        'local-llama',
+        'cleanup',
+      ),
+    ).toBe('local-llama');
+  });
+
+  it('prefers a compatible fallback when capability metadata is available', () => {
+    const tooSmall = model('tiny', {
+      context_length: 4_096,
+      input_modalities: ['text'],
+      output_modalities: ['text'],
+      supported_parameters: ['temperature'],
+    });
+    const compatible = model('large', {
+      context_length: 32_000,
+      input_modalities: ['text'],
+      output_modalities: ['text'],
+      supported_parameters: ['temperature'],
+    });
+
+    expect(
+      selectAvailableModelForStage(
+        [tooSmall, compatible],
+        'stale-model',
+        'cleanup',
+      ),
+    ).toBe('large');
   });
 });

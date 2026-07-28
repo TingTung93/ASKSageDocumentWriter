@@ -14,8 +14,9 @@ import {
   type HeaderFooterPartContent,
   type ParagraphInfo,
 } from '../lib/template/parser';
-import { useAuth } from '../lib/state/auth';
+import { getAuthConnection, useAuth } from '../lib/state/auth';
 import { createLLMClient } from '../lib/provider/factory';
+import { selectAvailableModelForStage } from '../lib/provider/capabilities';
 import { requestDocumentEdits } from '../lib/document/edit';
 import { isValidDocumentEditOp } from '../lib/document/edit';
 import { applyDocumentEdits } from '../lib/document/writer';
@@ -216,8 +217,14 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   const apiKey = useAuth((s) => s.apiKey);
   const baseUrl = useAuth((s) => s.baseUrl);
   const provider = useAuth((s) => s.provider);
+  const availableModels = useAuth((s) => s.models);
+  const canGenerate = useAuth((s) => getAuthConnection(s).canGenerate);
   const settings = useLiveQuery(() => loadSettings(), []);
   const cleanupModelOverride = settings?.models.cleanup ?? null;
+  const cleanupModel = useMemo(
+    () => selectAvailableModelForStage(availableModels, cleanupModelOverride, 'cleanup'),
+    [availableModels, cleanupModelOverride],
+  );
   const cost: CostAssumptions = settings?.cost ?? DEFAULT_COST_ASSUMPTIONS;
   const [instruction, setInstruction] = useState('Review this document for grammar, language, clarity, and obvious errors. Propose surgical edits only — leave clean paragraphs alone.');
   // Phase F (item #4): two-call pre-pass that first identifies which
@@ -329,7 +336,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
 
   async function onRequestEdits(e: FormEvent) {
     e.preventDefault();
-    if (!apiKey) {
+    if (!canGenerate) {
       setRequestError('Connect on the Connection tab first.');
       return;
     }
@@ -343,12 +350,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     // eslint-disable-next-line no-console
     console.info(`[DocumentDetail] requesting cleanup edits for ${doc.id}`);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const result = await requestDocumentEdits(client, {
         document_name: doc.name,
         paragraphs,
         instruction: instruction.trim(),
-        ...(cleanupModelOverride ? { model: cleanupModelOverride } : {}),
+        ...(cleanupModel ? { model: cleanupModel } : {}),
         // Grounding context — only Ask Sage supports the file/dataset
         // path; on OpenRouter the UI hides these inputs entirely so we
         // can pass them straight through.
@@ -446,7 +453,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
   }
 
   async function onRunAuditableEdit() {
-    if (!apiKey) {
+    if (!canGenerate) {
       setRequestError('Connect on the Connection tab first.');
       return;
     }
@@ -457,8 +464,8 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     setRequestError(null);
     setAgentRunning(true);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
-      const model = await resolveDraftingModel(client, cleanupModelOverride, 'cleanup');
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
+      const model = await resolveDraftingModel(client, cleanupModel, 'cleanup');
       const result = await startPromptOnlyEditingTurn(client, {
         target: { kind: 'uploaded_document', targetId: doc.id },
         source: { filename: doc.filename, paragraphs },
@@ -541,7 +548,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         objective,
         focus_questions: input.focus_questions,
         depth: input.depth,
-        model: cleanupModelOverride ?? undefined,
+        model: cleanupModel ?? undefined,
       });
       const attached = await saveDocumentResearchPack(doc.id, result.pack);
       toast.success(
@@ -584,7 +591,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
    * pass.
    */
   async function onScopedEdit(instruction: string) {
-    if (!apiKey) {
+    if (!canGenerate) {
       toast.error('Connect on the Connection tab first.');
       return;
     }
@@ -598,11 +605,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
     }
     setScopedRunning(true);
     try {
-      const client = createLLMClient({ provider, baseUrl, apiKey });
+      const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
       const result = await runScopedEdit(client, {
         all_paragraphs: paragraphs,
         selected_indices: scopedSelection,
         instruction,
+        model: cleanupModel ?? undefined,
       });
       // Build StoredEdits with anchors, same shape as the chunked
       // pass produces. Drop in next to existing proposed/accepted.
@@ -815,7 +823,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         <strong>Estimated cost</strong>{' '}
         <span className="note">
           ({significantParagraphCount} paragraphs ·{' '}
-          {cleanupModelOverride ?? 'default model'})
+          {cleanupModel ?? 'default model'})
         </span>
         <div style={{ marginTop: '0.25rem' }}>
           ~{formatTokens(cleanupEstimate.tokens_in)} in /{' '}
@@ -844,7 +852,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
             border: '1px solid #ccc',
             borderRadius: 4,
           }}
-          disabled={running || agentRunning || !apiKey}
+          disabled={running || agentRunning || !canGenerate}
         />
         <p className="note">
           Examples: <em>"Fix typos and grammar only"</em> · <em>"Tighten the
@@ -899,13 +907,13 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
               onChange={(e) => setScopedRangeText(e.target.value)}
               placeholder='e.g. "37" or "37-42" or "5,7,9"'
               style={{ flex: 1, minWidth: 200 }}
-              disabled={scopedRunning || running || agentRunning || !apiKey}
+              disabled={scopedRunning || running || agentRunning || !canGenerate}
             />
             <button
               type="button"
               className="btn-secondary btn-sm"
               onClick={onOpenScopedPopover}
-              disabled={scopedRunning || running || agentRunning || !apiKey || !paragraphs}
+              disabled={scopedRunning || running || agentRunning || !canGenerate || !paragraphs}
             >
               fix this region…
             </button>
@@ -915,7 +923,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           </p>
         </details>
 
-        <button type="submit" disabled={running || agentRunning || !apiKey}>
+        <button type="submit" disabled={running || agentRunning || !canGenerate}>
           {running ? (
             <Spinner
               light
@@ -938,7 +946,7 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
         )}
       </form>
       <div style={{ marginTop: '0.6rem' }}>
-        <button type="button" className="btn-secondary" onClick={() => void onRunAuditableEdit()} disabled={agentRunning || scopedRunning || running || !apiKey || !paragraphs}>
+        <button type="button" className="btn-secondary" onClick={() => void onRunAuditableEdit()} disabled={agentRunning || scopedRunning || running || !canGenerate || !paragraphs}>
           {agentRunning ? 'Planning and critiquing edits…' : 'Run auditable agent edit'}
         </button>
         <p className="note">Creates a visible plan → proposal → critique trace, then places only proposed edits in the normal approval queue.</p>
