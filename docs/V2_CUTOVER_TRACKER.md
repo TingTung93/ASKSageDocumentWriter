@@ -9,9 +9,9 @@ Reference-only design bundle: `Version2/`
 ## Current cutover audit
 
 The default shell and core workflow are implemented and the automated release
-gate passes. The detailed checklist below is the original work-package
-inventory; current go/no-go status is summarized here and backed by the
-evidence document.
+gate passes. The detailed Phase 0–4 checklist below is the completed cutover
+record; current go/no-go status is summarized here and backed by the evidence
+document. Phase 5 remains a separate post-observation milestone.
 
 Completed and verified in the current release candidate:
 
@@ -88,11 +88,11 @@ Datasets, Audit, and Settings. V2 entry points are inconsistent:
 - `V2SettingsAdvanced.tsx` navigates to classic `/audit`.
 - `drafting/EditSessionPanel.tsx` links to classic `/settings`.
 
-- [ ] Decide whether embedded V2 views or classic routes own each workflow.
-- [ ] Document the purpose of Documents as editing an existing DOCX rather
+- [x] Decide whether embedded V2 views or classic routes own each workflow.
+- [x] Document the purpose of Documents as editing an existing DOCX rather
   than drafting a project.
-- [ ] Document `/legacy/projects/:id` as temporary compatibility UI.
-- [ ] Define browser back/forward behavior for embedded views.
+- [x] Document `/legacy/projects/:id` as temporary compatibility UI.
+- [x] Define browser back/forward behavior for embedded views.
 
 Acceptance criteria:
 
@@ -109,10 +109,10 @@ Recipe recovery currently resumes at the first incomplete stage in
 are expected to be idempotent. Agentic-edit recovery under
 `src/lib/agentic-editing/recovery.ts` uses checkpoints to avoid replay.
 
-- [ ] Define when an interrupted recipe stage may be replayed.
-- [ ] Define idempotency requirements for recipe stages.
-- [ ] Define expected provider and tool-call counts after resume.
-- [ ] Define retry behavior separately from resume behavior.
+- [x] Define when an interrupted recipe stage may be replayed.
+- [x] Define idempotency requirements for recipe stages.
+- [x] Define expected provider and tool-call counts after resume.
+- [x] Define retry behavior separately from resume behavior.
 
 Acceptance criteria:
 
@@ -127,12 +127,12 @@ Audit records intentionally persist prompt and response excerpts through
 those records, and `src/lib/export/diagnostic_json.ts` exports project and
 draft content.
 
-- [ ] Decide which prompts, responses, references, and draft content may be
+- [x] Decide which prompts, responses, references, and draft content may be
   persisted.
-- [ ] Decide which content may be included in support and audit exports.
-- [ ] Define required user disclosure or confirmation for content-bearing
+- [x] Decide which content may be included in support and audit exports.
+- [x] Define required user disclosure or confirmation for content-bearing
   exports.
-- [ ] Define recursive credential-redaction requirements.
+- [x] Define recursive credential-redaction requirements.
 
 Acceptance criteria:
 
@@ -159,12 +159,12 @@ Owned files:
 
 Work:
 
-- [ ] Test `/projects/:id` redirecting to `/v2/:id` with replace semantics.
-- [ ] Test direct V2 routes and the compatibility route.
-- [ ] Apply the approved interface-ownership decision.
-- [ ] Align all V2 navigation entry points.
-- [ ] Test missing-project behavior.
-- [ ] Test browser history behavior for embedded views.
+- [x] Test `/projects/:id` redirecting to `/v2/:id` with replace semantics.
+- [x] Test direct V2 routes and the compatibility route.
+- [x] Apply the approved interface-ownership decision.
+- [x] Align all V2 navigation entry points.
+- [x] Test missing-project behavior.
+- [x] Test browser history behavior for embedded views.
 
 Acceptance criteria:
 
@@ -185,14 +185,14 @@ Owned files:
 
 Work:
 
-- [ ] Define one resolved capability snapshot keyed by provider, normalized
+- [x] Define one resolved capability snapshot keyed by provider, normalized
   endpoint, selected model, authentication revision, and probe version.
-- [ ] Invalidate stale probes when provider, endpoint, credentials, or model
+- [x] Invalidate stale probes when provider, endpoint, credentials, or model
   changes.
-- [ ] Make provider capability the upper bound and model metadata a narrowing
+- [x] Make provider capability the upper bound and model metadata a narrowing
   constraint.
-- [ ] Make V2 capability explanations consume the same snapshot.
-- [ ] Keep agentic editing labelled prompt-only until native editing is wired.
+- [x] Make V2 capability explanations consume the same snapshot.
+- [x] Keep agentic editing labelled prompt-only until native editing is wired.
 
 Acceptance criteria:
 
@@ -213,11 +213,11 @@ Owned files:
 
 Work:
 
-- [ ] Add table-driven request-body tests across all providers.
-- [ ] Verify assistant tool calls and tool-result IDs serialize correctly.
-- [ ] Verify STARK request allowlisting.
-- [ ] Verify Ask Sage receives tools only after shared authorization.
-- [ ] Lock provider-specific fields to their supported providers.
+- [x] Add table-driven request-body tests across all providers.
+- [x] Verify assistant tool calls and tool-result IDs serialize correctly.
+- [x] Verify STARK request allowlisting.
+- [x] Verify Ask Sage receives tools only after shared authorization.
+- [x] Lock provider-specific fields to their supported providers.
 
 Acceptance criteria:
 
@@ -238,12 +238,12 @@ Owned files:
 
 Work:
 
-- [ ] Add a browser-level test runner.
-- [ ] Add deterministic synthetic provider stubs.
-- [ ] Add helpers to seed and inspect IndexedDB.
-- [ ] Add a production-build test path.
-- [ ] Add single-file artifact assertions.
-- [ ] Add a target-environment `file://` validation lane.
+- [x] Add a browser-level test runner.
+- [x] Add deterministic synthetic provider stubs.
+- [x] Add helpers to seed and inspect IndexedDB.
+- [x] Add a production-build test path.
+- [x] Add single-file artifact assertions.
+- [x] Add a target-environment `file://` validation lane.
 
 Acceptance criteria:
 
@@ -279,15 +279,15 @@ Current risks:
 
 Work:
 
-- [ ] Consume the shared provider-and-model capability decision.
-- [ ] Replace dynamic evaluation with a constrained arithmetic parser.
-- [ ] Remove `fetch_url`, or restrict it to approved HTTPS public hosts with
+- [x] Consume the shared provider-and-model capability decision.
+- [x] Replace dynamic evaluation with a constrained arithmetic parser.
+- [x] Remove `fetch_url`, or restrict it to approved HTTPS public hosts with
   private-address denial, timeout, and size limits.
-- [ ] Add maximum rounds, calls, result bytes, and conversation bytes.
-- [ ] Add cancellation and `AbortSignal` propagation.
-- [ ] Runtime-validate every tool argument.
-- [ ] Return bounded structured tool errors.
-- [ ] Remove or redesign presentation tools to return structured draft IR.
+- [x] Add maximum rounds, calls, result bytes, and conversation bytes.
+- [x] Add cancellation and `AbortSignal` propagation.
+- [x] Runtime-validate every tool argument.
+- [x] Return bounded structured tool errors.
+- [x] Remove or redesign presentation tools to return structured draft IR.
 
 Acceptance criteria:
 
@@ -311,13 +311,13 @@ Owned files:
 
 Work:
 
-- [ ] Test newest-run recovery.
-- [ ] Test paused, failed, interrupted, and completed runs.
-- [ ] Test project switching during asynchronous recovery.
-- [ ] Test duplicate-start guards.
-- [ ] Implement the approved replay/idempotency policy.
-- [ ] Add provider-call-count assertions.
-- [ ] Add pause, reload, resume, and export browser coverage.
+- [x] Test newest-run recovery.
+- [x] Test paused, failed, interrupted, and completed runs.
+- [x] Test project switching during asynchronous recovery.
+- [x] Test duplicate-start guards.
+- [x] Implement the approved replay/idempotency policy.
+- [x] Add provider-call-count assertions.
+- [x] Add pause, reload, resume, and export browser coverage.
 
 Acceptance criteria:
 
@@ -343,11 +343,11 @@ Current drift:
 
 Work:
 
-- [ ] Load real datasets through the supported capability path, or disable
+- [x] Load real datasets through the supported capability path, or disable
   dataset controls.
-- [ ] Remove enabled no-op affordances.
-- [ ] Display provider limitations.
-- [ ] Preserve local template ingestion.
+- [x] Remove enabled no-op affordances.
+- [x] Display provider limitations.
+- [x] Preserve local template ingestion.
 
 Acceptance criteria:
 
@@ -368,12 +368,12 @@ Owned files:
 
 Work:
 
-- [ ] Apply the approved sensitive-content policy.
-- [ ] Add recursive credential redaction.
-- [ ] Review persisted prompt and response excerpts.
-- [ ] Add disclosure or confirmation to content-bearing exports.
-- [ ] Test download URL creation and revocation.
-- [ ] Scan diagnostics, audit exports, and release HTML for secrets.
+- [x] Apply the approved sensitive-content policy.
+- [x] Add recursive credential redaction.
+- [x] Review persisted prompt and response excerpts.
+- [x] Add disclosure or confirmation to content-bearing exports.
+- [x] Test download URL creation and revocation.
+- [x] Scan diagnostics, audit exports, and release HTML for secrets.
 
 Acceptance criteria:
 
@@ -397,12 +397,12 @@ Owned files:
 
 Work:
 
-- [ ] Define the policy for mixed ready, error, failed, and skipped drafts.
-- [ ] Surface partial assembly accurately.
-- [ ] Test multi-template partial failure.
-- [ ] Test export from durable IndexedDB data after reload.
-- [ ] Test filenames and object URL revocation.
-- [ ] Test export after resume and section revision.
+- [x] Define the policy for mixed ready, error, failed, and skipped drafts.
+- [x] Surface partial assembly accurately.
+- [x] Test multi-template partial failure.
+- [x] Test export from durable IndexedDB data after reload.
+- [x] Test filenames and object URL revocation.
+- [x] Test export after resume and section revision.
 
 Acceptance criteria:
 
@@ -422,11 +422,11 @@ Owned files:
 
 Work:
 
-- [ ] Produce canonical template-based and freeform outputs.
-- [ ] Add resumed-run and revised-section fixtures.
-- [ ] Validate ZIP and OOXML structure automatically.
-- [ ] Open outputs in Word and LibreOffice.
-- [ ] Record application versions and results.
+- [x] Produce canonical template-based and freeform outputs.
+- [x] Add resumed-run and revised-section fixtures.
+- [x] Validate ZIP and OOXML structure automatically.
+- [x] Open outputs in Word and LibreOffice.
+- [x] Record application versions and results.
 
 Acceptance criteria:
 
@@ -447,10 +447,10 @@ Owned files:
 
 Work:
 
-- [ ] Apply the approved interface-ownership decision.
-- [ ] Align reset, save, and export behavior with retained classic surfaces.
-- [ ] Derive capability messaging from Agent B's resolved snapshot.
-- [ ] Test loaded settings and reset propagation.
+- [x] Apply the approved interface-ownership decision.
+- [x] Align reset, save, and export behavior with retained classic surfaces.
+- [x] Derive capability messaging from Agent B's resolved snapshot.
+- [x] Test loaded settings and reset propagation.
 
 Acceptance criteria:
 
@@ -473,16 +473,16 @@ Owned files:
 
 Work:
 
-- [ ] Run `npm run typecheck`.
-- [ ] Run the complete Vitest suite.
-- [ ] Run production-build browser lifecycle tests.
-- [ ] Run artifact-shape and secret scans.
-- [ ] Run `npm run build` from a clean source state.
-- [ ] Validate `file://` navigation, persistence, provider calls, and
+- [x] Run `npm run typecheck`.
+- [x] Run the complete Vitest suite.
+- [x] Run production-build browser lifecycle tests.
+- [x] Run artifact-shape and secret scans.
+- [x] Run `npm run build` from a clean source state.
+- [x] Validate `file://` navigation, persistence, provider calls, and
   downloads in the target browser.
-- [ ] Attach Word and LibreOffice validation evidence.
-- [ ] Confirm only intended source and artifact changes remain.
-- [ ] Regenerate `release/index.html` exactly once.
+- [x] Attach Word and LibreOffice validation evidence.
+- [x] Confirm only intended source and artifact changes remain.
+- [x] Regenerate `release/index.html` exactly once.
 
 Acceptance criteria:
 
