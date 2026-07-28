@@ -129,7 +129,7 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
 
   if (!drafts || !templates) {
     return (
-      <div className="pane">
+      <div className="pane document-pane">
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 20, color: 'var(--ink-3)' }}>
           <span className="spinner-small" />
           <span>Loading drafts…</span>
@@ -157,7 +157,7 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
   };
 
   return (
-    <section className="pane">
+    <section className="pane document-pane">
       <div className="draft-head">
         <div className="draft-title">
           <span className="draft-name">{project.name}.docx</span>
@@ -641,7 +641,7 @@ function FreeformDraftView({ project }: V2DraftPaneProps) {
   };
 
   return (
-    <section className="pane">
+    <section className="pane document-pane">
       <div className="draft-head">
         <div className="draft-title">
           <span className="draft-name">{project.name}.docx</span>

@@ -68,7 +68,7 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
   };
 
   return (
-    <section className="pane">
+    <section id="v2-context-pane" className="pane context-pane">
       <div className="pane-head">
         <div className="pane-title">
           <h2>Chat</h2>

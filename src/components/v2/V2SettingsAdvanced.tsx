@@ -207,12 +207,13 @@ function UserDefaultsCard({ defaults }: { defaults: { shared_inputs: Record<stri
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
         {rows.map((row, idx) => (
-          <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div key={idx} className="settings-default-row" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <input
               type="text"
               value={row.key}
               placeholder="key (e.g. office_symbol)"
               onChange={(e) => updateRow(idx, { key: e.target.value })}
+              className="settings-default-key"
               style={{ flex: '0 0 14rem', padding: '8px 12px', border: '1px solid var(--line-strong)', borderRadius: 6, backgroundColor: 'var(--paper)', fontFamily: 'var(--font-mono)', fontSize: 12 }}
             />
             <input
@@ -220,6 +221,7 @@ function UserDefaultsCard({ defaults }: { defaults: { shared_inputs: Record<stri
               value={row.value}
               placeholder="value"
               onChange={(e) => updateRow(idx, { value: e.target.value })}
+              className="settings-default-value"
               style={{ flex: '1 1 auto', padding: '8px 12px', border: '1px solid var(--line-strong)', borderRadius: 6, backgroundColor: 'var(--paper)' }}
             />
             <button type="button" className="btn" onClick={() => removeRow(idx)} style={{ padding: '8px' }}>
@@ -248,7 +250,7 @@ function CostCard({ cost }: { cost: CostAssumptions }) {
           <div className="s-desc">Assumptions used to estimate token costs prior to running a project.</div>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+      <div className="settings-cost-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
         <CostField label="Avg. input units per section" field="drafting_tokens_in_per_section" value={cost.drafting_tokens_in_per_section} />
         <CostField label="Avg. output units per section" field="drafting_tokens_out_per_section" value={cost.drafting_tokens_out_per_section} />
         <CostField label="Characters per unit" field="chars_per_token" value={cost.chars_per_token} step={0.1} />

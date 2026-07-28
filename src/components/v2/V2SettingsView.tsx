@@ -425,8 +425,7 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
                 <span className={"mr-role " + s.role}>{s.role}</span>
                 {draftProvider === 'genai_mil' ? (
                   <select
-                    className="mono"
-                    style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
+                    className="mono model-control"
                     value={modelValueFor(s.stage)}
                     onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
                     aria-label={`${s.label} model override`}
@@ -441,8 +440,7 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
                   </select>
                 ) : (
                   <input
-                    className="mono"
-                    style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
+                    className="mono model-control"
                     value={modelValueFor(s.stage)}
                     onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
                     placeholder={showLocalNeutralRouting ? 'local backend model' : suggested}

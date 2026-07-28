@@ -86,6 +86,25 @@ test('embedded V2 views participate in browser Back and Forward history', async 
   await expect(page.getByRole('heading', { name: 'Connection & models' })).toBeVisible();
 });
 
+for (const width of [480, 360]) {
+  test(`V2 embedded surfaces remain viewport-contained at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 760 });
+    for (const route of [
+      '/#/v2',
+      '/#/v2?view=library',
+      '/#/v2?view=audit',
+      '/#/v2?view=settings',
+      '/#/v2?view=documents',
+    ]) {
+      await page.goto(route);
+      await expect.poll(() => page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }))).toEqual({ clientWidth: width, scrollWidth: width });
+    }
+  });
+}
+
 test('a registered DOCX template appears in the V2 library immediately', async ({ page }) => {
   await page.goto('/#/v2?view=library');
   await expect(page.getByRole('button', { name: /Templates \(0\)/ })).toBeVisible();

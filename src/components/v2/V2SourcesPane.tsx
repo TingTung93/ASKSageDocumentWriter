@@ -33,7 +33,7 @@ export function V2SourcesPane({ project }: V2SourcesPaneProps) {
   const list = tab === "attached" ? attached : rag;
 
   return (
-    <section className="pane">
+    <section id="v2-sources-pane" className="pane sources-pane">
       <div className="pane-head">
         <div className="pane-title">
           <h2>Sources</h2>

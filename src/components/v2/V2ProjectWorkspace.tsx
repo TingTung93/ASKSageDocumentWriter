@@ -126,12 +126,23 @@ function WorkspacePanes({
     return () => observer.disconnect();
   }, [observeSelection, sectionTargets]);
 
+  useEffect(() => {
+    if (supportPane === 'closed') return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSupportPane('closed');
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [supportPane]);
+
   return (
     <div className={`workspace-stage support-${supportPane}`} data-screen-label="01 Workspace">
       <div className="workspace-pane-tabs" aria-label="Workspace panels">
         <button
           className={supportPane === 'sources' ? 'active' : ''}
           aria-pressed={supportPane === 'sources'}
+          aria-expanded={supportPane === 'sources'}
+          aria-controls="v2-sources-pane"
           onClick={() => setSupportPane((current) => current === 'sources' ? 'closed' : 'sources')}
         >
           Sources
@@ -139,11 +150,20 @@ function WorkspacePanes({
         <button
           className={supportPane === 'chat' ? 'active' : ''}
           aria-pressed={supportPane === 'chat'}
+          aria-expanded={supportPane === 'chat'}
+          aria-controls="v2-context-pane"
           onClick={() => setSupportPane((current) => current === 'chat' ? 'closed' : 'chat')}
         >
           Context notes
         </button>
       </div>
+      {supportPane !== 'closed' && (
+        <button
+          className="workspace-pane-scrim"
+          aria-label="Close support panel"
+          onClick={() => setSupportPane('closed')}
+        />
+      )}
       <div className="panes">
         <V2SourcesPane project={project} />
         <V2ChatPane project={project} />
