@@ -119,6 +119,37 @@ describe('useDraftEditingSession', () => {
     expect(putVersion).toHaveBeenCalledWith(expect.objectContaining({ status: 'preview' }));
   });
 
+  it('does not preview a proposal that requires repair or user input', async () => {
+    startTurn.mockResolvedValue({
+      sessionId: 'session-1',
+      turn: { ...turn, status: 'awaiting_plan_approval' },
+    });
+    const { result } = setup();
+    await act(() => result.current.propose('Tighten'));
+
+    expect(result.current.preview).toBeNull();
+    expect(result.current.error).toMatch(/requires repair or additional input/i);
+    expect(putVersion).not.toHaveBeenCalled();
+  });
+
+  it('keeps adapter validation failures out of the approval preview', async () => {
+    const { result } = renderHook(() => useDraftEditingSession({
+      target: turn.target,
+      source,
+      client: () => client,
+      providerId: 'asksage',
+      model: 'model',
+      applyProposal: async () => {
+        throw new Error('Proposal would leave the required section empty.');
+      },
+    }));
+    await act(() => result.current.propose('Delete everything'));
+
+    expect(result.current.preview).toBeNull();
+    expect(result.current.error).toMatch(/required section empty/i);
+    expect(putVersion).not.toHaveBeenCalled();
+  });
+
   it('applies and records an accepted proposal', async () => {
     const { result, onDocumentChanged } = setup();
     await act(() => result.current.propose('Tighten'));

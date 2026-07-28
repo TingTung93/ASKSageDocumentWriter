@@ -147,6 +147,13 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
         model: options.model,
         baseVersionId: currentVersion?.id,
       });
+      if (result.turn.status !== 'awaiting_user_approval') {
+        throw new Error(
+          result.turn.status === 'awaiting_plan_approval'
+            ? 'The proposal requires repair or additional input before it can be reviewed.'
+            : `The proposal is not ready for approval (${result.turn.status}).`,
+        );
+      }
       const edits = (result.turn.proposal?.operations ?? [])
         .filter((operation) => operation.target === 'draft_paragraphs')
         .map((operation) => operation.operation);

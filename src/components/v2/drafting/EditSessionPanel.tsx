@@ -82,20 +82,23 @@ export function EditSessionPanel({
     return () => controller.register(null);
   }, [active, controller.register, scopeLabel, session.busy, session.preview]);
   return (
-    <aside className={`edit-session-panel ${session.preview ? 'state-awaiting-approval' : ''}`}>
+    <aside
+      className={`edit-session-panel ${session.preview ? 'state-awaiting-approval' : ''}`}
+      onClick={(event) => event.stopPropagation()}
+    >
       {!session.preview ? (
         <>
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Improve this section</div>
           <DraftActionBar
             disabled={session.busy}
-            onSelect={(action) => controller.run(action.id)}
+            onSelect={(action) => void session.propose(action.instruction, action.criteria)}
             scopeLabel={scopeLabel}
           />
           <div style={{ marginTop: 10 }}>
             <InstructionComposer
               busy={session.busy}
               focusRequest={focusRequest}
-              onSubmit={controller.runInstruction}
+              onSubmit={(instruction) => void session.propose(instruction)}
             />
           </div>
           <div style={{ marginTop: 10 }}>
@@ -124,7 +127,7 @@ export function EditSessionPanel({
               aria-label={`Accept proposal for ${scopeLabel}`}
               className="btn btn-primary btn-sm"
               disabled={session.busy}
-              onClick={() => controller.run('accept_proposal')}
+              onClick={() => void session.accept()}
             >
               Accept change
             </button>
@@ -132,7 +135,7 @@ export function EditSessionPanel({
               aria-label={`Reject proposal for ${scopeLabel}`}
               className="btn btn-sm"
               disabled={session.busy}
-              onClick={() => controller.run('reject_proposal')}
+              onClick={() => void session.reject()}
             >
               Reject
             </button>
@@ -142,7 +145,7 @@ export function EditSessionPanel({
               busy={session.busy}
               focusRequest={focusRequest}
               initialInstruction={session.preview.turn.instruction}
-              onSubmit={controller.runInstruction}
+              onSubmit={(instruction) => void session.propose(instruction)}
             />
             <div style={{ color: 'var(--ink-4)', fontSize: 11, marginTop: 4 }}>
               Submitting replaces this proposal; it does not change the draft.

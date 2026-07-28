@@ -30,6 +30,7 @@ import {
 import { applyDraftEdits } from '../../lib/edit/dispatcher';
 import {
   createTemplateSectionSnapshot,
+  validateProposalAgainstTemplateSection,
 } from '../../lib/agentic-editing/targets/template-section';
 import {
   createTemplateParagraphSnapshot,
@@ -82,16 +83,22 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
     );
   }, [drafts, templates]);
 
-  const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+  const sectionKeys = useMemo(
+    () => sections.map((section) => `${section.template_id}::${section.id}`),
+    [sections],
+  );
 
   useEffect(() => {
-    if (!bodyRef.current || sectionIds.length === 0) return;
+    if (!bodyRef.current || sectionKeys.length === 0) return;
     const root = bodyRef.current;
     const visible = new Map<string, number>();
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        const id = (entry.target as HTMLElement).dataset.secId;
-        if (!id) continue;
+        const element = entry.target as HTMLElement;
+        const sectionId = element.dataset.secId;
+        const templateId = element.dataset.templateId;
+        if (!sectionId || !templateId) continue;
+        const id = `${templateId}::${sectionId}`;
         if (entry.isIntersecting) {
           visible.set(id, entry.intersectionRatio);
         } else {
@@ -104,12 +111,17 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
       }
     }, { root, threshold: [0, 0.25, 0.5, 0.75, 1] });
 
-    const els = sectionIds
-      .map((id) => root.querySelector(`[data-sec-id="${CSS.escape(id)}"]`))
+    const els = sectionKeys
+      .map((key) => {
+        const [templateId, sectionId] = key.split('::');
+        return root.querySelector(
+          `[data-template-id="${CSS.escape(templateId!)}"][data-sec-id="${CSS.escape(sectionId!)}"]`,
+        );
+      })
       .filter((el): el is Element => !!el);
     els.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
-  }, [sectionIds]);
+  }, [sectionKeys]);
 
   if (!drafts || !templates) {
     return (
@@ -153,11 +165,14 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
       <div className="draft-toc">
         {sections.map(s => {
           const state = s.draft ? (s.draft.validation_issues?.length ? "warn" : "done") : "queued";
-          const isActive = activeSecId === s.id;
+          const isActive = activeSecId === `${s.template_id}::${s.id}`;
           return (
             <button key={`${s.template_id}-${s.id}`}
               className={"toc-chip " + state + (isActive ? " active" : "")}
-              onClick={() => { const el = document.getElementById(`sec-${s.id}`); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }}>
+              onClick={() => {
+                const el = document.getElementById(`sec-${s.template_id}-${s.id}`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}>
               <span className="dot" />
               §{s.id} {s.name}
             </button>
@@ -307,7 +322,12 @@ function Section({ project, template, section, draft, allDrafts }: {
   };
 
   return (
-    <article className="doc-section" id={`sec-${section.id}`} data-sec-id={section.id}>
+    <article
+      className="doc-section"
+      id={`sec-${template.id}-${section.id}`}
+      data-sec-id={section.id}
+      data-template-id={template.id}
+    >
       <div className="sec-num">§ {section.id} {section.name}</div>
       <h3>{section.name}</h3>
       {draft ? (
@@ -394,21 +414,35 @@ function Section({ project, template, section, draft, allDrafts }: {
                     index: selectedParagraphIndex,
                     paragraph: draft.paragraphs[selectedParagraphIndex],
                   }}
-              applyProposal={selectedParagraphIndex === undefined ? undefined : async (
+              applyProposal={async (
                 edits,
                 current,
                 baseVersionId,
               ) => {
-                if (edits.length !== 1 || edits[0]?.op !== 'replace_paragraph' ||
-                    edits[0].index !== selectedParagraphIndex) {
-                  throw new Error('A paragraph edit may replace only the selected paragraph.');
-                }
                 const sectionSnapshot = await createTemplateSectionSnapshot({
                   project,
                   template: template.schema_json,
                   section,
                   draft: { ...draft, paragraphs: current },
                 });
+                if (selectedParagraphIndex === undefined) {
+                  const validation = validateProposalAgainstTemplateSection(sectionSnapshot, {
+                    target: sectionSnapshot.target,
+                    baseHash: sectionSnapshot.baseHash,
+                    operations: edits,
+                  });
+                  if (!validation.ok || !validation.result) {
+                    throw new Error(
+                      validation.errors.join(' ') ||
+                      'The proposal did not produce a valid section revision.',
+                    );
+                  }
+                  return validation.result;
+                }
+                if (edits.length !== 1 || edits[0]?.op !== 'replace_paragraph' ||
+                    edits[0].index !== selectedParagraphIndex) {
+                  throw new Error('A paragraph edit may replace only the selected paragraph.');
+                }
                 const paragraphSnapshot = await createTemplateParagraphSnapshot({
                   section: sectionSnapshot,
                   paragraphIndex: selectedParagraphIndex,

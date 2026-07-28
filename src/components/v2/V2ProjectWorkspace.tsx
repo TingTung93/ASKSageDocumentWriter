@@ -98,9 +98,9 @@ function WorkspacePanes({
 }) {
   const [supportPane, setSupportPane] = useState<'closed' | 'sources' | 'chat'>('closed');
   const { observeSelection } = useDraftSelection();
-  const sectionTargets = useMemo(() => new Map(
+  const sectionTargets = useMemo(() => new Map<string, ReturnType<typeof templateSectionSelection>>(
     templates.flatMap((template) => template.schema_json.sections.map((section) => [
-      section.id,
+      `${template.id}::${section.id}`,
       templateSectionSelection(project.id, template.id, section.id, section.name),
     ] as const)),
   ), [project.id, templates]);
@@ -110,13 +110,18 @@ function WorkspacePanes({
       (entries) => {
         const visible = entries.find((entry) => entry.isIntersecting);
         if (!visible) return;
-        const sectionId = (visible.target as HTMLElement).dataset.secId;
-        observeSelection(sectionId ? sectionTargets.get(sectionId) ?? null : null);
+        const element = visible.target as HTMLElement;
+        const sectionId = element.dataset.secId;
+        const templateId = element.dataset.templateId;
+        const key = templateId && sectionId ? `${templateId}::${sectionId}` : null;
+        observeSelection(key ? sectionTargets.get(key) ?? null : null);
       },
       { threshold: 0.2 },
     );
 
-    const sections = document.querySelectorAll<HTMLElement>('.doc-section[data-sec-id]');
+    const sections = document.querySelectorAll<HTMLElement>(
+      '.doc-section[data-template-id][data-sec-id]',
+    );
     sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
   }, [observeSelection, sectionTargets]);

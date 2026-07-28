@@ -11,9 +11,7 @@ export function RevisionTimeline({
   onUndo: (version: DocumentVersionRecord) => void;
   versions: DocumentVersionRecord[];
 }) {
-  const visible = [...versions]
-    .filter((version) => version.status === 'accepted')
-    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const visible = orderAcceptedLineage(versions);
 
   if (visible.length === 0) return null;
   return (
@@ -47,5 +45,39 @@ export function RevisionTimeline({
         ))}
       </ol>
     </details>
+  );
+}
+
+export function orderAcceptedLineage(
+  versions: DocumentVersionRecord[],
+): DocumentVersionRecord[] {
+  const accepted = versions.filter((version) => version.status === 'accepted');
+  const byId = new Map(accepted.map((version) => [version.id, version]));
+  const parentIds = new Set(
+    accepted.flatMap((version) => version.parent_version_id ? [version.parent_version_id] : []),
+  );
+  const heads = accepted
+    .filter((version) => !parentIds.has(version.id))
+    .sort((a, b) =>
+      b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)
+    );
+  const ordered: DocumentVersionRecord[] = [];
+  const seen = new Set<string>();
+  for (const head of heads) {
+    let current: DocumentVersionRecord | undefined = head;
+    while (current && !seen.has(current.id)) {
+      ordered.push(current);
+      seen.add(current.id);
+      current = current.parent_version_id
+        ? byId.get(current.parent_version_id)
+        : undefined;
+    }
+  }
+  return ordered.concat(
+    accepted
+      .filter((version) => !seen.has(version.id))
+      .sort((a, b) =>
+        b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)
+      ),
   );
 }
