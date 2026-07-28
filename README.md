@@ -1,8 +1,8 @@
-# ASKSageDocumentWriter
+# Draft Workspace
 
-Zero-backend single-page application that parses DOCX templates, drafts structured Word content, and edits finished DOCX files with the user's own LLM API key. Supports [Ask Sage](https://asksage.ai/) for CUI-authorized workflows and [OpenRouter](https://openrouter.ai/) for non-CUI drafting, cleanup, and browser-side reference workflows.
+Provider-neutral, zero-backend single-page application that parses DOCX templates, drafts structured Word content, and edits finished DOCX files with the user's chosen AI provider. Current adapters include [Ask Sage](https://asksage.ai/), GenAI.mil, [OpenRouter](https://openrouter.ai/), and OpenAI-compatible local services.
 
-> **Note:** This project integrates with Ask Sage's publicly documented API. It is not affiliated with, endorsed by, or sponsored by Ask Sage or the Defense Health Agency. No proprietary or sensitive information is included in this repository.
+> **Brand and affiliation:** Draft Workspace is an independent product working name. Ask Sage is one supported provider and retains its own name wherever provider-specific capabilities are described. This project is not affiliated with, endorsed by, or sponsored by Ask Sage or the Defense Health Agency. No proprietary or sensitive information is included in this repository.
 
 ## Quick start
 

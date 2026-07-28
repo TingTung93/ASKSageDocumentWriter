@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../lib/db/schema';
 import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { useNavigate, useParams } from 'react-router-dom';
+import { PRODUCT_IDENTITY } from '../../lib/product/identity';
 
 interface V2SidebarProps {
   view: string;
@@ -28,10 +29,10 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
   return (
     <aside className="rail">
       <div className="rail-head">
-        <div className="mark">A</div>
+        <div className="mark">{PRODUCT_IDENTITY.mark}</div>
         <div className="brand-wrap">
-          <span className="brand">Ask Sage</span>
-          <span className="brand-sub">co-writer · v2</span>
+          <span className="brand">{PRODUCT_IDENTITY.name}</span>
+          <span className="brand-sub">document co-writer</span>
         </div>
       </div>
 

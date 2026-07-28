@@ -93,7 +93,7 @@ describe('V2 view smoke tests', () => {
     const { V2FirstRun } = await import('./V2FirstRun');
     const { container, getByText } = render(withRouter(<V2FirstRun onDismiss={() => {}} />));
     expect(container.querySelector('.first-run')).not.toBeNull();
-    expect(getByText(/Let's get you drafting/i)).not.toBeNull();
+    expect(getByText(/Welcome to Draft Workspace/i)).not.toBeNull();
     expect(getByText(/Open Settings/i)).not.toBeNull();
   });
 

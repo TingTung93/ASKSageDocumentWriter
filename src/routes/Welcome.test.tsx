@@ -98,6 +98,14 @@ describe('Welcome local provider gate', () => {
     vi.clearAllMocks();
   });
 
+  it('uses provider-neutral product branding while retaining provider labels', () => {
+    const { getByRole } = render(withRouter(<Welcome />));
+
+    expect(getByRole('heading', { name: 'Welcome to Draft Workspace' })).not.toBeNull();
+    expect(getByRole('radio', { name: /Ask Sage/i })).not.toBeNull();
+    expect(getByRole('radio', { name: /OpenRouter/i })).not.toBeNull();
+  });
+
   it('treats restored local_openai state with models and no API key as connected', () => {
     const { getByText, getByRole, queryByText } = render(withRouter(<Welcome />));
 
