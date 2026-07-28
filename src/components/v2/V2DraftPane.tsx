@@ -20,6 +20,7 @@ import {
 } from '../../lib/freeform/drafter';
 import { getFreeformStyle } from '../../lib/freeform/styles';
 import { chunkFreeformByH1, type FreeformChunk } from './helpers';
+import { EditSessionPanel } from './drafting';
 
 interface V2DraftPaneProps {
   project: ProjectRecord;
@@ -212,8 +213,24 @@ function Section({ project, template, section, draft, allDrafts }: {
   allDrafts: DraftRecord[]
 }) {
   const [busy, setBusy] = useState(false);
+  const [editModel, setEditModel] = useState<string | null>(null);
   const auth = useAuth();
   const connection = getAuthConnection(auth);
+
+  useEffect(() => {
+    let active = true;
+    loadSettings().then((settings) => {
+      if (active) {
+        setEditModel(
+          settings.models.drafting ??
+          auth.models?.[0]?.name ??
+          auth.models?.[0]?.id ??
+          null,
+        );
+      }
+    });
+    return () => { active = false; };
+  }, [auth.models]);
 
   const handleFix = async (finding?: string) => {
     if (!connection.canGenerate || busy) {
@@ -294,6 +311,33 @@ function Section({ project, template, section, draft, allDrafts }: {
                 </div>
               ))}
             </div>
+          )}
+          {connection.canGenerate && editModel && draft.status === 'ready' && (
+            <EditSessionPanel
+              client={() => createLLMClient({
+                provider: auth.provider,
+                baseUrl: auth.baseUrl,
+                apiKey: auth.apiKey ?? '',
+              })}
+              model={editModel}
+              onAccept={async (paragraphs) => {
+                await db.drafts.put({
+                  ...draft,
+                  paragraphs,
+                  generated_at: new Date().toISOString(),
+                });
+                toast.success(`Accepted changes to §${section.id}.`);
+              }}
+              providerId={auth.provider}
+              source={draft.paragraphs}
+              target={{
+                kind: 'template_draft',
+                targetId: draft.id,
+                projectId: project.id,
+                templateId: template.id,
+                sectionId: section.id,
+              }}
+            />
           )}
         </>
       ) : (
