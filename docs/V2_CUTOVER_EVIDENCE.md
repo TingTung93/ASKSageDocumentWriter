@@ -1,8 +1,10 @@
 # V2 Cutover Evidence
 
-Status: release candidate; owner approvals pending
+Status: approved for V2 cutover
 
 Date: 2026-07-28
+
+Approval recorded: 2026-07-28
 
 Source and artifact snapshot: commit `6da5ef6`
 
@@ -85,6 +87,8 @@ and validates tables, rich runs, and a page break; template outputs retain
 headers, footers, and styles. Focused assembler tests separately prove
 numbering/list preservation and drawing-bearing header preservation.
 
-## Remaining approvals
+## Approval
 
-- Product, security, and release owners review and approve this evidence.
+Product, security, and release approval has been recorded. No V2 default-route
+cutover gate remains open. Phase 5 legacy-view retirement remains a separate,
+post-observation milestone and is not required for this cutover.

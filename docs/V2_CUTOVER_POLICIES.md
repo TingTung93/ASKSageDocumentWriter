@@ -1,6 +1,6 @@
 # V2 Cutover Policies
 
-Status: implementation contract; owner approval pending
+Status: approved implementation contract
 
 ## Interface ownership
 

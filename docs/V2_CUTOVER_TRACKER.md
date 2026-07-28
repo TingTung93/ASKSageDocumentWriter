@@ -1,6 +1,6 @@
 # V2 Cutover Tracker
 
-Status: release candidate, not yet go — see `docs/V2_CUTOVER_EVIDENCE.md`
+Status: go — approved 2026-07-28; see `docs/V2_CUTOVER_EVIDENCE.md`
 
 Canonical implementation: `src/`
 
@@ -27,10 +27,7 @@ Completed and verified in the current release candidate:
 - The `file://` artifact passed a real Ollama provider smoke test, and generated
   DOCX files opened without repair in Word and LibreOffice.
 
-Still required before changing this tracker to **go**:
-
-- Product, security, and release-owner approval of
-  `docs/V2_CUTOVER_POLICIES.md` and `docs/V2_CUTOVER_EVIDENCE.md`.
+All V2 default-route cutover gates are complete.
 
 The previously open technical evidence items are now covered by focused tests:
 browser history traversal, immediate DOCX ingestion visibility, v8-to-v9
@@ -40,7 +37,7 @@ resumed-run DOCX accepted by Word and LibreOffice.
 
 - [x] Technical implementation and evidence complete.
 - [x] Source and matching release artifact recorded in commit `6da5ef6`.
-- [ ] Product, security, and release owners approve the evidence.
+- [x] Product, security, and release owners approve the evidence.
 
 This tracker defines the work and evidence required to complete the V2
 cutover without creating parallel implementations or drifting from the
@@ -500,12 +497,12 @@ Acceptance criteria:
 
 V2 cutover is a go when:
 
-- [ ] Interface, recovery, and privacy contracts are approved.
-- [ ] All Phase 1 through Phase 4 acceptance criteria pass.
-- [ ] No open critical security, data-loss, recovery, or export defect remains.
+- [x] Interface, recovery, and privacy contracts are approved.
+- [x] All Phase 1 through Phase 4 acceptance criteria pass.
+- [x] No open critical security, data-loss, recovery, or export defect remains.
 - [x] The target `file://` environment and at least one supported provider
   pass manual smoke testing.
-- [ ] Product, security, and release owners approve the evidence.
+- [x] Product, security, and release owners approve the evidence.
 
 ---
 
