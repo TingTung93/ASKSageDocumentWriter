@@ -13,6 +13,8 @@ import { getProviderConnection } from '../provider/connection';
 const SESSION_KEY_API = 'asksage:apiKey';
 const SESSION_KEY_BASE = 'asksage:baseUrl';
 const SESSION_KEY_PROVIDER = 'asksage:provider';
+const SESSION_KEY_MODELS = 'asksage:models';
+const SESSION_KEY_LOCAL_PROBE = 'asksage:localProbe';
 
 function readSession(name: string): string | null {
   if (typeof sessionStorage === 'undefined') return null;
@@ -31,6 +33,42 @@ function writeSession(name: string, value: string | null): void {
   } catch {
     /* sessionStorage may be unavailable on file:// in some browsers */
   }
+}
+
+function readSessionJson<T>(name: string, validate: (value: unknown) => value is T): T | null {
+  const raw = readSession(name);
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    return validate(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionJson(name: string, value: unknown | null): void {
+  writeSession(name, value === null ? null : JSON.stringify(value));
+}
+
+function isModelInfoList(value: unknown): value is ModelInfo[] {
+  return Array.isArray(value) && value.every((model) =>
+    model !== null &&
+    typeof model === 'object' &&
+    typeof (model as { id?: unknown }).id === 'string'
+  );
+}
+
+function isLocalProbe(value: unknown): value is LocalEndpointProbeResult {
+  if (value === null || typeof value !== 'object') return false;
+  const probe = value as Partial<LocalEndpointProbeResult>;
+  return (
+    typeof probe.ok === 'boolean' &&
+    typeof probe.baseUrl === 'string' &&
+    (probe.model === null || typeof probe.model === 'string') &&
+    probe.capabilities !== null &&
+    typeof probe.capabilities === 'object' &&
+    Array.isArray(probe.warnings)
+  );
 }
 
 function normalizeApiKey(apiKey: string | null): string | null {
@@ -74,8 +112,8 @@ export const useAuth = create<AuthState>((set, get) => ({
   provider: readProvider(),
   apiKey: normalizeApiKey(readSession(SESSION_KEY_API)),
   baseUrl: readSession(SESSION_KEY_BASE) ?? defaultBaseUrlFor(readProvider()),
-  models: null,
-  localProbe: null,
+  models: readSessionJson(SESSION_KEY_MODELS, isModelInfoList),
+  localProbe: readSessionJson(SESSION_KEY_LOCAL_PROBE, isLocalProbe),
   isValidating: false,
   error: null,
 
@@ -88,6 +126,8 @@ export const useAuth = create<AuthState>((set, get) => ({
     const wasOnDefault = prev.baseUrl === defaultBaseUrlFor(prev.provider);
     const nextBaseUrl = wasOnDefault ? defaultBaseUrlFor(provider) : prev.baseUrl;
     if (wasOnDefault) writeSession(SESSION_KEY_BASE, nextBaseUrl);
+    writeSessionJson(SESSION_KEY_MODELS, null);
+    writeSessionJson(SESSION_KEY_LOCAL_PROBE, null);
     set({
       provider,
       baseUrl: nextBaseUrl,
@@ -103,14 +143,23 @@ export const useAuth = create<AuthState>((set, get) => ({
   },
   setBaseUrl: (baseUrl) => {
     writeSession(SESSION_KEY_BASE, baseUrl);
+    writeSessionJson(SESSION_KEY_LOCAL_PROBE, null);
     set({ baseUrl, localProbe: null });
   },
-  setModels: (models) => set({ models }),
-  setLocalProbe: (localProbe) => set({ localProbe }),
+  setModels: (models) => {
+    writeSessionJson(SESSION_KEY_MODELS, models);
+    set({ models });
+  },
+  setLocalProbe: (localProbe) => {
+    writeSessionJson(SESSION_KEY_LOCAL_PROBE, localProbe);
+    set({ localProbe });
+  },
   setValidating: (isValidating) => set({ isValidating }),
   setError: (error) => set({ error }),
   clear: () => {
     writeSession(SESSION_KEY_API, null);
+    writeSessionJson(SESSION_KEY_MODELS, null);
+    writeSessionJson(SESSION_KEY_LOCAL_PROBE, null);
     set({ apiKey: null, models: null, localProbe: null, error: null, isValidating: false });
   },
 }));

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ModelInfo } from '../asksage/types';
 import type { LocalEndpointProbeResult } from '../provider/local_openai';
 
 const SESSION_KEY_API = 'asksage:apiKey';
@@ -99,6 +100,30 @@ describe('auth state local provider support', () => {
     useAuth.getState().clear();
 
     expect(useAuth.getState().localProbe).toBeNull();
+    expect(sessionStorage.getItem('asksage:localProbe')).toBeNull();
+  });
+
+  it('persists and rehydrates non-secret model and local verification metadata', async () => {
+    const useAuth = await loadAuth();
+    const models: ModelInfo[] = [{
+      id: 'Qwen2.5-14B-Instruct-AWQ',
+      name: 'Qwen',
+      object: 'model',
+      owned_by: 'vllm',
+      created: '1',
+    }];
+    const probe = probeResult();
+
+    useAuth.getState().setModels(models);
+    useAuth.getState().setLocalProbe(probe);
+
+    expect(JSON.parse(sessionStorage.getItem('asksage:models') ?? 'null')).toEqual(models);
+    expect(JSON.parse(sessionStorage.getItem('asksage:localProbe') ?? 'null')).toEqual(probe);
+
+    vi.resetModules();
+    const reloadedAuth = await loadAuth();
+    expect(reloadedAuth.getState().models).toEqual(models);
+    expect(reloadedAuth.getState().localProbe).toEqual(probe);
   });
 
   it('setProvider clears the local probe result', async () => {
@@ -108,6 +133,8 @@ describe('auth state local provider support', () => {
     useAuth.getState().setProvider('local_openai');
 
     expect(useAuth.getState().localProbe).toBeNull();
+    expect(sessionStorage.getItem('asksage:localProbe')).toBeNull();
+    expect(sessionStorage.getItem('asksage:models')).toBeNull();
   });
 
   it('setBaseUrl clears the local probe result', async () => {
@@ -117,5 +144,6 @@ describe('auth state local provider support', () => {
     useAuth.getState().setBaseUrl('http://localhost:1234/v1');
 
     expect(useAuth.getState().localProbe).toBeNull();
+    expect(sessionStorage.getItem('asksage:localProbe')).toBeNull();
   });
 });
