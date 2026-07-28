@@ -1,18 +1,25 @@
 import { useState, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, type ProjectRecord, type ReferenceChunk } from '../../lib/db/schema';
+import { useDraftSelection } from './drafting/DraftSelectionContext';
 
 interface V2SourcesPaneProps {
   project: ProjectRecord;
-  activeSectionId: string | null;
 }
 
-export function V2SourcesPane({ project, activeSectionId }: V2SourcesPaneProps) {
+export function V2SourcesPane({ project }: V2SourcesPaneProps) {
   const [tab, setTab] = useState<"attached" | "rag">("attached");
+  const { selection } = useDraftSelection();
+  const activeTarget = selection?.kind === 'template_section' ? selection : null;
 
   const activeDraft = useLiveQuery(
-    () => activeSectionId ? db.drafts.where({ project_id: project.id, section_id: activeSectionId }).first() : undefined,
-    [project.id, activeSectionId]
+    () => activeTarget
+      ? db.drafts
+          .where('[project_id+template_id+section_id]')
+          .equals([project.id, activeTarget.templateId, activeTarget.sectionId])
+          .first()
+      : undefined,
+    [project.id, activeTarget?.templateId, activeTarget?.sectionId],
   );
 
   const citedChunkIds = useMemo(() => new Set(activeDraft?.references_inlined_chunk_ids ?? []), [activeDraft]);

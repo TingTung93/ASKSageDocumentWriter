@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.4.2",
   "type": "module",
-  "description": "Zero-backend SPA that parses DOCX templates into JSON schemas and generates long-form documents via the Ask Sage API",
+  "description": "Provider-neutral, zero-backend workspace for drafting and revising structured Word documents with user-selected AI providers",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { getAuthConnection, useAuth } from '../lib/state/auth';
+import { PRODUCT_IDENTITY } from '../lib/product/identity';
 
 interface ShellProps {
   children: ReactNode;
@@ -32,7 +33,7 @@ export function Shell({ children }: ShellProps) {
   return (
     <>
       <nav className="shell" role="navigation" aria-label="Main navigation">
-        <span className="brand">Ask Sage Document Writer</span>
+        <span className="brand">{PRODUCT_IDENTITY.name}</span>
         {NAV_ITEMS.map((item) => (
           <NavLink
             key={item.to}

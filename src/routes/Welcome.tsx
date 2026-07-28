@@ -16,6 +16,7 @@ import { HelpTip } from '../components/HelpTip';
 import { toast } from '../lib/state/toast';
 import { debugLog } from '../lib/debug/log';
 import { getProviderConnection } from '../lib/provider/connection';
+import { PRODUCT_IDENTITY } from '../lib/product/identity';
 
 export function Welcome() {
   const {
@@ -159,7 +160,7 @@ export function Welcome() {
 
   return (
     <main>
-      <h1>Welcome to Ask Sage Document Writer</h1>
+      <h1>Welcome to {PRODUCT_IDENTITY.name}</h1>
       <p>
         Draft structured DOCX packages from templates, write freeform documents,
         or clean up an existing Word file. Connect your provider, add source

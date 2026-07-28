@@ -18,6 +18,11 @@ export interface FreeformChunk {
   end: number;
 }
 
+export function isApprovalEditableFreeformChunk(chunk: FreeformChunk): boolean {
+  const first = chunk.paragraphs[0];
+  return first?.role === 'heading' && (first.level ?? 0) === 0;
+}
+
 /**
  * Split a freeform draft into H1-bounded chunks. The first chunk covers
  * any preamble paragraphs before the first H1 (or the entire draft if

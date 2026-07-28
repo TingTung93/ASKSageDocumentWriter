@@ -11,12 +11,41 @@ for your use case.
 Use a base URL that points at the OpenAI-compatible `/v1` API root:
 
 - Ollama: `http://localhost:11434/v1`
+- vLLM: `http://localhost:8000/v1`
 - llama.cpp server: `http://localhost:8080/v1`
 - LM Studio: `http://localhost:1234/v1`
 - Custom OpenAI-compatible endpoint ending at `/v1`
 
 Most local endpoints do not require an API key. If your endpoint is protected,
 enter the key in the app; requests will include `Authorization: Bearer <key>`.
+
+## vLLM
+
+vLLM exposes an OpenAI-compatible server on port 8000 by default. Start a
+completion-only endpoint with:
+
+```bash
+vllm serve <model>
+```
+
+Then choose **Local OpenAI-compatible → vLLM** in the app, leave the API key
+blank unless the server was started with `--api-key`, select the model returned
+by `/v1/models`, and run the endpoint check.
+
+For native tool use, choose a model and parser combination supported by your
+installed vLLM version:
+
+```bash
+vllm serve <tool-capable-model> \
+  --enable-auto-tool-choice \
+  --tool-call-parser <parser-for-that-model>
+```
+
+The parser must match the model's tool-call format. A chat template that
+supports assistant tool calls and tool-result messages may also be required.
+Do not assume tool support from the launch flags alone: run the app's endpoint
+check for the exact endpoint/model pair and confirm both native tool calls and
+tool-result continuation pass.
 
 ## CUI And Privacy
 

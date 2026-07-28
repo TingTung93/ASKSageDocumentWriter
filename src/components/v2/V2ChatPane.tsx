@@ -6,6 +6,8 @@ import { db } from '../../lib/db/schema';
 import { useRecipe } from './RecipeContext';
 import { isPlaceholderStageOutput, V2InterventionCard } from './V2InterventionCard';
 import { FILL_PLACEHOLDERS_STAGE_ID } from '../../lib/agent/recipes/pws';
+import { useDraftActionController } from './drafting';
+import type { DraftCommandId } from './drafting/DraftActionController';
 
 interface V2ChatPaneProps {
   project: ProjectRecord;
@@ -16,6 +18,7 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const { currentRun, isRunning, resumeRecipe } = useRecipe();
   const allTemplates = useLiveQuery(() => db.templates.toArray(), []);
+  const draftActions = useDraftActionController();
   
   const notes = useMemo(
     () => (project.context_items ?? []).filter((item): item is ProjectContextNote => item.kind === 'note'),
@@ -46,6 +49,14 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
     if (!input.trim()) return;
     const text = input.trim();
     setInput('');
+    const slash = parseSlashCommand(text);
+    if (slash) {
+      const handled = slash.kind === 'preset'
+        ? draftActions.run(slash.command)
+        : draftActions.runInstruction(slash.instruction);
+      if (!handled) setInput(text);
+      return;
+    }
     await addProjectNote(project.id, text, 'user');
   };
 
@@ -104,7 +115,7 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
           )}
 
           {isRunning && (
-            <div className="msg ai">
+            <div className="msg ai" aria-live="polite" role="status">
               <div className="who">A</div>
               <div style={{minWidth:0}}>
                 <div className="msg-name">
@@ -123,7 +134,10 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
       <div className="composer" style={{ position: 'relative' }}>
         <div className="composer-inner">
           <textarea
-            placeholder="Add project context — ⏎ to send, ⇧⏎ for newline"
+            aria-label="Project note or edit command"
+            placeholder={draftActions.active
+              ? 'Add a note, or use /tighten, /expand, /clarify, /tone, /edit…'
+              : 'Add project context — ⏎ to send, ⇧⏎ for newline'}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={onKey}
@@ -132,11 +146,39 @@ export function V2ChatPane({ project }: V2ChatPaneProps) {
           <div className="composer-row">
             <div className="composer-chips" />
             <div className="send-row">
-              <button className={"send-btn " + (input.trim() ? "" : "disabled")} title="Send (⏎)" onClick={submit}>↑</button>
+              <button
+                aria-label="Send project note or edit command"
+                className={"send-btn " + (input.trim() ? "" : "disabled")}
+                disabled={!input.trim()}
+                title="Send (⏎)"
+                onClick={submit}
+              >↑</button>
             </div>
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+type ParsedSlash =
+  | { kind: 'preset'; command: DraftCommandId }
+  | { kind: 'custom'; instruction: string };
+
+export function parseSlashCommand(value: string): ParsedSlash | null {
+  const trimmed = value.trim();
+  const presets: Record<string, DraftCommandId> = {
+    '/tighten': 'tighten',
+    '/expand': 'expand',
+    '/clarify': 'clarify',
+    '/tone': 'tone',
+  };
+  if (presets[trimmed.toLowerCase()]) {
+    return { kind: 'preset', command: presets[trimmed.toLowerCase()]! };
+  }
+  if (trimmed.toLowerCase().startsWith('/edit ')) {
+    const instruction = trimmed.slice(6).trim();
+    return instruction ? { kind: 'custom', instruction } : null;
+  }
+  return null;
 }

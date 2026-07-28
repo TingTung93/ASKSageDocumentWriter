@@ -57,7 +57,7 @@ export function providerLabel(provider: ProviderId): string {
     case 'genai_mil':
       return 'GenAI.mil (STARK gateway — no tool calling)';
     case 'local_openai':
-      return 'Local OpenAI-compatible (Ollama, llama.cpp, LM Studio — non-CUI only)';
+      return 'Local OpenAI-compatible (vLLM, Ollama, llama.cpp, LM Studio — non-CUI only)';
     case 'openrouter':
       return 'OpenRouter (commercial — non-CUI only)';
     case 'asksage':

@@ -76,7 +76,7 @@ export function V2SettingsView() {
           mark: 'L',
           name: 'Local OpenAI',
           url: 'localhost / custom',
-          features: ['non-CUI default', 'Ollama / llama.cpp'],
+          features: ['non-CUI default', 'vLLM / Ollama / llama.cpp'],
         },
       ],
     [],
@@ -283,8 +283,8 @@ export function V2SettingsView() {
                   </div>
                   <div className="s-field">
                     <div className="hint" style={{ marginTop: 24 }}>
-                      Local OpenAI is for non-CUI drafting experiments with Ollama,
-                      llama.cpp, LM Studio, or a trusted custom endpoint.
+                      Local OpenAI is for non-CUI drafting experiments with vLLM,
+                      Ollama, llama.cpp, LM Studio, or a trusted custom endpoint.
                     </div>
                   </div>
                 </div>

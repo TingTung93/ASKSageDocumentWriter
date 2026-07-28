@@ -4,10 +4,26 @@ import {
   auditSummaryLine,
   formatAuditTime,
   inferTemplateKind,
+  chunkFreeformByH1,
+  isApprovalEditableFreeformChunk,
   summarizeTemplateChips,
 } from './helpers';
 import type { AuditRecord, TemplateRecord } from '../../lib/db/schema';
 import type { TemplateSchema } from '../../lib/template/types';
+
+describe('freeform approval targets', () => {
+  it('excludes synthetic preambles and permits H1-bounded chunks', () => {
+    const chunks = chunkFreeformByH1([
+      { role: 'body', text: 'Preamble text.' },
+      { role: 'heading', level: 0, text: 'Overview' },
+      { role: 'body', text: 'Section text.' },
+    ]);
+
+    expect(chunks[0]?.heading).toBe('Preamble');
+    expect(isApprovalEditableFreeformChunk(chunks[0]!)).toBe(false);
+    expect(isApprovalEditableFreeformChunk(chunks[1]!)).toBe(true);
+  });
+});
 
 function auditRow(partial: Partial<AuditRecord> = {}): AuditRecord {
   return {

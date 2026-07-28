@@ -93,7 +93,7 @@ describe('V2 view smoke tests', () => {
     const { V2FirstRun } = await import('./V2FirstRun');
     const { container, getByText } = render(withRouter(<V2FirstRun onDismiss={() => {}} />));
     expect(container.querySelector('.first-run')).not.toBeNull();
-    expect(getByText(/Let's get you drafting/i)).not.toBeNull();
+    expect(getByText(/Welcome to Draft Workspace/i)).not.toBeNull();
     expect(getByText(/Open Settings/i)).not.toBeNull();
   });
 
@@ -179,8 +179,18 @@ describe('V2 view smoke tests', () => {
 
   it('V2CommandPalette mounts with focus-capture input', async () => {
     const { V2CommandPalette } = await import('./V2CommandPalette');
+    const { DraftActionControllerProvider } = await import('./drafting');
     const { container, getByPlaceholderText } = render(
-      withRouter(<V2CommandPalette onClose={() => {}} setView={() => {}} />),
+      withRouter(
+        <DraftActionControllerProvider>
+          <V2CommandPalette
+            onClose={() => {}}
+            onOpenExport={() => {}}
+            onOpenIngest={() => {}}
+            setView={() => {}}
+          />
+        </DraftActionControllerProvider>,
+      ),
     );
     expect(container.querySelector('.cmdk-scrim')).not.toBeNull();
     expect(container.querySelector('.cmdk-card')).not.toBeNull();

@@ -19,7 +19,36 @@ import {
   redraftFreeformSection,
 } from '../../lib/freeform/drafter';
 import { getFreeformStyle } from '../../lib/freeform/styles';
-import { chunkFreeformByH1, type FreeformChunk } from './helpers';
+import {
+  chunkFreeformByH1,
+  isApprovalEditableFreeformChunk,
+  type FreeformChunk,
+} from './helpers';
+import { EditSessionPanel } from './drafting';
+import { projectGroundingSources } from './drafting/grounding';
+import { useDraftSelection } from './drafting/DraftSelectionContext';
+import {
+  freeformBlockSelection,
+  templateParagraphSelection,
+} from './drafting/selection';
+import { applyDraftEdits } from '../../lib/edit/dispatcher';
+import {
+  createTemplateSectionSnapshot,
+  validateProposalAgainstTemplateSection,
+} from '../../lib/agentic-editing/targets/template-section';
+import {
+  createTemplateParagraphSnapshot,
+  replaceAnchoredParagraph,
+} from '../../lib/agentic-editing/targets/draft-paragraph';
+import {
+  createFreeformBlockSnapshot,
+  replaceFreeformBlock,
+} from '../../lib/agentic-editing/targets/freeform-block';
+import {
+  createFreeformParagraphSnapshot,
+  replaceFreeformParagraph,
+} from '../../lib/agentic-editing/targets/freeform-paragraph';
+import { freeformParagraphSelection } from './drafting/selection';
 
 interface V2DraftPaneProps {
   project: ProjectRecord;
@@ -58,16 +87,22 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
     );
   }, [drafts, templates]);
 
-  const sectionIds = useMemo(() => sections.map((s) => s.id), [sections]);
+  const sectionKeys = useMemo(
+    () => sections.map((section) => `${section.template_id}::${section.id}`),
+    [sections],
+  );
 
   useEffect(() => {
-    if (!bodyRef.current || sectionIds.length === 0) return;
+    if (!bodyRef.current || sectionKeys.length === 0) return;
     const root = bodyRef.current;
     const visible = new Map<string, number>();
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
-        const id = (entry.target as HTMLElement).dataset.secId;
-        if (!id) continue;
+        const element = entry.target as HTMLElement;
+        const sectionId = element.dataset.secId;
+        const templateId = element.dataset.templateId;
+        if (!sectionId || !templateId) continue;
+        const id = `${templateId}::${sectionId}`;
         if (entry.isIntersecting) {
           visible.set(id, entry.intersectionRatio);
         } else {
@@ -80,12 +115,17 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
       }
     }, { root, threshold: [0, 0.25, 0.5, 0.75, 1] });
 
-    const els = sectionIds
-      .map((id) => root.querySelector(`[data-sec-id="${CSS.escape(id)}"]`))
+    const els = sectionKeys
+      .map((key) => {
+        const [templateId, sectionId] = key.split('::');
+        return root.querySelector(
+          `[data-template-id="${CSS.escape(templateId!)}"][data-sec-id="${CSS.escape(sectionId!)}"]`,
+        );
+      })
       .filter((el): el is Element => !!el);
     els.forEach((el) => observer.observe(el));
     return () => observer.disconnect();
-  }, [sectionIds]);
+  }, [sectionKeys]);
 
   if (!drafts || !templates) {
     return (
@@ -129,11 +169,14 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
       <div className="draft-toc">
         {sections.map(s => {
           const state = s.draft ? (s.draft.validation_issues?.length ? "warn" : "done") : "queued";
-          const isActive = activeSecId === s.id;
+          const isActive = activeSecId === `${s.template_id}::${s.id}`;
           return (
             <button key={`${s.template_id}-${s.id}`}
               className={"toc-chip " + state + (isActive ? " active" : "")}
-              onClick={() => { const el = document.getElementById(`sec-${s.id}`); if(el) el.scrollIntoView({behavior:'smooth', block:'start'}); }}>
+              onClick={() => {
+                const el = document.getElementById(`sec-${s.template_id}-${s.id}`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}>
               <span className="dot" />
               §{s.id} {s.name}
             </button>
@@ -212,8 +255,30 @@ function Section({ project, template, section, draft, allDrafts }: {
   allDrafts: DraftRecord[]
 }) {
   const [busy, setBusy] = useState(false);
+  const [editModel, setEditModel] = useState<string | null>(null);
   const auth = useAuth();
   const connection = getAuthConnection(auth);
+  const { pinSelection, selection } = useDraftSelection();
+  const selectedParagraphIndex = (
+    selection?.kind === 'template_paragraph' &&
+    selection.templateId === template.id &&
+    selection.sectionId === section.id
+  ) ? selection.indexHint : undefined;
+
+  useEffect(() => {
+    let active = true;
+    loadSettings().then((settings) => {
+      if (active) {
+        setEditModel(
+          settings.models.drafting ??
+          auth.models?.[0]?.name ??
+          auth.models?.[0]?.id ??
+          null,
+        );
+      }
+    });
+    return () => { active = false; };
+  }, [auth.models]);
 
   const handleFix = async (finding?: string) => {
     if (!connection.canGenerate || busy) {
@@ -261,13 +326,35 @@ function Section({ project, template, section, draft, allDrafts }: {
   };
 
   return (
-    <article className="doc-section" id={`sec-${section.id}`} data-sec-id={section.id}>
+    <article
+      className="doc-section"
+      id={`sec-${template.id}-${section.id}`}
+      data-sec-id={section.id}
+      data-template-id={template.id}
+    >
       <div className="sec-num">§ {section.id} {section.name}</div>
       <h3>{section.name}</h3>
       {draft ? (
         <>
           {draft.paragraphs.map((p, i) => (
-            <Paragraph key={i} p={p} project={project} />
+            <Paragraph
+              key={i}
+              p={p}
+              project={project}
+              selected={
+                selection?.kind === 'template_paragraph' &&
+                selection.templateId === template.id &&
+                selection.sectionId === section.id &&
+                selection.indexHint === i
+              }
+              onSelect={() => pinSelection(templateParagraphSelection(
+                project.id,
+                template.id,
+                section.id,
+                `${draft.id}:p:${i}:${p.role}`,
+                i,
+              ))}
+            />
           ))}
           {(draft.status === 'drafting' || draft.status === 'pending' || busy) && (
             <p className="drafting-indicator">
@@ -295,6 +382,97 @@ function Section({ project, template, section, draft, allDrafts }: {
               ))}
             </div>
           )}
+          {connection.canGenerate && editModel && draft.status === 'ready' && (
+            <EditSessionPanel
+              active={
+                (
+                  selection?.kind === 'template_section' &&
+                  selection.templateId === template.id &&
+                  selection.sectionId === section.id
+                ) || selectedParagraphIndex !== undefined
+              }
+              client={() => createLLMClient({
+                provider: auth.provider,
+                baseUrl: auth.baseUrl,
+                apiKey: auth.apiKey ?? '',
+              })}
+              model={editModel}
+              scopeLabel={selectedParagraphIndex === undefined
+                ? `section ${section.name}`
+                : `paragraph ${selectedParagraphIndex + 1} in ${section.name}`}
+              groundingSources={projectGroundingSources(project)}
+              onDocumentChanged={(change) => {
+                toast.success(
+                  change === 'restored'
+                    ? `Restored an earlier revision of §${section.id}.`
+                    : `Accepted changes to §${section.id}.`,
+                );
+              }}
+              providerId={auth.provider}
+              source={draft.paragraphs}
+              targetSelection={selectedParagraphIndex === undefined
+                ? { kind: 'template_section', sectionId: section.id, name: section.name }
+                : {
+                    kind: 'template_paragraph',
+                    sectionId: section.id,
+                    index: selectedParagraphIndex,
+                    paragraph: draft.paragraphs[selectedParagraphIndex],
+                  }}
+              applyProposal={async (
+                edits,
+                current,
+                baseVersionId,
+              ) => {
+                const sectionSnapshot = await createTemplateSectionSnapshot({
+                  project,
+                  template: template.schema_json,
+                  section,
+                  draft: { ...draft, paragraphs: current },
+                });
+                if (selectedParagraphIndex === undefined) {
+                  const validation = validateProposalAgainstTemplateSection(sectionSnapshot, {
+                    target: sectionSnapshot.target,
+                    baseHash: sectionSnapshot.baseHash,
+                    operations: edits,
+                  });
+                  if (!validation.ok || !validation.result) {
+                    throw new Error(
+                      validation.errors.join(' ') ||
+                      'The proposal did not produce a valid section revision.',
+                    );
+                  }
+                  return validation.result;
+                }
+                if (edits.length !== 1 || edits[0]?.op !== 'replace_paragraph' ||
+                    edits[0].index !== selectedParagraphIndex) {
+                  throw new Error('A paragraph edit may replace only the selected paragraph.');
+                }
+                const paragraphSnapshot = await createTemplateParagraphSnapshot({
+                  section: sectionSnapshot,
+                  paragraphIndex: selectedParagraphIndex,
+                  targetVersionId: baseVersionId,
+                });
+                const existing = current[selectedParagraphIndex]!;
+                const replacement: DraftParagraph = {
+                  ...existing,
+                  text: edits[0].text,
+                  role: edits[0].role ?? existing.role,
+                };
+                delete replacement.runs;
+                return replaceAnchoredParagraph(current, paragraphSnapshot, replacement);
+              }}
+              target={{
+                kind: 'template_draft',
+                targetId: draft.id,
+                projectId: project.id,
+                templateId: template.id,
+                sectionId: section.id,
+                selectionId: selectedParagraphIndex === undefined
+                  ? `section:${section.id}`
+                  : `paragraph:${section.id}:${selectedParagraphIndex}`,
+              }}
+            />
+          )}
         </>
       ) : (
         <div style={{ padding: '16px 0' }}>
@@ -313,7 +491,17 @@ function Section({ project, template, section, draft, allDrafts }: {
   );
 }
 
-function Paragraph({ p, project }: { p: DraftParagraph, project: ProjectRecord }) {
+function Paragraph({
+  onSelect,
+  p,
+  project,
+  selected,
+}: {
+  onSelect?: () => void;
+  p: DraftParagraph;
+  project: ProjectRecord;
+  selected?: boolean;
+}) {
   const text = p.text ?? '';
   const parts = useMemo(() => {
     const res: Array<string | { type: 'cite', id: string }> = [];
@@ -334,6 +522,26 @@ function Paragraph({ p, project }: { p: DraftParagraph, project: ProjectRecord }
   }, [text]);
 
   const level = p.level ?? 0;
+  const selectable = onSelect ? {
+    onClick: (event: React.MouseEvent<HTMLElement>) => {
+      event.stopPropagation();
+      onSelect();
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        onSelect();
+      }
+    },
+    role: 'button',
+    tabIndex: 0,
+    'aria-pressed': selected,
+    style: {
+      background: selected ? 'var(--accent-soft)' : undefined,
+      borderRadius: selected ? 3 : undefined,
+      cursor: 'pointer',
+    },
+  } : {};
   const content = parts.map((part, i) => {
     if (typeof part === 'string') return part;
     return <Cite key={i} id={part.id} project={project} />;
@@ -342,14 +550,14 @@ function Paragraph({ p, project }: { p: DraftParagraph, project: ProjectRecord }
   switch (p.role) {
     case 'heading': {
       const Tag = (`h${Math.min(level + 3, 5)}`) as 'h3' | 'h4' | 'h5';
-      return <Tag>{content}</Tag>;
+      return <Tag {...selectable}>{content}</Tag>;
     }
     case 'bullet':
-      return <li style={{ marginLeft: `${level * 20}px` }}>{content}</li>;
+      return <li {...selectable} style={{ ...selectable.style, marginLeft: `${level * 20}px` }}>{content}</li>;
     case 'step':
-      return <li style={{ marginLeft: `${level * 20}px` }}>{content}</li>;
+      return <li {...selectable} style={{ ...selectable.style, marginLeft: `${level * 20}px` }}>{content}</li>;
     default:
-      return <p style={{ marginLeft: level > 0 ? `${level * 20}px` : undefined }}>{content}</p>;
+      return <p {...selectable} style={{ ...selectable.style, marginLeft: level > 0 ? `${level * 20}px` : undefined }}>{content}</p>;
   }
 }
 
@@ -495,8 +703,30 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
   const [busy, setBusy] = useState(false);
   const [instruction, setInstruction] = useState('');
   const [showRegen, setShowRegen] = useState(false);
+  const [editModel, setEditModel] = useState<string | null>(null);
   const auth = useAuth();
   const connection = getAuthConnection(auth);
+  const approvalEditable = isApprovalEditableFreeformChunk(chunk);
+  const { pinSelection, selection } = useDraftSelection();
+  const selected = (
+    (selection?.kind === 'freeform_block' || selection?.kind === 'freeform_paragraph') &&
+    selection.blockId === chunk.id
+  );
+
+  useEffect(() => {
+    let active = true;
+    loadSettings().then((settings) => {
+      if (active) {
+        setEditModel(
+          settings.models.drafting ??
+          auth.models?.[0]?.name ??
+          auth.models?.[0]?.id ??
+          null,
+        );
+      }
+    });
+    return () => { active = false; };
+  }, [auth.models]);
 
   // Re-sync the textarea if the underlying chunk changes (e.g. after
   // a regen of this block or a neighbor shifting indexes).
@@ -592,7 +822,16 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
   };
 
   return (
-    <article className="doc-section" id={`freeform-${chunk.id}`}>
+    <article
+      className="doc-section"
+      id={`freeform-${chunk.id}`}
+      onClick={() => {
+        if (approvalEditable) {
+          pinSelection(freeformBlockSelection(project.id, chunk.id, chunk.heading));
+        }
+      }}
+      style={{ outline: selected ? '2px solid var(--accent)' : undefined }}
+    >
       <div className="sec-num" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <span>{chunk.heading}</span>
         <span style={{ display: 'flex', gap: 6 }}>
@@ -635,9 +874,28 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
         </>
       ) : (
         <>
-          {chunk.paragraphs.map((p, i) => (
-            <Paragraph key={i} p={p} project={project} />
-          ))}
+          {chunk.paragraphs.map((p, i) => {
+            const globalIndex = chunk.start + i;
+            return (
+            <Paragraph
+              key={i}
+              p={p}
+              project={project}
+              selected={
+                selection?.kind === 'freeform_paragraph' &&
+                selection.indexHint === globalIndex
+              }
+              onSelect={approvalEditable
+                ? () => pinSelection(freeformParagraphSelection(
+                    project.id,
+                    chunk.id,
+                    `${project.id}:p:${globalIndex}:${p.role}`,
+                    globalIndex,
+                  ))
+                : undefined}
+            />
+            );
+          })}
           {showRegen && (
             <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--line)', borderRadius: 6, background: 'var(--paper)' }}>
               <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 6, fontFamily: 'var(--font-mono)' }}>
@@ -659,6 +917,111 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
                 </button>
               </div>
             </div>
+          )}
+          {approvalEditable && selected && connection.canGenerate && editModel && (
+            <EditSessionPanel
+              active
+              client={() => createLLMClient({
+                provider: auth.provider,
+                baseUrl: auth.baseUrl,
+                apiKey: auth.apiKey ?? '',
+              })}
+              model={editModel}
+              scopeLabel={selection?.kind === 'freeform_paragraph'
+                ? `paragraph in ${chunk.heading}`
+                : `block ${chunk.heading}`}
+              groundingSources={projectGroundingSources(project)}
+              onDocumentChanged={(change) => toast.success(
+                change === 'restored'
+                  ? `Restored an earlier revision of "${chunk.heading}".`
+                  : `Accepted changes to "${chunk.heading}".`,
+              )}
+              providerId={auth.provider}
+              source={project.freeform_draft ?? []}
+              targetSelection={selection?.kind === 'freeform_paragraph'
+                ? {
+                    kind: 'freeform_paragraph',
+                    blockId: chunk.id,
+                    index: selection.indexHint,
+                    paragraph: selection.indexHint === undefined
+                      ? undefined
+                      : project.freeform_draft?.[selection.indexHint],
+                  }
+                : {
+                    kind: 'freeform_block',
+                    blockId: chunk.id,
+                    heading: chunk.heading,
+                    range: [chunk.start, chunk.end],
+                  }}
+              target={{
+                kind: 'freeform_draft',
+                targetId: project.id,
+                projectId: project.id,
+                sectionId: chunk.id,
+                selectionId: selection?.kind === 'freeform_paragraph' &&
+                  selection.indexHint !== undefined
+                  ? `paragraph:${chunk.id}:${selection.indexHint}`
+                  : `block:${chunk.id}`,
+              }}
+              applyProposal={async (edits, current, baseVersionId) => {
+                if (selection?.kind === 'freeform_paragraph' &&
+                    selection.indexHint !== undefined) {
+                  if (edits.length !== 1 || edits[0]?.op !== 'replace_paragraph' ||
+                      edits[0].index !== selection.indexHint) {
+                    throw new Error('A paragraph edit may replace only the selected paragraph.');
+                  }
+                  const snapshot = await createFreeformParagraphSnapshot({
+                    project: { ...project, freeform_draft: current },
+                    paragraphIndex: selection.indexHint,
+                    targetVersionId: baseVersionId,
+                  });
+                  const existing = current[selection.indexHint]!;
+                  const replacement: DraftParagraph = {
+                    ...existing,
+                    text: edits[0].text,
+                    role: edits[0].role ?? existing.role,
+                  };
+                  delete replacement.runs;
+                  return replaceFreeformParagraph(current, snapshot, replacement);
+                }
+                const normalized = edits.map((edit) => ({
+                  ...edit,
+                  template_id: 'freeform',
+                  section_id: chunk.id,
+                }));
+                const applied = applyDraftEdits(
+                  { edits: normalized },
+                  { get: () => current },
+                );
+                const failure = applied.applied.find((item) => !item.success);
+                const candidate = applied.updated.get(`freeform::${chunk.id}`);
+                if (failure || !candidate) {
+                  throw new Error(failure?.error ?? 'The proposal did not change the selected block.');
+                }
+                const prefixUnchanged = JSON.stringify(candidate.slice(0, chunk.start)) ===
+                  JSON.stringify(current.slice(0, chunk.start));
+                const suffixLength = current.length - chunk.end;
+                const suffixUnchanged = suffixLength === 0 ||
+                  JSON.stringify(candidate.slice(candidate.length - suffixLength)) ===
+                  JSON.stringify(current.slice(chunk.end));
+                if (!prefixUnchanged || !suffixUnchanged) {
+                  throw new Error('The proposal attempted to edit outside the selected block.');
+                }
+                const snapshot = await createFreeformBlockSnapshot({
+                  project: { ...project, freeform_draft: current },
+                  headingIndex: chunk.start,
+                  targetVersionId: baseVersionId,
+                });
+                return replaceFreeformBlock(
+                  current,
+                  snapshot,
+                  candidate.slice(
+                    chunk.start,
+                    suffixLength === 0 ? candidate.length : candidate.length - suffixLength,
+                  ),
+                );
+              }}
+            />
           )}
         </>
       )}
