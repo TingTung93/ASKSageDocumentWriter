@@ -20,6 +20,8 @@ const STAGE_META: { stage: ModelStage; label: string; role: 'primary' | 'critic'
   { stage: 'drafting', label: 'Drafting', role: 'primary' },
   { stage: 'critic', label: 'Critic', role: 'critic' },
   { stage: 'synthesis', label: 'Template analysis', role: 'embed' },
+  { stage: 'cleanup', label: 'Document cleanup', role: 'primary' },
+  { stage: 'schema_edit', label: 'Template refinement', role: 'primary' },
 ];
 
 export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () => void }) {
@@ -211,6 +213,8 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
         drafting: modelValueFor('drafting').trim() || undefined,
         critic: modelValueFor('critic').trim() || undefined,
         synthesis: modelValueFor('synthesis').trim() || undefined,
+        cleanup: modelValueFor('cleanup').trim() || undefined,
+        schema_edit: modelValueFor('schema_edit').trim() || undefined,
       },
     };
     await saveSettings(patch);
@@ -345,7 +349,7 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
                 <input
                   id="v2-settings-base-url"
                   className="mono"
-                  type="url"
+                  type={draftProvider === 'genai_mil' ? 'text' : 'url'}
                   value={draftBase}
                   onChange={(e) => onDraftBaseChange(e.target.value)}
                   placeholder="https://api.asksage.health.mil"
@@ -397,10 +401,19 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
           </div>
           {STAGE_META.map((s) => {
             const showLocalNeutralRouting = draftProvider === 'local_openai';
-            const suggested = showLocalNeutralRouting ? '' : defaultModelFor(draftProvider, s.stage);
+            const genAIModels = draftProvider === provider && draftProvider === 'genai_mil'
+              ? models ?? []
+              : [];
+            const suggested = showLocalNeutralRouting
+              ? ''
+              : draftProvider === 'genai_mil'
+                ? genAIModels[0]?.id ?? ''
+                : defaultModelFor(draftProvider, s.stage);
             const modelHint = showLocalNeutralRouting
               ? 'local model selected in backend'
-              : `${draftProvider === 'openrouter' || draftProvider === 'genai_mil' ? 'suggested' : 'default'}: ${suggested}`;
+              : suggested
+                ? `${draftProvider === 'openrouter' || draftProvider === 'genai_mil' ? 'suggested' : 'default'}: ${suggested}`
+                : 'Connect to load available models';
             return (
               <div key={s.stage} className="model-row">
                 <div>
@@ -410,14 +423,32 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
                   </div>
                 </div>
                 <span className={"mr-role " + s.role}>{s.role}</span>
-                <input
-                  className="mono"
-                  style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
-                  value={modelValueFor(s.stage)}
-                  onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
-                  placeholder={showLocalNeutralRouting ? 'local backend model' : suggested}
-                  aria-label={`${s.label} model override`}
-                />
+                {draftProvider === 'genai_mil' ? (
+                  <select
+                    className="mono"
+                    style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
+                    value={modelValueFor(s.stage)}
+                    onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
+                    aria-label={`${s.label} model override`}
+                    disabled={genAIModels.length === 0}
+                  >
+                    <option value="">
+                      {genAIModels.length === 0 ? 'Connect to load models' : 'Select a model…'}
+                    </option>
+                    {genAIModels.map((model) => (
+                      <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="mono"
+                    style={{ width: 260, padding: '6px 9px', border: '1px solid var(--line-strong)', borderRadius: 6, fontSize: 12, fontFamily: 'var(--font-mono)' }}
+                    value={modelValueFor(s.stage)}
+                    onChange={(e) => setModelEdits((d) => ({ ...d, [s.stage]: e.target.value }))}
+                    placeholder={showLocalNeutralRouting ? 'local backend model' : suggested}
+                    aria-label={`${s.label} model override`}
+                  />
+                )}
               </div>
             );
           })}
@@ -429,7 +460,13 @@ export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () =>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14, gap: 8 }}>
             <button
               className="btn"
-              onClick={() => setModelEdits({ drafting: '', critic: '', synthesis: '' })}
+              onClick={() => setModelEdits({
+                drafting: '',
+                critic: '',
+                synthesis: '',
+                cleanup: '',
+                schema_edit: '',
+              })}
             >
               Reset to defaults
             </button>

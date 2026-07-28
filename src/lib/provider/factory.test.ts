@@ -42,6 +42,11 @@ describe('provider factory GenAI.mil support', () => {
     expect(providerLabel('genai_mil')).toMatch(/no tool calling/i);
   });
 
+  it('suggests a model advertised by the current STARK catalog', () => {
+    expect(defaultModelFor('genai_mil', 'drafting')).toBe('gemini-2.5-flash');
+    expect(defaultModelFor('genai_mil', 'synthesis')).toBe('gemini-2.5-flash');
+  });
+
   it('creates a dedicated GenAIMilClient', () => {
     const client = createLLMClient({
       provider: 'genai_mil',

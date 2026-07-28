@@ -8,7 +8,7 @@
 // by typecheck + the three-pane workflow that runs when a user drafts.
 
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 // ── Shared mocks ─────────────────────────────────────────────────
@@ -159,7 +159,7 @@ describe('V2 view smoke tests', () => {
     expect(getByRole('button', { name: /Test connection/i })).not.toBeDisabled();
     expect(getAllByText(/Endpoint check/i).length).toBeGreaterThan(0);
     expect(getByText(/Tools/i)).not.toBeNull();
-    expect(getAllByText(/local model selected in backend/i)).toHaveLength(3);
+    expect(getAllByText(/local model selected in backend/i)).toHaveLength(5);
     expect(queryByText(/qwen3/i)).toBeNull();
   });
 
@@ -177,6 +177,39 @@ describe('V2 view smoke tests', () => {
 
     expect(getByText(/not a localhost address/i)).not.toBeNull();
     expect(getByText(/non-CUI local or trusted server/i)).not.toBeNull();
+  });
+
+  it('V2SettingsView routes every GenAI stage through an advertised model picker', async () => {
+    authMock.state = {
+      ...authMock.defaultState(),
+      provider: 'genai_mil',
+      apiKey: 'STARK_test',
+      baseUrl: '/api/genai/v1',
+      models: [
+        { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash' },
+        { id: 'gemini-2.5-pro', name: 'gemini-2.5-pro' },
+      ],
+    };
+
+    const { V2SettingsView } = await import('./V2SettingsView');
+    const { getByLabelText } = render(withRouter(<V2SettingsView />));
+
+    for (const label of [
+      'Drafting',
+      'Critic',
+      'Template analysis',
+      'Document cleanup',
+      'Template refinement',
+    ]) {
+      const picker = getByLabelText(`${label} model override`);
+      expect(picker.tagName).toBe('SELECT');
+      expect(picker).toContainHTML('gemini-2.5-flash');
+      expect(picker).toContainHTML('gemini-2.5-pro');
+    }
+
+    const draftingPicker = getByLabelText('Drafting model override');
+    fireEvent.change(draftingPicker, { target: { value: 'gemini-2.5-pro' } });
+    expect(draftingPicker).toHaveValue('gemini-2.5-pro');
   });
 
   it('V2CommandPalette mounts with focus-capture input', async () => {

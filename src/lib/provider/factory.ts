@@ -75,6 +75,7 @@ const ASK_SAGE_DRAFTING_DEFAULT = 'google-claude-46-sonnet';
 const ASK_SAGE_SYNTHESIS_DEFAULT = 'google-claude-46-sonnet';
 const OPENROUTER_DRAFTING_SUGGESTION = 'anthropic/claude-sonnet-4.5';
 const OPENROUTER_SYNTHESIS_SUGGESTION = 'anthropic/claude-sonnet-4.5';
+const GENAI_MIL_SUGGESTION = 'gemini-2.5-flash';
 const LOCAL_OPENAI_STRONG_DEFAULT = 'qwen3:14b';
 const LOCAL_OPENAI_FAST_DEFAULT = 'qwen3:8b';
 
@@ -85,7 +86,10 @@ export function defaultModelFor(provider: ProviderId, stage: ModelStage): string
       ? LOCAL_OPENAI_FAST_DEFAULT
       : LOCAL_OPENAI_STRONG_DEFAULT;
   }
-  if (provider === 'openrouter' || provider === 'genai_mil') {
+  if (provider === 'genai_mil') {
+    return GENAI_MIL_SUGGESTION;
+  }
+  if (provider === 'openrouter') {
     return stage === 'synthesis'
       ? OPENROUTER_SYNTHESIS_SUGGESTION
       : OPENROUTER_DRAFTING_SUGGESTION;
