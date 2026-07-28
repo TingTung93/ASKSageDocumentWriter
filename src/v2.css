@@ -253,6 +253,22 @@
       min-width: 0;
       position: relative;
     }
+    /* Classic workflows embedded in the viewport-locked V2 shell need to
+       own their vertical scroll. Without min-height:0 the grid child expands
+       to the full DOCX preview height while body scrolling remains disabled,
+       leaving the edit-request controls below the visible viewport. */
+    .v2-classic-surface {
+      min-height: 0;
+      min-width: 0;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .v2-classic-surface > .documents-workflow {
+      min-height: 100%;
+    }
     .workspace-pane-tabs { display: none; }
     .panes {
       display: grid;

@@ -34,6 +34,27 @@ test('historical Documents URL opens the workflow inside V2 chrome', async ({ pa
   await expect(page).toHaveURL(/#\/v2\?view=documents$/);
   await expect(page.getByRole('heading', { name: 'Documents — review & polish' })).toBeVisible();
   await expect(page.getByText('document co-writer')).toBeVisible();
+
+  const surface = page.locator('.v2-classic-surface');
+  await expect(surface).toHaveCSS('overflow-y', 'auto');
+  await expect(surface).toHaveCSS('min-height', '0px');
+  await expect.poll(() => surface.evaluate((element) => {
+    const filler = document.createElement('div');
+    filler.dataset.scrollProbe = 'true';
+    filler.style.height = '2000px';
+    element.appendChild(filler);
+    element.scrollTop = 500;
+    const result = {
+      scrollTop: element.scrollTop,
+      boundedToViewport: element.getBoundingClientRect().bottom <= window.innerHeight,
+    };
+    filler.remove();
+    element.scrollTop = 0;
+    return result;
+  })).toMatchObject({
+    scrollTop: 500,
+    boundedToViewport: true,
+  });
 });
 
 test('embedded V2 views participate in browser Back and Forward history', async ({ page }) => {
