@@ -14,20 +14,33 @@ export interface EditingTargetRef {
 }
 
 export type EditingSessionStatus =
+  | 'preparing'
   | 'running'
+  | 'validating'
   | 'awaiting_approval'
   | 'awaiting_connection'
+  | 'accepted'
+  | 'rejected'
   | 'completed'
   | 'failed'
+  | 'interrupted'
+  | 'superseded'
   | 'cancelled';
 
 export type EditingTurnStatus =
+  | 'preparing'
   | 'running'
+  | 'validating'
   | 'awaiting_plan_approval'
   | 'awaiting_tool_approval'
   | 'awaiting_user_approval'
+  | 'awaiting_approval'
+  | 'accepted'
+  | 'rejected'
   | 'completed'
   | 'failed'
+  | 'interrupted'
+  | 'superseded'
   | 'cancelled'
   | 'budget_exceeded';
 
@@ -240,6 +253,8 @@ export interface EditingSessionRecord {
   project_id?: string;
   status: EditingSessionStatus;
   active_turn_id?: string;
+  status_changed_at?: string;
+  status_reason?: string;
   created_at: string;
   updated_at: string;
 }
@@ -262,6 +277,8 @@ export interface EditingTurnRecord {
   execution_path?: 'tool_assisted' | 'prompt_only' | 'tool_fallback';
   user_decision?: 'accepted' | 'rejected' | 'refined' | 'cancelled';
   status: EditingTurnStatus;
+  status_changed_at?: string;
+  status_reason?: string;
   created_at: string;
   completed_at?: string;
 }

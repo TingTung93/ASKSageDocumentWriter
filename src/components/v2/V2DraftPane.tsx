@@ -320,13 +320,12 @@ function Section({ project, template, section, draft, allDrafts }: {
                 apiKey: auth.apiKey ?? '',
               })}
               model={editModel}
-              onAccept={async (paragraphs) => {
-                await db.drafts.put({
-                  ...draft,
-                  paragraphs,
-                  generated_at: new Date().toISOString(),
-                });
-                toast.success(`Accepted changes to §${section.id}.`);
+              onDocumentChanged={(change) => {
+                toast.success(
+                  change === 'restored'
+                    ? `Restored an earlier revision of §${section.id}.`
+                    : `Accepted changes to §${section.id}.`,
+                );
               }}
               providerId={auth.provider}
               source={draft.paragraphs}

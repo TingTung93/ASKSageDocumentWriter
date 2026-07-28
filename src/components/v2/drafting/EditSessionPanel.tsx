@@ -6,24 +6,25 @@ import { DraftActionBar } from './DraftActionBar';
 import { DraftDiffPreview } from './DraftDiffPreview';
 import { InstructionComposer } from './InstructionComposer';
 import { useDraftEditingSession } from './useDraftEditingSession';
+import { RevisionTimeline } from './RevisionTimeline';
 
 export function EditSessionPanel({
   client,
   model,
-  onAccept,
   providerId,
+  onDocumentChanged,
   source,
   target,
 }: {
   client: () => LLMClient;
   model: string;
-  onAccept: (paragraphs: DraftParagraph[]) => Promise<void>;
+  onDocumentChanged?: (change: 'accepted' | 'restored') => void;
   providerId: EditingTurnRecord['provider_id'];
   source: DraftParagraph[];
   target: EditingTargetRef & { templateId: string; sectionId: string };
 }) {
   const session = useDraftEditingSession({
-    client, model, onAccept, providerId, source, target,
+    client, model, onDocumentChanged, providerId, source, target,
   });
   return (
     <aside style={{
@@ -59,9 +60,25 @@ export function EditSessionPanel({
               Reject
             </button>
           </div>
+          <div style={{ marginTop: 10 }}>
+            <InstructionComposer
+              busy={session.busy}
+              initialInstruction={session.preview.turn.instruction}
+              onSubmit={(instruction) => session.propose(instruction)}
+            />
+            <div style={{ color: 'var(--ink-4)', fontSize: 11, marginTop: 4 }}>
+              Submitting replaces this proposal; it does not change the draft.
+            </div>
+          </div>
         </>
       )}
       {session.error && <div className="error-box" role="alert" style={{ marginTop: 10 }}>{session.error}</div>}
+      <RevisionTimeline
+        busy={session.busy}
+        canUndo
+        onUndo={session.undo}
+        versions={session.versions}
+      />
     </aside>
   );
 }

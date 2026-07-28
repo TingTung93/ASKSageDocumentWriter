@@ -3,20 +3,43 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LLMClient } from '../../../lib/provider/types';
 import { useDraftEditingSession } from './useDraftEditingSession';
 
-const startTurn = vi.fn();
-const putVersion = vi.fn();
-const setTurnStatus = vi.fn();
-const updateSession = vi.fn();
-const updateTurn = vi.fn();
+const mocks = vi.hoisted(() => ({
+  startTurn: vi.fn(),
+  putVersion: vi.fn(),
+  setTurnStatus: vi.fn(),
+  updateSession: vi.fn(),
+  updateTurn: vi.fn(),
+  findSession: vi.fn<(...args: any[]) => Promise<any>>(async () => undefined),
+  getVersion: vi.fn<(...args: any[]) => Promise<any>>(),
+  listTurns: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
+  listVersions: vi.fn<(...args: any[]) => Promise<any[]>>(async () => []),
+  commitVersion: vi.fn(async () => ({})),
+  currentVersion: vi.fn<(...args: any[]) => Promise<any>>(async () => undefined),
+  undoVersion: vi.fn(async () => ({})),
+}));
+const {
+  commitVersion, currentVersion, findSession, getVersion, listTurns,
+  listVersions, putVersion, setTurnStatus, startTurn, undoVersion,
+  updateTurn,
+} = mocks;
 
 vi.mock('../../../lib/agentic-editing/runner', () => ({
-  startPromptOnlyEditingTurn: (...args: unknown[]) => startTurn(...args),
+  startPromptOnlyEditingTurn: (...args: unknown[]) => mocks.startTurn(...args),
 }));
 vi.mock('../../../lib/agentic-editing/store', () => ({
-  putDocumentVersion: (...args: unknown[]) => putVersion(...args),
-  setEditingTurnStatus: (...args: unknown[]) => setTurnStatus(...args),
-  updateEditingSessionStatus: (...args: unknown[]) => updateSession(...args),
-  updateEditingTurn: (...args: unknown[]) => updateTurn(...args),
+  putDocumentVersion: (...args: unknown[]) => mocks.putVersion(...args),
+  setEditingTurnStatus: (...args: unknown[]) => mocks.setTurnStatus(...args),
+  updateEditingSessionStatus: (...args: unknown[]) => mocks.updateSession(...args),
+  updateEditingTurn: (...args: unknown[]) => mocks.updateTurn(...args),
+  findActiveSessionForTarget: mocks.findSession,
+  getDocumentVersion: mocks.getVersion,
+  listSessionTurns: mocks.listTurns,
+  listTargetVersions: mocks.listVersions,
+}));
+vi.mock('../../../lib/agentic-editing/versions', () => ({
+  commitTemplateDraftVersion: mocks.commitVersion,
+  getCurrentAcceptedVersion: mocks.currentVersion,
+  undoTemplateDraftVersion: mocks.undoVersion,
 }));
 
 const client = {} as LLMClient;
@@ -60,9 +83,13 @@ describe('useDraftEditingSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     startTurn.mockResolvedValue({ sessionId: 'session-1', turn });
+    findSession.mockResolvedValue(undefined);
+    listTurns.mockResolvedValue([]);
+    listVersions.mockResolvedValue([]);
+    currentVersion.mockResolvedValue(undefined);
   });
 
-  function setup(onAccept = vi.fn(async () => undefined)) {
+  function setup(onDocumentChanged = vi.fn()) {
     const hook = renderHook(() => useDraftEditingSession({
       target: {
         kind: 'template_draft',
@@ -74,40 +101,94 @@ describe('useDraftEditingSession', () => {
       client: () => client,
       providerId: 'asksage',
       model: 'model',
-      onAccept,
+      onDocumentChanged,
     }));
-    return { ...hook, onAccept };
+    return { ...hook, onDocumentChanged };
   }
 
   it('persists a preview but does not mutate the draft before approval', async () => {
-    const { result, onAccept } = setup();
+    const { result } = setup();
     await act(() => result.current.propose('Tighten'));
 
     expect(result.current.preview?.after[0].text).toBe('Concise text.');
-    expect(onAccept).not.toHaveBeenCalled();
+    expect(commitVersion).not.toHaveBeenCalled();
     expect(putVersion).toHaveBeenCalledWith(expect.objectContaining({ status: 'preview' }));
   });
 
   it('applies and records an accepted proposal', async () => {
-    const { result, onAccept } = setup();
+    const { result, onDocumentChanged } = setup();
     await act(() => result.current.propose('Tighten'));
     await act(() => result.current.accept());
 
-    expect(onAccept).toHaveBeenCalledWith([{ role: 'body', text: 'Concise text.' }]);
-    expect(updateTurn).toHaveBeenCalledWith('turn-1', expect.objectContaining({
-      user_decision: 'accepted',
+    expect(commitVersion).toHaveBeenCalledWith(expect.objectContaining({
+      draftId: 'draft-1',
+      paragraphs: [{ role: 'body', text: 'Concise text.' }],
+      sourceTurnId: 'turn-1',
     }));
-    expect(setTurnStatus).toHaveBeenCalledWith('turn-1', 'completed');
+    expect(onDocumentChanged).toHaveBeenCalledWith('accepted');
     await waitFor(() => expect(result.current.preview).toBeNull());
   });
 
   it('records rejection without applying the proposal', async () => {
-    const { result, onAccept } = setup();
+    const { result } = setup();
     await act(() => result.current.propose('Tighten'));
     await act(() => result.current.reject());
 
-    expect(onAccept).not.toHaveBeenCalled();
+    expect(commitVersion).not.toHaveBeenCalled();
     expect(updateTurn).toHaveBeenCalledWith('turn-1', { user_decision: 'rejected' });
     expect(setTurnStatus).toHaveBeenCalledWith('turn-1', 'cancelled');
+  });
+
+  it('recovers an awaiting proposal and its durable snapshots after reload', async () => {
+    findSession.mockResolvedValue({
+      id: 'session-1',
+      target_kind: 'template_draft',
+      target_id: 'draft-1',
+      status: 'awaiting_approval',
+      active_turn_id: 'turn-1',
+    });
+    listTurns.mockResolvedValue([turn]);
+    listVersions.mockResolvedValue([{
+      id: 'preview-1',
+      target_kind: 'template_draft',
+      target_id: 'draft-1',
+      source_turn_id: 'turn-1',
+      label: 'Proposed edit',
+      status: 'preview',
+      snapshot_json: JSON.stringify([{ role: 'body', text: 'Concise text.' }]),
+      created_at: '2026-07-27T00:01:00.000Z',
+    }]);
+    getVersion.mockResolvedValue({
+      id: 'version-1',
+      target_kind: 'template_draft',
+      target_id: 'draft-1',
+      label: 'Original',
+      status: 'accepted',
+      snapshot_json: JSON.stringify(source),
+      created_at: '2026-07-27T00:00:00.000Z',
+    });
+
+    const { result } = setup();
+    await waitFor(() => expect(result.current.preview?.previewVersionId).toBe('preview-1'));
+    expect(result.current.preview?.before).toEqual(source);
+  });
+
+  it('routes undo through the atomic version service', async () => {
+    currentVersion.mockResolvedValue({ id: 'current' });
+    const { result } = setup();
+    await act(() => result.current.undo({
+      id: 'old',
+      target_kind: 'template_draft',
+      target_id: 'draft-1',
+      label: 'Initial',
+      status: 'accepted',
+      snapshot_json: JSON.stringify(source),
+      created_at: '2026-07-27T00:00:00.000Z',
+    }));
+    expect(undoVersion).toHaveBeenCalledWith({
+      draftId: 'draft-1',
+      expectedParentVersionId: 'current',
+      restoreVersionId: 'old',
+    });
   });
 });
