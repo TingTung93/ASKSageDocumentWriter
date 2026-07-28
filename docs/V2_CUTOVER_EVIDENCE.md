@@ -4,6 +4,8 @@ Status: release candidate; owner approvals pending
 
 Date: 2026-07-28
 
+Source and artifact snapshot: commit `6da5ef6`
+
 The implementation contracts under review are recorded in
 `docs/V2_CUTOVER_POLICIES.md`; route ownership details remain in
 `docs/route-ownership.md`.
@@ -86,5 +88,3 @@ numbering/list preservation and drawing-bearing header preservation.
 ## Remaining approvals
 
 - Product, security, and release owners review and approve this evidence.
-- Record the approved commit hash and rebuild/verify `release/index.html` from
-  that exact source state.

@@ -31,7 +31,6 @@ Still required before changing this tracker to **go**:
 
 - Product, security, and release-owner approval of
   `docs/V2_CUTOVER_POLICIES.md` and `docs/V2_CUTOVER_EVIDENCE.md`.
-- Commit/hash traceability for the approved source state and rebuilt artifact.
 
 The previously open technical evidence items are now covered by focused tests:
 browser history traversal, immediate DOCX ingestion visibility, v8-to-v9
@@ -40,7 +39,7 @@ documented drafter limits, partial multi-template export, and a distinct
 resumed-run DOCX accepted by Word and LibreOffice.
 
 - [x] Technical implementation and evidence complete.
-- [ ] Approved source commit and matching release artifact recorded.
+- [x] Source and matching release artifact recorded in commit `6da5ef6`.
 - [ ] Product, security, and release owners approve the evidence.
 
 This tracker defines the work and evidence required to complete the V2
