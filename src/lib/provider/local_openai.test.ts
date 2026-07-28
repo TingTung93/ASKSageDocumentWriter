@@ -30,6 +30,7 @@ describe('LocalOpenAIClient', () => {
   it('presets expose the expected local OpenAI-compatible base URLs', () => {
     expect(LOCAL_OPENAI_PRESETS).toEqual([
       { id: 'ollama', name: 'Ollama', baseUrl: 'http://localhost:11434/v1' },
+      { id: 'vllm', name: 'vLLM', baseUrl: 'http://localhost:8000/v1' },
       { id: 'llama.cpp', name: 'llama.cpp', baseUrl: 'http://localhost:8080/v1' },
       { id: 'lmstudio', name: 'LM Studio', baseUrl: 'http://localhost:1234/v1' },
     ]);
