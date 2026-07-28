@@ -20,7 +20,7 @@ const draft: DraftRecord = {
   tokens_out: 1,
 };
 
-function providerMock(): LLMClient {
+function providerMock(verdict: 'pass' | 'repair' = 'pass'): LLMClient {
   const outputs = [
     {
       summary: 'Tighten purpose',
@@ -47,13 +47,13 @@ function providerMock(): LLMClient {
       unresolvedQuestions: [],
     },
     {
-      verdict: 'pass',
-      score: 98,
+      verdict,
+      score: verdict === 'pass' ? 98 : 55,
       criteria: [],
       unsupportedClaims: [],
       structuralRisks: [],
       styleIssues: [],
-      repairInstructions: [],
+      repairInstructions: verdict === 'pass' ? [] : ['Clarify the proposed wording.'],
     },
   ];
   let call = 0;
@@ -153,5 +153,25 @@ describe('integrated V2 draft editing workflow', () => {
     expect(hook.result.current.preview).toBeNull();
     const turn = await db.editing_turns.toCollection().first();
     expect(turn).toMatchObject({ user_decision: 'rejected', status: 'cancelled' });
+  });
+
+  it('exposes a critique-repair result as an interactive preview', async () => {
+    const hook = renderHook(() =>
+      useDraftEditingSession(options(providerMock('repair'))));
+
+    await act(() => hook.result.current.propose('Tighten this section.'));
+
+    expect(hook.result.current.error).toBeNull();
+    expect(hook.result.current.preview).toMatchObject({
+      after: [{ text: 'Concise policy sentence.' }],
+      turn: {
+        status: 'awaiting_user_approval',
+        critique: {
+          verdict: 'repair',
+          repairInstructions: ['Clarify the proposed wording.'],
+        },
+      },
+    });
+    expect((await db.drafts.get(draft.id))?.paragraphs).toEqual(source);
   });
 });

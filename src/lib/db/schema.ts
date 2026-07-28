@@ -327,7 +327,7 @@ export interface DocumentRecord {
   cleanup_limit_references?: number;
 }
 
-class DocWriterDb extends Dexie {
+export class DocWriterDb extends Dexie {
   templates!: Table<TemplateRecord, string>;
   projects!: Table<ProjectRecord, string>;
   drafts!: Table<DraftRecord, string>;
@@ -343,8 +343,8 @@ class DocWriterDb extends Dexie {
   agent_checkpoints!: Table<StoredAgentCheckpoint, string>;
   learned_preferences!: Table<LearnedPreference, string>;
 
-  constructor() {
-    super('asksage-doc-writer');
+  constructor(name = 'asksage-doc-writer') {
+    super(name);
     this.version(1).stores({
       templates: 'id, name, ingested_at',
       projects: 'id, name, updated_at',

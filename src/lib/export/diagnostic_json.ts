@@ -5,9 +5,11 @@
 // (For the real DOCX assembly, see assemble.ts).
 
 import type { DraftRecord, ProjectRecord, TemplateRecord } from '../db/schema';
+import { redactCredentials } from '../debug/log';
 
 export interface ExportedProjectJson {
   exported_at: string;
+  disclosure: string;
   project: ProjectRecord;
   templates: Array<{
     template_id: string;
@@ -35,8 +37,9 @@ export function exportProjectAsJson(
     draftsBySectionKey.set(`${d.template_id}::${d.section_id}`, d);
   }
 
-  return {
+  return redactCredentials({
     exported_at: new Date().toISOString(),
+    disclosure: 'Contains locally stored project, reference, and drafted model content. Credential-like fields are redacted.',
     project,
     templates: templates.map((tpl) => ({
       template_id: tpl.id,
@@ -55,7 +58,7 @@ export function exportProjectAsJson(
         };
       }),
     })),
-  };
+  });
 }
 
 /**

@@ -25,8 +25,10 @@ export function V2SourcesPane({ project }: V2SourcesPaneProps) {
   const citedChunkIds = useMemo(() => new Set(activeDraft?.references_inlined_chunk_ids ?? []), [activeDraft]);
   
   const attached = (project.context_items ?? []).filter(item => item.kind === 'file' || item.kind === 'note');
-  // RAG datasets are global, but for now we'll just show a placeholder if we don't have a list of them
-  const rag: any[] = []; 
+  const rag = project.reference_dataset_names.map((name) => ({
+    kind: 'dataset' as const,
+    name,
+  }));
 
   const list = tab === "attached" ? attached : rag;
 
@@ -51,6 +53,15 @@ export function V2SourcesPane({ project }: V2SourcesPaneProps) {
       <div className="pane-body">
         <div className="src-group">{tab === "attached" ? "For this draft" : "Connected datasets"}</div>
         {list.map((s, idx) => {
+          if (s.kind === 'dataset') {
+            return (
+              <div key={s.name} className="src">
+                <div className="src-head"><span className="src-kind">rag</span></div>
+                <div className="src-title">{s.name}</div>
+                <div className="src-meta"><span>Selected for this project</span></div>
+              </div>
+            );
+          }
           const isFile = s.kind === 'file';
           const kind = isFile ? (s.filename?.endsWith('.pdf') ? 'pdf' : 'docx') : 'note';
           const title = isFile ? s.filename : 'Project Note';

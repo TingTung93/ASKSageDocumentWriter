@@ -22,12 +22,16 @@ describe('startPromptOnlyEditingTurn', () => {
     expect(await db.agent_trace_artifacts.where('turnId').equals(result.turn.id).count()).toBeGreaterThan(4);
   });
 
-  it('holds a repair verdict for plan review instead of user approval', async () => {
+  it('returns a repair verdict as a reviewable, non-committed proposal', async () => {
     const output = [...rows.slice(0, 2), { verdict: 'repair', score: 40, criteria: [], unsupportedClaims: [], structuralRisks: [], styleIssues: [], repairInstructions: ['Fix it'] }];
     let index = 0;
     const client = { capabilities: { fileUpload: false, dataset: false, liveSearch: false }, getModels: async () => [], query: async () => ({ message: '', response: '', status: 200, uuid: '' }), queryJson: async () => ({ data: output[index++]!, raw: { message: '', response: '', status: 200, uuid: '' } }) } as LLMClient;
     const result = await startPromptOnlyEditingTurn(client, { target: { kind: 'uploaded_document', targetId: 'doc-1' }, source: {}, instruction: 'Improve it', criteria: [], providerId: 'genai_mil', model: 'model' });
-    expect(result.turn.status).toBe('awaiting_plan_approval');
+    expect(result.turn.status).toBe('awaiting_user_approval');
+    expect(result.turn.critique).toMatchObject({
+      verdict: 'repair',
+      repairInstructions: ['Fix it'],
+    });
     expect((await db.editing_sessions.get(result.sessionId))?.status).toBe('awaiting_approval');
   });
 

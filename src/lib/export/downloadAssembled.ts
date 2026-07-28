@@ -25,6 +25,18 @@ export interface AssembleProjectResult {
   result: AssembleProjectDocxResult;
 }
 
+export interface AssembleProjectFailure {
+  template_id: string;
+  template_name: string;
+  reason: string;
+}
+
+export interface AssembleProjectReport {
+  successes: AssembleProjectResult[];
+  failures: AssembleProjectFailure[];
+  skipped: AssembleProjectFailure[];
+}
+
 /**
  * Re-assemble every template in the project from its current drafts.
  * Returns one entry per template. Templates with zero drafted
@@ -34,14 +46,19 @@ export interface AssembleProjectResult {
 export async function assembleProjectFromDrafts(
   project: ProjectRecord,
   templates: TemplateRecord[],
-): Promise<AssembleProjectResult[]> {
+): Promise<AssembleProjectReport> {
   const allDrafts = await db.drafts.where('project_id').equals(project.id).toArray();
   const byTemplate = groupDraftsByTemplate(allDrafts);
 
-  const out: AssembleProjectResult[] = [];
+  const successes: AssembleProjectResult[] = [];
+  const failures: AssembleProjectFailure[] = [];
+  const skipped: AssembleProjectFailure[] = [];
   for (const tpl of templates) {
     const sectionMap = byTemplate.get(tpl.id);
-    if (!sectionMap || sectionMap.size === 0) continue;
+    if (!sectionMap || sectionMap.size === 0) {
+      skipped.push({ template_id: tpl.id, template_name: tpl.name, reason: 'No ready drafts' });
+      continue;
+    }
     // A DraftRecord carries either `paragraphs` (body section) or
     // `slots` (document_part letterhead). Project the record onto the
     // SectionDraft union the assembler expects.
@@ -54,16 +71,24 @@ export async function assembleProjectFromDrafts(
       }
     }
 
-    const result = await assembleProjectDocx({ template: tpl, draftedBySectionId });
-    out.push({
-      template_id: tpl.id,
-      template_name: tpl.name,
-      filename: buildFilename(project.name, tpl.name),
-      blob: result.blob,
-      result,
-    });
+    try {
+      const result = await assembleProjectDocx({ template: tpl, draftedBySectionId });
+      successes.push({
+        template_id: tpl.id,
+        template_name: tpl.name,
+        filename: buildFilename(project.name, tpl.name),
+        blob: result.blob,
+        result,
+      });
+    } catch (cause) {
+      failures.push({
+        template_id: tpl.id,
+        template_name: tpl.name,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
   }
-  return out;
+  return { successes, failures, skipped };
 }
 
 /**

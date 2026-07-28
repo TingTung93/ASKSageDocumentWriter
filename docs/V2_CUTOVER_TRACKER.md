@@ -1,10 +1,47 @@
 # V2 Cutover Tracker
 
-Status: proposed
+Status: release candidate, not yet go — see `docs/V2_CUTOVER_EVIDENCE.md`
 
 Canonical implementation: `src/`
 
 Reference-only design bundle: `Version2/`
+
+## Current cutover audit
+
+The default shell and core workflow are implemented and the automated release
+gate passes. The detailed checklist below is the original work-package
+inventory; current go/no-go status is summarized here and backed by the
+evidence document.
+
+Completed and verified in the current release candidate:
+
+- V2 owns `/`, `/v2`, project creation/opening, project drafting, Documents,
+  Library, Activity, Settings, editing proposals, and export.
+- The auditable edit flow produces an interactive proposal and does not mutate
+  the document until Accept.
+- Recipe recovery, provider/tool hardening, recursive redaction, partial export
+  reporting, the single-file artifact, and deterministic browser lifecycle
+  coverage are implemented.
+- The full automated gate passes: 109 Vitest files / 797 tests, production
+  build, artifact scan, and 8 production browser scenarios.
+- The `file://` artifact passed a real Ollama provider smoke test, and generated
+  DOCX files opened without repair in Word and LibreOffice.
+
+Still required before changing this tracker to **go**:
+
+- Product, security, and release-owner approval of
+  `docs/V2_CUTOVER_POLICIES.md` and `docs/V2_CUTOVER_EVIDENCE.md`.
+- Commit/hash traceability for the approved source state and rebuilt artifact.
+
+The previously open technical evidence items are now covered by focused tests:
+browser history traversal, immediate DOCX ingestion visibility, v8-to-v9
+IndexedDB compatibility, interrupted resume and failed retry semantics, all
+documented drafter limits, partial multi-template export, and a distinct
+resumed-run DOCX accepted by Word and LibreOffice.
+
+- [x] Technical implementation and evidence complete.
+- [ ] Approved source commit and matching release artifact recorded.
+- [ ] Product, security, and release owners approve the evidence.
 
 This tracker defines the work and evidence required to complete the V2
 cutover without creating parallel implementations or drifting from the
@@ -467,7 +504,7 @@ V2 cutover is a go when:
 - [ ] Interface, recovery, and privacy contracts are approved.
 - [ ] All Phase 1 through Phase 4 acceptance criteria pass.
 - [ ] No open critical security, data-loss, recovery, or export defect remains.
-- [ ] The target `file://` environment and at least one supported provider
+- [x] The target `file://` environment and at least one supported provider
   pass manual smoke testing.
 - [ ] Product, security, and release owners approve the evidence.
 

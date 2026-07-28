@@ -11,14 +11,17 @@ import { RevisionTimeline } from './RevisionTimeline';
 import { CitationProvenance } from './CitationProvenance';
 import { SourceScopePicker } from './SourceScopePicker';
 import type { DraftGroundingSource } from './grounding';
+import type { ModelInfo } from '../../../lib/asksage/types';
 import { resolveAgentCapabilities } from '../../../lib/agentic-editing/capabilities';
 import { resolveSourceScope } from '../../../lib/agentic-editing/context/source-scope';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDraftActionController } from './DraftActionController';
+import { Link, useParams } from 'react-router-dom';
 
 export function EditSessionPanel({
   client,
   model,
+  selectedModel,
   providerId,
   onDocumentChanged,
   groundingSources = [],
@@ -31,6 +34,7 @@ export function EditSessionPanel({
 }: {
   client: () => LLMClient;
   model: string;
+  selectedModel?: ModelInfo;
   onDocumentChanged?: (change: 'accepted' | 'restored') => void;
   groundingSources?: DraftGroundingSource[];
   providerId: EditingTurnRecord['provider_id'];
@@ -45,7 +49,11 @@ export function EditSessionPanel({
   active?: boolean;
   scopeLabel?: string;
 }) {
-  const capabilities = useMemo(() => resolveAgentCapabilities(client()), [client]);
+  const { id } = useParams<{ id: string }>();
+  const capabilities = useMemo(
+    () => resolveAgentCapabilities(client(), selectedModel),
+    [client, selectedModel],
+  );
   const [sourceScope, setSourceScope] = useState(() => resolveSourceScope({
     sources: groundingSources,
     maxContextCharacters: 24_000,
@@ -112,6 +120,34 @@ export function EditSessionPanel({
         </>
       ) : (
         <>
+          {session.preview.turn.critique?.verdict !== 'pass' && (
+            <div className="workspace-state state-warning compact" role="status">
+              <div>
+                <strong>Review recommended before accepting.</strong>
+                <p>
+                  The independent critique marked this proposal as{' '}
+                  <b>{session.preview.turn.critique?.verdict.replace('_', ' ')}</b>
+                  {typeof session.preview.turn.critique?.score === 'number'
+                    ? ` (${session.preview.turn.critique.score}/100)`
+                    : ''}.
+                </p>
+                {(session.preview.turn.critique?.repairInstructions.length ?? 0) > 0 && (
+                  <ul>
+                    {session.preview.turn.critique!.repairInstructions.map((instruction, index) => (
+                      <li key={`${index}:${instruction}`}>{instruction}</li>
+                    ))}
+                  </ul>
+                )}
+                {(session.preview.turn.proposal?.unresolvedQuestions.length ?? 0) > 0 && (
+                  <ul>
+                    {session.preview.turn.proposal!.unresolvedQuestions.map((question, index) => (
+                      <li key={`${index}:${question}`}>{question}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
           <DraftDiffPreview
             after={paragraphsToMarkdown(session.preview.after)}
             before={paragraphsToMarkdown(session.preview.before)}
@@ -166,7 +202,9 @@ export function EditSessionPanel({
             <strong>The edit could not be completed.</strong>
             <p>{session.error}</p>
           </div>
-          <a className="btn btn-sm" href="#/settings">Review provider settings</a>
+          <Link className="btn btn-sm" to={`/v2/${id ?? ''}?view=settings`}>
+            Review provider settings
+          </Link>
         </div>
       )}
       <RevisionTimeline

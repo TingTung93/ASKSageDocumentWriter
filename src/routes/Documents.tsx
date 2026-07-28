@@ -133,7 +133,7 @@ export function Documents() {
   }
 
   return (
-    <main>
+    <div className="documents-workflow">
       <h1>Documents — review &amp; polish</h1>
       <p>
         Have a document that's already written but needs a final review?
@@ -144,7 +144,7 @@ export function Documents() {
       <div className="callout-blue callout" style={{ marginBottom: 'var(--space-3)' }}>
         <strong>Tip:</strong> This page is for polishing existing documents.
         If you need to draft a new document from a template, go to{' '}
-        <Link to="/projects">Projects</Link> instead.
+        <Link to="/v2">Projects</Link> instead.
       </div>
 
       <DropZone
@@ -209,7 +209,7 @@ export function Documents() {
       </ul>
 
       {selected && <DocumentDetail document={selected} />}
-    </main>
+    </div>
   );
 }
 
@@ -1125,7 +1125,7 @@ function CleanupContextPanel(props: CleanupContextPanelProps) {
           You're connected via OpenRouter. Ask Sage datasets, web search, and
           reference-file extraction are Ask-Sage-only for cleanup edits. Switch
           providers on the{' '}
-          <Link to="/">Connection</Link> tab to use grounding context.
+          <Link to="/v2?view=settings">Connection</Link> settings to use grounding context.
         </div>
       )}
 

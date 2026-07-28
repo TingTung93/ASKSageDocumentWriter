@@ -1,6 +1,5 @@
 import { HashRouter, Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { Shell } from './components/Shell';
-import { Welcome } from './routes/Welcome';
 import { Templates } from './routes/Templates';
 import { Projects } from './routes/Projects';
 import { ProjectDetail } from './routes/ProjectDetail';
@@ -20,7 +19,7 @@ import { V2Layout } from './components/v2/V2Layout';
 // /projects/:id is the legacy per-project workspace. V2 is now the
 // primary workspace, so redirect there — the legacy view stays
 // available at /legacy/projects/:id as an escape hatch.
-function ProjectDetailRedirect() {
+export function ProjectDetailRedirect() {
   const { id } = useParams<{ id: string }>();
   return <Navigate to={`/v2/${id}`} replace />;
 }
@@ -43,29 +42,37 @@ export function App() {
       <ErrorBoundary>
         <HashRouter>
           <Routes>
-            {/* V2 experience has its own sidebar layout */}
+            {/* V2 owns the application shell and startup experience. */}
+            <Route path="/v2" element={<V2Layout />} />
             <Route path="/v2/:id" element={<V2Layout />} />
-            
-            {/* Legacy layout */}
+            <Route path="/" element={<Navigate to="/v2" replace />} />
+            <Route path="/projects" element={<Navigate to="/v2" replace />} />
+            <Route path="/documents" element={<Navigate to="/v2?view=documents" replace />} />
+            <Route path="/templates" element={<Navigate to="/v2?view=library" replace />} />
+            <Route path="/datasets" element={<Navigate to="/v2?view=library" replace />} />
+            <Route path="/audit" element={<Navigate to="/v2?view=audit" replace />} />
+            <Route path="/settings" element={<Navigate to="/v2?view=settings" replace />} />
+            <Route path="/projects/:id" element={<ProjectDetailRedirect />} />
+
+            {/* Explicit compatibility routes retain the original chrome. */}
             <Route
-              path="*"
+              path="/legacy/*"
               element={
                 <Shell>
                   <Routes>
-                    <Route path="/" element={<Welcome />} />
-                    <Route path="/documents" element={<Documents />} />
-                    <Route path="/templates" element={<Templates />} />
-                    <Route path="/datasets" element={<Datasets />} />
-                    <Route path="/projects" element={<Projects />} />
-                    <Route path="/projects/:id" element={<ProjectDetailRedirect />} />
-                    <Route path="/legacy/projects/:id" element={<ProjectDetail />} />
-                    <Route path="/audit" element={<AuditLog />} />
-                    <Route path="/settings" element={<Settings />} />
-                    <Route path="*" element={<Navigate to="/" replace />} />
+                    <Route path="documents" element={<Documents />} />
+                    <Route path="templates" element={<Templates />} />
+                    <Route path="datasets" element={<Datasets />} />
+                    <Route path="projects" element={<Projects />} />
+                    <Route path="projects/:id" element={<ProjectDetail />} />
+                    <Route path="audit" element={<AuditLog />} />
+                    <Route path="settings" element={<Settings />} />
+                    <Route path="*" element={<Navigate to="/v2" replace />} />
                   </Routes>
                 </Shell>
               }
             />
+            <Route path="*" element={<Navigate to="/v2" replace />} />
           </Routes>
         </HashRouter>
       </ErrorBoundary>

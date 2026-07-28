@@ -1205,20 +1205,23 @@ function AssembledOutputPanel({
     setError(null);
     try {
       const out = await assembleProjectFromDrafts(project, templates);
-      setResults(out);
-      if (out.length === 0) {
-        toast.info('No ready drafts to assemble. Draft at least one section first.');
+      setResults(out.successes);
+      if (out.successes.length === 0) {
+        const message = out.failures[0]?.reason
+          ?? 'No ready drafts to assemble. Draft at least one section first.';
+        toast.info(message);
       } else {
-        toast.success(
-          `Assembled ${out.length} template${out.length === 1 ? '' : 's'} from current drafts`,
-        );
+        const partial = out.failures.length > 0 || out.skipped.length > 0;
+        const message = `Assembled ${out.successes.length} template${out.successes.length === 1 ? '' : 's'} from current drafts`;
+        if (partial) toast.info(`${message}; ${out.failures.length} failed and ${out.skipped.length} skipped.`);
+        else toast.success(message);
         // Auto-open the inline preview when there's exactly one
         // template — that's the common case (a single memo / policy
         // / packet). With multiple templates we leave the preview
         // collapsed so the user can pick which one to render
         // (rendering all of them at once is expensive).
-        if (out.length === 1) {
-          setPreviewTemplateId(out[0]!.template_id);
+        if (out.successes.length === 1) {
+          setPreviewTemplateId(out.successes[0]!.template_id);
         }
       }
     } catch (err) {

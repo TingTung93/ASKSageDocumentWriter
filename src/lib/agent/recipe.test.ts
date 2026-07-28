@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   runRecipe,
   resumeRecipeRun,
+  retryRecipeRun,
   cancelRecipeRun,
   loadRecipeRun,
   loadRecipeRunsForProject,
@@ -236,6 +237,82 @@ describe('recipe runner', () => {
     expect(s1.run).toHaveBeenCalledTimes(1);
     expect(s2.run).toHaveBeenCalledTimes(1);
     expect(s3.run).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes an interrupted running row from its first incomplete stage', async () => {
+    const s1 = makeStage('s1', { kind: 'ok', output: 'kept' });
+    const s2 = makeStage('s2', { kind: 'ok', output: 'new' });
+    const recipe = makeRecipe([s1, s2]);
+    registerRecipe(recipe);
+    const interrupted: RecipeRun = {
+      id: 'interrupted-run',
+      project_id: fakeProject().id,
+      recipe_id: recipe.id,
+      recipe_name: recipe.name,
+      started_at: '2026-07-28T00:00:00.000Z',
+      status: 'running',
+      stage_states: {
+        s1: { status: 'completed', output: 'kept' },
+        s2: { status: 'running' },
+      },
+      total_tokens_in: 0,
+      total_tokens_out: 0,
+    };
+    await recipeRunsTable.put(interrupted);
+
+    const resumed = await resumeRecipeRun({
+      client: fakeClient() as never,
+      project: fakeProject(),
+      templates: [],
+      run_id: interrupted.id,
+    });
+
+    expect(resumed.status).toBe('completed');
+    expect(s1.run).not.toHaveBeenCalled();
+    expect(s2.run).toHaveBeenCalledOnce();
+  });
+
+  it('retries from the failed stage without replaying completed work', async () => {
+    const s1 = makeStage('s1', { kind: 'ok', output: 'kept' });
+    const s2 = makeStage('s2', { kind: 'ok', output: 'retried' });
+    const s3 = makeStage('s3', { kind: 'ok', output: 'downstream' });
+    const recipe = makeRecipe([s1, s2, s3]);
+    registerRecipe(recipe);
+    const failed: RecipeRun = {
+      id: 'failed-run',
+      project_id: fakeProject().id,
+      recipe_id: recipe.id,
+      recipe_name: recipe.name,
+      started_at: '2026-07-28T00:00:00.000Z',
+      status: 'failed',
+      stage_states: {
+        s1: { status: 'completed', output: 'kept' },
+        s2: { status: 'failed', error: 'transient' },
+        s3: { status: 'pending' },
+      },
+      total_tokens_in: 0,
+      total_tokens_out: 0,
+    };
+    await recipeRunsTable.put(failed);
+
+    await expect(resumeRecipeRun({
+      client: fakeClient() as never,
+      project: fakeProject(),
+      templates: [],
+      run_id: failed.id,
+    })).rejects.toThrow(/terminal status "failed"/);
+
+    const retried = await retryRecipeRun({
+      client: fakeClient() as never,
+      project: fakeProject(),
+      templates: [],
+      run_id: failed.id,
+    });
+
+    expect(retried.status).toBe('completed');
+    expect(s1.run).not.toHaveBeenCalled();
+    expect(s2.run).toHaveBeenCalledOnce();
+    expect(s3.run).toHaveBeenCalledOnce();
   });
 
   it('catches a thrown stage and records it as failed', async () => {

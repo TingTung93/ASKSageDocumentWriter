@@ -1,13 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { PRODUCT_IDENTITY } from '../../lib/product/identity';
 
 interface V2FirstRunProps {
   onDismiss: () => void;
+  onOpenSettings: () => void;
 }
 
-export function V2FirstRun({ onDismiss }: V2FirstRunProps) {
-  const navigate = useNavigate();
+export function V2FirstRun({ onDismiss, onOpenSettings }: V2FirstRunProps) {
   const primaryRef = useRef<HTMLButtonElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
 
@@ -29,7 +28,7 @@ export function V2FirstRun({ onDismiss }: V2FirstRunProps) {
 
   const openSettings = () => {
     onDismiss();
-    navigate('/settings');
+    onOpenSettings();
   };
 
   return (

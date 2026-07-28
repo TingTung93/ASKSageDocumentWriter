@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { Modal } from './Modal';
 import { DRAFT_ACTIONS } from './drafting/actions';
 import { useDraftActionController } from './drafting';
+import type { V2View } from './V2Layout';
 
 interface V2CommandPaletteProps {
   onClose: () => void;
-  setView: (view: string) => void;
+  setView: (view: V2View) => void;
   onOpenExport: () => void;
   onOpenIngest: () => void;
 }
@@ -34,10 +35,11 @@ export function V2CommandPalette({
 
   const baseItems = useMemo<Cmd[]>(() => [
     { group: 'Navigate', ic: '▸', label: 'Draft workspace', desc: 'Three-pane co-writer view', trail: 'G D', run: () => setView('workspace') },
+    { group: 'Navigate', ic: '▸', label: 'Documents', desc: 'Edit an existing DOCX', trail: 'G O', run: () => setView('documents') },
     { group: 'Navigate', ic: '▸', label: 'Library', desc: 'Templates & datasets', trail: 'G L', run: () => setView('library') },
     { group: 'Navigate', ic: '▸', label: 'Activity log', desc: 'Audit trail of model calls', trail: 'G A', run: () => setView('audit') },
     { group: 'Navigate', ic: '▸', label: 'Settings', desc: 'Connection, models, privacy', trail: 'G ,', run: () => setView('settings') },
-    { group: 'Navigate', ic: '▸', label: 'Switch project', desc: 'Back to project list', trail: '', run: () => navigate('/projects') },
+    { group: 'Navigate', ic: '▸', label: 'Switch project', desc: 'Back to project list', trail: '', run: () => navigate('/v2') },
     { group: 'Actions', ic: '⇣', label: 'Export document…', desc: 'Word, PDF, or Markdown', trail: '⌘E', run: onOpenExport },
     { group: 'Actions', ic: '＋', label: 'Upload DOCX template', desc: 'Parse structure and placeholders', trail: '', run: () => { setView('library'); onOpenIngest(); } },
     ...(draftActions.active && !draftActions.active.busy ? DRAFT_ACTIONS.map((action): Cmd => ({

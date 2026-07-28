@@ -3,6 +3,7 @@ import {
   isDiagnosticsEnabled,
   isStartupFailure,
   redactLogMessage,
+  redactCredentials,
   type LogEntry,
 } from './log';
 
@@ -33,5 +34,20 @@ describe('diagnostics', () => {
     expect(message).not.toContain('my-secret');
     expect(message).toContain('[REDACTED]');
     expect(message).toContain('[log content truncated]');
+  });
+
+  it('recursively redacts credential fields and bearer values', () => {
+    const safe = redactCredentials({
+      request: {
+        headers: { Authorization: 'Bearer deeply-secret' },
+        items: [{ api_key: 'also-secret' }, { label: 'safe' }],
+      },
+    });
+    expect(safe).toEqual({
+      request: {
+        headers: { Authorization: '[REDACTED]' },
+        items: [{ api_key: '[REDACTED]' }, { label: 'safe' }],
+      },
+    });
   });
 });

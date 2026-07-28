@@ -13,6 +13,8 @@ export interface LogEntry {
 
 const MAX_ENTRIES = 500;
 const MAX_MESSAGE_LENGTH = 4_000;
+const SENSITIVE_KEY = /(?:^|[_-])(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|password|secret|token)(?:$|[_-])/i;
+const REDACTED = '[REDACTED]';
 
 export function isDiagnosticsEnabled(
   location: Pick<Location, 'search' | 'hash'> = window.location,
@@ -131,6 +133,25 @@ export function redactLogMessage(message: string): string {
 
   if (redacted.length <= MAX_MESSAGE_LENGTH) return redacted;
   return `${redacted.slice(0, MAX_MESSAGE_LENGTH)}\n[log content truncated]`;
+}
+
+/** Return a JSON-safe copy with credential-like fields redacted at any depth. */
+export function redactCredentials<T>(value: T): T {
+  return redactValue(value, new WeakSet<object>()) as T;
+}
+
+function redactValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === 'string') return redactLogMessage(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    out[key] = SENSITIVE_KEY.test(key) ? REDACTED : redactValue(child, seen);
+  }
+  return out;
 }
 
 function stringify(v: unknown): string {

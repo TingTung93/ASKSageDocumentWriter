@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { type ProjectRecord, type TemplateRecord } from '../../lib/db/schema';
@@ -44,6 +44,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   const [currentRun, setCurrentRun] = useState<RecipeRun | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [recipeStageMessage, setRecipeStageMessage] = useState<string | null>(null);
+  const operationInFlightRef = useRef(false);
 
   const auth = useAuth();
   const { apiKey, baseUrl, provider, models: availableModels } = auth;
@@ -90,10 +91,12 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const startRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
+    if (operationInFlightRef.current) return;
     if (!connection.canGenerate) {
       toast.error(`Provider unavailable: ${connection.label}. Check Connection settings.`);
       return;
     }
+    operationInFlightRef.current = true;
     setIsRunning(true);
     setCurrentRun(null);
     setRecipeStageMessage(null);
@@ -133,12 +136,14 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       toast.error(`Auto-draft error: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      operationInFlightRef.current = false;
       setIsRunning(false);
     }
   }, [apiKey, provider, baseUrl, availableModels, draftingPricing, connection.canGenerate, connection.label, onStageStart, onStageProgress, onStageError]);
 
   const resumeRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
-    if (!currentRun || !connection.canGenerate) return;
+    if (operationInFlightRef.current || !currentRun || !connection.canGenerate) return;
+    operationInFlightRef.current = true;
     setIsRunning(true);
     try {
       const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
@@ -156,6 +161,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       toast.error(`Resume failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      operationInFlightRef.current = false;
       setIsRunning(false);
     }
   }, [currentRun, apiKey, provider, baseUrl, connection.canGenerate, onStageStart, onStageProgress]);
@@ -172,7 +178,8 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
   }, [currentRun]);
 
   const retryRecipe = useCallback(async (project: ProjectRecord, templates: TemplateRecord[]) => {
-    if (!currentRun || !connection.canGenerate) return;
+    if (operationInFlightRef.current || !currentRun || !connection.canGenerate) return;
+    operationInFlightRef.current = true;
     setIsRunning(true);
     try {
       const client = createLLMClient({ provider, baseUrl, apiKey: apiKey ?? '' });
@@ -190,6 +197,7 @@ export function RecipeProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       toast.error(`Retry failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
+      operationInFlightRef.current = false;
       setIsRunning(false);
     }
   }, [currentRun, apiKey, provider, baseUrl, connection.canGenerate, onStageStart, onStageProgress]);

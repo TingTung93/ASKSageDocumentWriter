@@ -95,13 +95,24 @@ export async function startPromptOnlyEditingTurn(
       putTraceArtifact({ sessionId, turnId, kind: 'critique', content: JSON.stringify(result.critique), containsDocumentContent: true }),
     ]);
     await appendTraceEvent({ sessionId, turnId, node: 'plan-propose-critique', type: 'node.completed', status: 'succeeded', summary: `Proposal reviewed: ${result.critique.verdict}.`, inputArtifactIds: [capabilityArtifact.id], outputArtifactIds: artifacts.map((item) => item.id) });
-    // A repair verdict is not an approval. Keep it out of the edit queue
-    // until a future repair pass or explicit user intervention resolves it.
-    const status = result.critique.verdict === 'pass' ? 'awaiting_user_approval' : 'awaiting_plan_approval';
+    // The critique informs the human review; it must not make an otherwise
+    // valid proposal disappear into the audit log. Nothing is committed at
+    // this point, so repair/needs-user proposals remain safe to preview,
+    // reject, or refine before explicit acceptance.
+    const status = 'awaiting_user_approval' as const;
     const completed: EditingTurnRecord = { ...turn, plan: result.plan, proposal: result.proposal, critique: result.critique, status };
     await updateEditingTurn(turnId, { plan: result.plan, proposal: result.proposal, critique: result.critique, status });
     await updateEditingSessionStatus(sessionId, 'awaiting_approval', turnId);
-    await appendTraceEvent({ sessionId, turnId, node: 'turn', type: 'turn.completed', status: 'succeeded', summary: 'Proposal is ready for user approval.' });
+    await appendTraceEvent({
+      sessionId,
+      turnId,
+      node: 'turn',
+      type: 'turn.completed',
+      status: 'succeeded',
+      summary: result.critique.verdict === 'pass'
+        ? 'Proposal is ready for user approval.'
+        : `Proposal is ready for user review with a ${result.critique.verdict} critique.`,
+    });
     return { sessionId, turn: completed };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

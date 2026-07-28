@@ -3,10 +3,14 @@ import { toast } from '../../lib/state/toast';
 import { loadSettings, saveSettings } from '../../lib/settings/store';
 import { DEFAULT_COST_ASSUMPTIONS, DEFAULT_MODEL_OVERRIDES } from '../../lib/settings/types';
 import type { CostAssumptions, CriticSettings, StyleReviewSettings } from '../../lib/settings/types';
-import { useNavigate } from 'react-router-dom';
 
-export function V2SettingsAdvanced({ settings }: { settings: any }) {
-  const navigate = useNavigate();
+export function V2SettingsAdvanced({
+  settings,
+  onOpenAudit,
+}: {
+  settings: any;
+  onOpenAudit: () => void;
+}) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', marginTop: '1.5rem' }}>
       <CriticCard critic={settings.critic ?? null} />
@@ -37,7 +41,7 @@ export function V2SettingsAdvanced({ settings }: { settings: any }) {
           >
             Reset to defaults
           </button>
-          <button className="btn" onClick={() => navigate('/audit')}>
+          <button className="btn" onClick={onOpenAudit}>
             Open audit log →
           </button>
         </div>

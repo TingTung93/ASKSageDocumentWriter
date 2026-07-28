@@ -11,10 +11,6 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
   const [tab, setTab] = useState<'templates' | 'datasets'>('templates');
   const templates = useLiveQuery(() => db.templates.orderBy('ingested_at').reverse().toArray(), []);
 
-  // Datasets in this build are not yet persisted — empty list with the
-  // "Connect dataset" card in place so the UI reads complete.
-  const datasets: { kind: string; title: string; desc: string; meta: string[] }[] = [];
-
   return (
     <div className="lib-wrap">
       <div className="lib-inner">
@@ -33,7 +29,7 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
             Templates ({templates?.length ?? 0})
           </button>
           <button className={tab === 'datasets' ? 'on' : ''} onClick={() => setTab('datasets')}>
-            Datasets &amp; sources ({datasets.length})
+            Datasets &amp; sources
           </button>
         </div>
         <div className="lib-grid">
@@ -48,25 +44,27 @@ export function V2LibraryView({ onOpenIngest }: V2LibraryViewProps) {
               </div>
             );
           })}
-          {tab === 'datasets' && datasets.map((c, i) => (
-            <div key={i} className="lib-card">
-              <div className="lc-kind">{c.kind}</div>
-              <div className="lc-title">{c.title}</div>
-              <div className="lc-desc">{c.desc}</div>
-              <div className="lc-meta">{c.meta.map((m, j) => <span key={j}>{m}</span>)}</div>
+          {tab === 'datasets' && (
+            <div className="lib-card" role="status">
+              <div className="lc-kind">Provider capability</div>
+              <div className="lc-title">Dataset management is unavailable here</div>
+              <div className="lc-desc">
+                V2 shows dataset names selected on each project, but does not currently list or
+                modify provider datasets. Use project references for portable grounding.
+              </div>
             </div>
-          ))}
-          <div className="lib-card new" onClick={() => tab === 'templates' && onOpenIngest()}>
+          )}
+          {tab === 'templates' && <button type="button" className="lib-card new" onClick={onOpenIngest}>
             <div>
               <div style={{ fontSize: 22, marginBottom: 6 }}>＋</div>
               <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
-                {tab === 'templates' ? 'Upload DOCX template' : 'Add source library'}
+                Upload DOCX template
               </div>
               <div style={{ fontSize: 11, marginTop: 4, fontFamily: 'var(--font-mono)', color: 'var(--ink-4)' }}>
-                {tab === 'templates' ? 'parses structure + placeholders' : 'Ask Sage datasets or project files'}
+                parses structure + placeholders
               </div>
             </div>
-          </div>
+          </button>}
         </div>
       </div>
     </div>

@@ -142,11 +142,14 @@ function TemplateDraftView({ project }: V2DraftPaneProps) {
 
   const handlePreview = async () => {
     try {
-      const results = await assembleProjectFromDrafts(project, templates);
-      if (results.length > 0) {
-        setPreviewItem(results[0]!);
+      const report = await assembleProjectFromDrafts(project, templates);
+      if (report.successes.length > 0) {
+        setPreviewItem(report.successes[0]!);
+        if (report.failures.length > 0) {
+          toast.error(`${report.failures.length} template${report.failures.length === 1 ? '' : 's'} failed to assemble.`);
+        }
       } else {
-        toast.info('No drafts ready for preview.');
+        toast.info(report.failures[0]?.reason ?? 'No drafts ready for preview.');
       }
     } catch (err) {
       toast.error(`Preview failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -397,6 +400,7 @@ function Section({ project, template, section, draft, allDrafts }: {
                 apiKey: auth.apiKey ?? '',
               })}
               model={editModel}
+              selectedModel={auth.models?.find((candidate) => candidate.id === editModel)}
               scopeLabel={selectedParagraphIndex === undefined
                 ? `section ${section.name}`
                 : `paragraph ${selectedParagraphIndex + 1} in ${section.name}`}
@@ -927,6 +931,7 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
                 apiKey: auth.apiKey ?? '',
               })}
               model={editModel}
+              selectedModel={auth.models?.find((candidate) => candidate.id === editModel)}
               scopeLabel={selection?.kind === 'freeform_paragraph'
                 ? `paragraph in ${chunk.heading}`
                 : `block ${chunk.heading}`}

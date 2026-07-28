@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../lib/db/schema';
 import { toast } from '../../lib/state/toast';
+import { downloadJsonExport } from '../../lib/export/diagnostic_json';
+import { redactCredentials } from '../../lib/debug/log';
 import {
   inferAuditKind,
   auditSummaryLine,
@@ -38,14 +40,13 @@ export function V2AuditView() {
   }, [records, search, kindFilter, statusFilter]);
 
   const handleExport = () => {
-    const payload = JSON.stringify(filtered, null, 2);
-    const blob = new Blob([payload], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadJsonExport(
+      `audit-log-${new Date().toISOString().slice(0, 10)}.json`,
+      redactCredentials({
+        disclosure: 'Contains locally stored prompt and model-response excerpts. Credential-like fields are redacted.',
+        records: filtered,
+      }),
+    );
     toast.success(`Exported ${filtered.length} audit entries`);
   };
 
@@ -56,7 +57,7 @@ export function V2AuditView() {
         <h1 className="settings-title">Audit trail</h1>
         <p className="settings-lead">
           Every request made to your AI provider, with tokens and timing. Stored locally; never uploaded.
-          Exportable as JSON for records retention.
+          Exported JSON contains prompt and response excerpts; credential-like fields are redacted.
         </p>
         <div className="audit-tools">
           <input

@@ -3,10 +3,11 @@ import { db } from '../../lib/db/schema';
 import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { useNavigate, useParams } from 'react-router-dom';
 import { PRODUCT_IDENTITY } from '../../lib/product/identity';
+import type { V2View } from './V2Layout';
 
 interface V2SidebarProps {
-  view: string;
-  setView: (view: string) => void;
+  view: V2View;
+  setView: (view: V2View) => void;
 }
 
 export function V2Sidebar({ view, setView }: V2SidebarProps) {
@@ -38,9 +39,16 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
 
       <div className="rail-section">
         Projects
-        <button className="plus" title="New project" onClick={() => navigate('/projects')}>+</button>
+        <button className="plus" title="New project" onClick={() => navigate('/v2')}>+</button>
       </div>
       <div className="rail-list">
+        <button
+          className={'rail-item' + (!activeId ? ' active' : '')}
+          onClick={() => navigate('/v2')}
+        >
+          <span className="dot" />
+          <span className="name">All projects</span>
+        </button>
         {projects?.map(p => (
           <button
             key={p.id}
@@ -60,6 +68,7 @@ export function V2Sidebar({ view, setView }: V2SidebarProps) {
       <div className="rail-section" style={{ marginTop: 8 }}>Workspace</div>
       <div className="rail-nav">
         {([
+          { key: 'documents', label: 'Documents', kbd: 'D' },
           { key: 'library', label: 'Library', kbd: 'L' },
           { key: 'audit', label: 'Activity log', kbd: 'A' },
           { key: 'settings', label: 'Settings', kbd: ',' },

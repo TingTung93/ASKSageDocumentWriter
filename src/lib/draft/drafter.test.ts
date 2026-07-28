@@ -214,10 +214,7 @@ describe('drafter tools', () => {
     const conversation = secondCall.message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call4');
     
-    expect(toolMsg.message).toContain('### My Table');
-    expect(toolMsg.message).toContain('| Col A | Col B |');
-    expect(toolMsg.message).toContain('| 1 | 2 |');
-    expect(toolMsg.message).toContain('Contains nested list formatting');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
   });
 
   it('executes apply_advanced_formatting with multi_level_list', async () => {
@@ -253,9 +250,7 @@ describe('drafter tools', () => {
     const conversation = secondCall.message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call5');
     
-    expect(toolMsg.message).toContain('- Item 1');
-    expect(toolMsg.message).toContain('  - Item 2');
-    expect(toolMsg.message).toContain('    - Item 3');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
   });
 
   it('executes apply_advanced_formatting with indented_section', async () => {
@@ -291,8 +286,7 @@ describe('drafter tools', () => {
     const conversation = secondCall.message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call6');
     
-    expect(toolMsg.message).toContain('> [Formatted as indented_section]');
-    expect(toolMsg.message).toContain('> Line 1\n> Line 2');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
   });
 
   it('executes fetch_url (failure case)', async () => {
@@ -327,8 +321,7 @@ describe('drafter tools', () => {
     const conversation = secondCall.message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call7');
     
-    // The test environment fetch will fail on invalid domains.
-    expect(toolMsg.message).toContain('Failed to fetch URL');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
   });
 
   it('executes fetch_url (success case)', async () => {
@@ -372,8 +365,8 @@ describe('drafter tools', () => {
       const conversation = secondCall.message as any[];
       const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call8');
       
-      expect(toolMsg.message).toContain('Fetched 33 bytes');
-      expect(toolMsg.message).toContain('<html><body>Success</body></html>');
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
     } finally {
       global.fetch = oldFetch;
     }
@@ -394,7 +387,7 @@ describe('drafter tools', () => {
     const calls = vi.mocked(client.query).mock.calls;
     const conversation = calls[1][0].message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call9');
-    expect(toolMsg.message).toContain('Error: Unknown tool unknown_tool');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('unknown_tool');
   });
 
   it('handles tool arguments parsing error', async () => {
@@ -412,7 +405,173 @@ describe('drafter tools', () => {
     const calls = vi.mocked(client.query).mock.calls;
     const conversation = calls[1][0].message as any[];
     const toolMsg = conversation.find(c => c.user === 'tool' && c.tool_call_id === 'call10');
-    expect(toolMsg.message).toContain('Error executing tool: SyntaxError:');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('invalid_arguments');
+  });
+
+  it('rejects calculator code injection without evaluating it', async () => {
+    const client = makeClient([
+      { tool_calls: [{
+        id: 'inject',
+        type: 'function',
+        function: { name: 'calculate_math', arguments: '{"expression":"globalThis.fetch(1)"}' },
+      }] },
+      { message: '{"paragraphs":[]}' },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await draftSection(client, { template: mockTemplate, section: mockSection, project_description: 'test', shared_inputs: {}, prior_summaries: [] });
+    const conversation = vi.mocked(client.query).mock.calls[1]![0].message as any[];
+    const toolMsg = conversation.find((turn) => turn.tool_call_id === 'inject');
+    expect(JSON.parse(toolMsg.message).error.code).toBe('invalid_expression');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('lets selected-model metadata suppress provider tools', async () => {
+    const client = makeClient([{ message: '{"paragraphs":[]}' }]);
+    vi.mocked(client.getModels).mockResolvedValue([{
+      id: 'google-claude-46-sonnet',
+      capabilities: { tool_calling: false },
+    } as any]);
+    await draftSection(client, { template: mockTemplate, section: mockSection, project_description: 'test', shared_inputs: {}, prior_summaries: [] });
+    expect(vi.mocked(client.query).mock.calls[0]![0].tools).toBeUndefined();
+  });
+
+  it('honors an already-aborted drafting signal', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = makeClient([]);
+    await expect(draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+      options: { signal: controller.signal },
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('terminates a looping model at the round limit', async () => {
+    const loop = Array.from({ length: 7 }, (_, index) => ({
+      tool_calls: [{
+        id: `loop-${index}`,
+        type: 'function' as const,
+        function: { name: 'calculate_math', arguments: '{"expression":"1+1"}' },
+      }],
+    }));
+    const client = makeClient(loop);
+    await expect(draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+    })).rejects.toThrow(/safe call limit/);
+    expect(client.query).toHaveBeenCalledTimes(7);
+  });
+
+  it('rejects oversized tool arguments with a bounded structured error', async () => {
+    const client = makeClient([
+      { tool_calls: [{
+        id: 'large-args',
+        type: 'function',
+        function: {
+          name: 'query_attached_document',
+          arguments: JSON.stringify({ query: 'x'.repeat(5_000) }),
+        },
+      }] },
+      { message: '{"paragraphs":[]}' },
+    ]);
+    await draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    const conversation = vi.mocked(client.query).mock.calls[1]![0].message as any[];
+    const payload = JSON.parse(conversation.find((turn) => turn.tool_call_id === 'large-args').message);
+    expect(payload.error.code).toBe('arguments_too_large');
+    expect(JSON.stringify(payload).length).toBeLessThan(1_000);
+  });
+
+  it('truncates oversized tool results before continuing', async () => {
+    const client = makeClient([
+      { tool_calls: [{
+        id: 'large-result',
+        type: 'function',
+        function: { name: 'query_attached_document', arguments: '{"query":"needle"}' },
+      }] },
+      { message: '{"paragraphs":[]}' },
+    ]);
+    await draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+      references_block: `needle ${'x'.repeat(20_000)}`,
+    });
+    const conversation = vi.mocked(client.query).mock.calls[1]![0].message as any[];
+    const result = conversation.find((turn) => turn.tool_call_id === 'large-result').message as string;
+    expect(new TextEncoder().encode(result).length).toBeLessThanOrEqual(8_000);
+    expect(result).toContain('[truncated]');
+  });
+
+  it('rejects too many calls in a single model turn', async () => {
+    const client = makeClient([{
+      tool_calls: Array.from({ length: 13 }, (_, index) => ({
+        id: `many-${index}`,
+        type: 'function' as const,
+        function: { name: 'calculate_math', arguments: '{"expression":"1+1"}' },
+      })),
+    }]);
+    await expect(draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+    })).rejects.toThrow(/safe call limit/);
+    expect(client.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an oversized conversation before a provider call', async () => {
+    const client = makeClient([]);
+    await expect(draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'x'.repeat(210_000),
+      shared_inputs: {},
+      prior_summaries: [],
+    })).rejects.toThrow(/conversation exceeded/);
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('does not advertise or execute the removed fetch_url tool', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const client = makeClient([
+      { tool_calls: [{
+        id: 'ssrf',
+        type: 'function',
+        function: { name: 'fetch_url', arguments: '{"url":"http://169.254.169.254/latest/meta-data"}' },
+      }] },
+      { message: '{"paragraphs":[]}' },
+    ]);
+    await draftSection(client, {
+      template: mockTemplate,
+      section: mockSection,
+      project_description: 'test',
+      shared_inputs: {},
+      prior_summaries: [],
+    });
+    const first = vi.mocked(client.query).mock.calls[0]![0];
+    expect(first.tools?.map((tool) => tool.function.name)).not.toContain('fetch_url');
+    const conversation = vi.mocked(client.query).mock.calls[1]![0].message as any[];
+    expect(JSON.parse(conversation.find((turn) => turn.tool_call_id === 'ssrf').message).error.code)
+      .toBe('unknown_tool');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 
   it('throws on unparseable LLM output', async () => {

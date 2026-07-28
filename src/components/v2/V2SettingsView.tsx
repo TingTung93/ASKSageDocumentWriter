@@ -22,7 +22,7 @@ const STAGE_META: { stage: ModelStage; label: string; role: 'primary' | 'critic'
   { stage: 'synthesis', label: 'Template analysis', role: 'embed' },
 ];
 
-export function V2SettingsView() {
+export function V2SettingsView({ onOpenAudit = () => {} }: { onOpenAudit?: () => void }) {
   const {
     provider,
     apiKey,
@@ -437,7 +437,7 @@ export function V2SettingsView() {
           </div>
         </div>
 
-        {settings && <V2SettingsAdvanced settings={settings} />}
+        {settings && <V2SettingsAdvanced settings={settings} onOpenAudit={onOpenAudit} />}
       </div>
     </div>
   );

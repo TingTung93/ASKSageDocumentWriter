@@ -14,12 +14,18 @@ import type {
   PriorSectionSummary,
 } from './types';
 import type { DraftingStrategy } from '../agent/section_mapping';
+import { resolveAgentCapabilities } from '../agentic-editing/capabilities';
 
 export const DEFAULT_DRAFTING_MODEL = 'google-claude-46-sonnet';
 // Drafting must stick to retrieved + inlined content. The earlier 0.2
 // default let the model drift toward training-data priors when the
 // prompt didn't have strong subject anchoring.
 export const DEFAULT_DRAFTING_TEMPERATURE = 0;
+export const MAX_TOOL_ROUNDS = 6;
+export const MAX_TOOL_CALLS = 12;
+export const MAX_TOOL_RESULT_BYTES = 8_000;
+export const MAX_TOOL_ARGUMENT_BYTES = 4_000;
+export const MAX_CONVERSATION_BYTES = 200_000;
 
 export interface DraftSectionArgs {
   template: TemplateSchema;
@@ -68,6 +74,14 @@ export async function draftSection(
 ): Promise<DraftingResult> {
   const opts = args.options ?? {};
   const model = await resolveDraftingModel(client, opts.model, 'drafting');
+  throwIfAborted(opts.signal);
+  let selectedModel: import('../asksage/types').ModelInfo | undefined;
+  try {
+    selectedModel = (await client.getModels()).find((candidate) => candidate.id === model);
+  } catch {
+    // Model discovery is advisory. Provider capability remains the upper bound.
+  }
+  const capabilities = resolveAgentCapabilities(client, selectedModel);
   const temperature = opts.temperature ?? DEFAULT_DRAFTING_TEMPERATURE;
 
   const prompt = buildDraftingPrompt({
@@ -104,7 +118,7 @@ export async function draftSection(
 
   // Define the complete suite only for providers that advertise native
   // tool calling. GenAI.mil's STARK schema rejects tools/tool_choice.
-  if (client.capabilities.tools) queryInput.tools = [
+  if (capabilities.nativeTools) queryInput.tools = [
     {
       type: 'function',
       function: {
@@ -136,20 +150,6 @@ export async function draftSection(
     {
       type: 'function',
       function: {
-        name: 'fetch_url',
-        description: 'Fetch the text content of a specific public URL (e.g., a .mil or .gov policy page). Note: Some URLs may be blocked by browser CORS policies.',
-        parameters: {
-          type: 'object',
-          properties: {
-            url: { type: 'string', format: 'uri' }
-          },
-          required: ['url']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
         name: 'search_project_history',
         description: 'Search the summaries of previously drafted sections in this document to maintain consistency.',
         parameters: {
@@ -158,38 +158,6 @@ export async function draftSection(
             keyword: { type: 'string' }
           },
           required: ['keyword']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'design_complex_table',
-        description: 'Design and format a complex table with nested elements, specific alignments, and structured rows.',
-        parameters: {
-          type: 'object',
-          properties: {
-            title: { type: 'string' },
-            headers: { type: 'array', items: { type: 'string' } },
-            rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
-            nested_lists: { type: 'boolean' }
-          },
-          required: ['headers', 'rows']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'apply_advanced_formatting',
-        description: 'Apply complex formatting such as deep nesting, multi-level lists, and customized indentation to text blocks.',
-        parameters: {
-          type: 'object',
-          properties: {
-            text: { type: 'string' },
-            formatting_type: { type: 'string', enum: ['multi_level_list', 'indented_section', 'nested_structure'] }
-          },
-          required: ['text', 'formatting_type']
         }
       }
     }
@@ -202,13 +170,25 @@ export async function draftSection(
       ? [{ user: 'me', message: queryInput.message }] 
       : [...queryInput.message];
 
-  // ReAct Tool-Calling Loop
+  // Bounded ReAct tool loop. Presentation belongs to the structured draft
+  // response, so tools return facts only and never Markdown/formatting.
+  let toolRounds = 0;
+  let toolCalls = 0;
   while (true) {
+    throwIfAborted(opts.signal);
+    if (conversationSize(conversation) > MAX_CONVERSATION_BYTES) {
+      throw new Error('Drafting tool conversation exceeded the safe size limit.');
+    }
     queryInput.message = conversation;
-    raw = await client.query(queryInput);
+    raw = await abortable(client.query(queryInput), opts.signal);
     text = (raw.message ?? '').trim();
 
     if (raw.tool_calls && raw.tool_calls.length > 0) {
+      toolRounds += 1;
+      toolCalls += raw.tool_calls.length;
+      if (toolRounds > MAX_TOOL_ROUNDS || toolCalls > MAX_TOOL_CALLS) {
+        throw new Error('Drafting tool loop exceeded the safe call limit.');
+      }
       // Echo the model's tool call turn to the history
       conversation.push({
         user: 'gpt',
@@ -217,81 +197,54 @@ export async function draftSection(
       });
 
       for (const call of raw.tool_calls) {
-        let result = '';
+        throwIfAborted(opts.signal);
+        let result: string;
         try {
-          const toolArgs = JSON.parse(call.function.arguments);
+          if (byteLength(call.function.arguments) > MAX_TOOL_ARGUMENT_BYTES) {
+            throw new ToolInputError('arguments_too_large', 'Tool arguments exceed the safe size limit.');
+          }
+          const toolArgs: unknown = JSON.parse(call.function.arguments);
           if (call.function.name === 'calculate_math') {
-            // Scaffold POC: evaluate simple math
-            // eslint-disable-next-line no-new-func
-            const mathResult = new Function(`return (${toolArgs.expression})`)();
-            result = String(mathResult);
+            const expression = requiredString(toolArgs, 'expression', 256);
+            result = String(evaluateArithmetic(expression));
           } else if (call.function.name === 'query_attached_document') {
+            const query = requiredString(toolArgs, 'query', 256);
             // Simple keyword search over the references block
             if (!args.references_block) {
               result = 'No references are attached to this section.';
             } else {
               const lines = args.references_block.split('\n');
-              const matches = lines.filter((l: string) => l.toLowerCase().includes(String(toolArgs.query).toLowerCase()));
+              const matches = lines.filter((line) => line.toLowerCase().includes(query.toLowerCase()));
               if (matches.length === 0) {
-                result = `No matches found for "${toolArgs.query}" in the attached references.`;
+                result = `No matches found for "${query}" in the attached references.`;
               } else {
                 result = `Found ${matches.length} matches. Excerpts:\n` + matches.slice(0, 5).join('\n');
               }
             }
-          } else if (call.function.name === 'fetch_url') {
-            // Browser fetch (will hit CORS for most domains, but implemented for completeness)
-            try {
-              const res = await fetch(toolArgs.url);
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              const html = await res.text();
-              result = `Fetched ${html.length} bytes (truncated):\n${html.slice(0, 1000)}`;
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              result = `Failed to fetch URL. Browser CORS policy may block cross-origin requests without a proxy. Error: ${msg}`;
-            }
           } else if (call.function.name === 'search_project_history') {
+            const keyword = requiredString(toolArgs, 'keyword', 256);
             // Search through prior summaries
             if (args.prior_summaries && args.prior_summaries.length > 0) {
               const summaries = args.prior_summaries as PriorSectionSummary[];
               const matches = summaries.filter(s => 
-                s.name.toLowerCase().includes(String(toolArgs.keyword).toLowerCase()) || 
-                s.summary.toLowerCase().includes(String(toolArgs.keyword).toLowerCase())
+                s.name.toLowerCase().includes(keyword.toLowerCase()) ||
+                s.summary.toLowerCase().includes(keyword.toLowerCase())
               );
               if (matches.length === 0) {
-                result = `No prior sections matched "${toolArgs.keyword}".`;
+                result = `No prior sections matched "${keyword}".`;
               } else {
                 result = matches.map(s => `${s.name}: ${s.summary}`).join('\n');
               }
             } else {
               result = 'No prior sections have been drafted yet.';
             }
-          } else if (call.function.name === 'design_complex_table') {
-            let tableMd = `### ${toolArgs.title || 'Table'}\n`;
-            if (Array.isArray(toolArgs.headers)) {
-              tableMd += `| ${toolArgs.headers.join(' | ')} |\n`;
-              tableMd += `| ${toolArgs.headers.map(() => '---').join(' | ')} |\n`;
-            }
-            if (Array.isArray(toolArgs.rows)) {
-              for (const row of toolArgs.rows) {
-                if (Array.isArray(row)) tableMd += `| ${row.join(' | ')} |\n`;
-              }
-            }
-            if (toolArgs.nested_lists) {
-              tableMd += `\n*Note: Contains nested list formatting inside cells.*\n`;
-            }
-            result = tableMd;
-          } else if (call.function.name === 'apply_advanced_formatting') {
-            if (toolArgs.formatting_type === 'multi_level_list') {
-              result = (toolArgs.text || '').split('\n').map((line: string, i: number) => `${'  '.repeat(i % 3)}- ${line}`).join('\n');
-            } else {
-              result = `> [Formatted as ${toolArgs.formatting_type}]\n> ${(toolArgs.text || '').replace(/\n/g, '\n> ')}`;
-            }
           } else {
-            result = `Error: Unknown tool ${call.function.name}`;
+            throw new ToolInputError('unknown_tool', `Unknown tool "${call.function.name}".`);
           }
         } catch (err) {
-          result = `Error executing tool: ${err}`;
+          result = toolError(err);
         }
+        result = truncateUtf8(result, MAX_TOOL_RESULT_BYTES);
         
         conversation.push({
           user: 'tool',
@@ -360,4 +313,105 @@ function stripCodeFence(text: string): string {
   const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/i);
   if (fenced) return fenced[1]!.trim();
   return text;
+}
+
+class ToolInputError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
+
+function requiredString(value: unknown, key: string, maxLength: number): string {
+  if (!value || typeof value !== 'object') {
+    throw new ToolInputError('invalid_arguments', 'Tool arguments must be an object.');
+  }
+  const candidate = (value as Record<string, unknown>)[key];
+  if (typeof candidate !== 'string' || candidate.trim() === '' || candidate.length > maxLength) {
+    throw new ToolInputError('invalid_arguments', `"${key}" must be a non-empty string of at most ${maxLength} characters.`);
+  }
+  return candidate;
+}
+
+function toolError(error: unknown): string {
+  const code = error instanceof ToolInputError ? error.code : 'invalid_arguments';
+  const message = error instanceof Error ? error.message : 'Tool execution failed.';
+  return JSON.stringify({ ok: false, error: { code, message: message.slice(0, 500) } });
+}
+
+function evaluateArithmetic(expression: string): number {
+  const tokens = expression.match(/\d+(?:\.\d+)?|[()+\-*/%]/g);
+  if (!tokens || tokens.join('') !== expression.replace(/\s+/g, '')) {
+    throw new ToolInputError('invalid_expression', 'Expression contains unsupported characters.');
+  }
+  let index = 0;
+  const parseExpression = (): number => {
+    let value = parseTerm();
+    while (tokens[index] === '+' || tokens[index] === '-') {
+      const op = tokens[index++];
+      const rhs = parseTerm();
+      value = op === '+' ? value + rhs : value - rhs;
+    }
+    return value;
+  };
+  const parseTerm = (): number => {
+    let value = parseFactor();
+    while (tokens[index] === '*' || tokens[index] === '/' || tokens[index] === '%') {
+      const op = tokens[index++];
+      const rhs = parseFactor();
+      if ((op === '/' || op === '%') && rhs === 0) {
+        throw new ToolInputError('invalid_expression', 'Division by zero is not allowed.');
+      }
+      value = op === '*' ? value * rhs : op === '/' ? value / rhs : value % rhs;
+    }
+    return value;
+  };
+  const parseFactor = (): number => {
+    const token = tokens[index++];
+    if (token === '+' || token === '-') {
+      const value = parseFactor();
+      return token === '-' ? -value : value;
+    }
+    if (token === '(') {
+      const value = parseExpression();
+      if (tokens[index++] !== ')') throw new ToolInputError('invalid_expression', 'Unbalanced parentheses.');
+      return value;
+    }
+    const value = Number(token);
+    if (!Number.isFinite(value)) throw new ToolInputError('invalid_expression', 'Expected a finite number.');
+    return value;
+  };
+  const result = parseExpression();
+  if (index !== tokens.length || !Number.isFinite(result) || Math.abs(result) > 1e15) {
+    throw new ToolInputError('invalid_expression', 'Expression result is invalid or out of range.');
+  }
+  return result;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function conversationSize(value: unknown): number {
+  return byteLength(JSON.stringify(value));
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (byteLength(value) <= maxBytes) return value;
+  let end = Math.min(value.length, maxBytes);
+  while (end > 0 && byteLength(value.slice(0, end)) > maxBytes) end -= 1;
+  return `${value.slice(0, Math.max(0, end - 40))}…[truncated]`;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Drafting was cancelled.', 'AbortError');
+}
+
+async function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Drafting was cancelled.', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }

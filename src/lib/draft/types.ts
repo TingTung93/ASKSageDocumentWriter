@@ -176,6 +176,8 @@ export interface DraftingOptions {
    *       autonomous market research and live reference lookups
    */
   live?: 0 | 1 | 2;
+  /** Cancels the drafting request and any in-process tool loop. */
+  signal?: AbortSignal;
 }
 
 export interface PriorSectionSummary {

@@ -3,7 +3,7 @@ import { V2Sidebar } from './V2Sidebar';
 import { V2ProjectWorkspace } from './V2ProjectWorkspace';
 import { V2ExportModal } from './V2ExportModal';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { db } from '../../lib/db/schema';
 // v2.css is loaded globally from main.tsx; no per-mount import needed.
 import { RecipeProvider, useRecipe } from './RecipeContext';
@@ -16,8 +16,18 @@ import { V2SettingsView } from './V2SettingsView';
 import { getAuthConnection, useAuth } from '../../lib/state/auth';
 import { toast } from '../../lib/state/toast';
 import { DraftActionControllerProvider } from './drafting';
+import { Documents } from '../../routes/Documents';
+import { V2Home } from './V2Home';
 
 const FIRST_RUN_DISMISSED_KEY = 'asksage:v2:first-run-dismissed';
+export type V2View = 'workspace' | 'documents' | 'library' | 'audit' | 'settings';
+
+export function v2ViewFromSearchParams(params: URLSearchParams): V2View {
+  const view = params.get('view');
+  return view === 'documents' || view === 'library' || view === 'audit' || view === 'settings'
+    ? view
+    : 'workspace';
+}
 
 export function V2Layout() {
   return (
@@ -30,13 +40,21 @@ export function V2Layout() {
 }
 
 function V2LayoutInner() {
-  const [view, setView] = useState("workspace");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view = v2ViewFromSearchParams(searchParams);
+  const setView = (nextView: V2View) => {
+    const next = new URLSearchParams(searchParams);
+    if (nextView === 'workspace') next.delete('view');
+    else next.set('view', nextView);
+    setSearchParams(next);
+  };
   const [showNavigation, setShowNavigation] = useState(false);
   const [showCP, setShowCP] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [showIngest, setShowIngest] = useState(false);
   const auth = useAuth();
   const connection = getAuthConnection(auth);
+  const { id } = useParams<{ id: string }>();
   const storageWarnedRef = useRef(false);
   const warnStorageOnce = () => {
     if (storageWarnedRef.current) return;
@@ -46,12 +64,11 @@ function V2LayoutInner() {
   const [firstRunDismissed, setFirstRunDismissed] = useState<boolean>(() => {
     try { return sessionStorage.getItem(FIRST_RUN_DISMISSED_KEY) === '1'; } catch { return false; }
   });
-  const showFirstRun = !connection.canGenerate && !firstRunDismissed;
+  const showFirstRun = Boolean(id) && !connection.canGenerate && !firstRunDismissed;
   const dismissFirstRun = () => {
     try { sessionStorage.setItem(FIRST_RUN_DISMISSED_KEY, '1'); } catch { warnStorageOnce(); }
     setFirstRunDismissed(true);
   };
-  const { id } = useParams<{ id: string }>();
   const project = useLiveQuery(
     async () => (id ? (await db.projects.get(id)) ?? null : null),
     [id],
@@ -135,24 +152,31 @@ function V2LayoutInner() {
             >
               ☰
             </button>
-            {view === 'settings' ? (
+            {view === 'documents' ? (
+              <><span>Workspace</span><span className="sep">/</span><span className="current">Documents</span></>
+            ) : view === 'settings' ? (
               <><span>Workspace</span><span className="sep">/</span><span className="current">Settings</span></>
             ) : view === 'library' ? (
               <><span>Workspace</span><span className="sep">/</span><span className="current">Library</span></>
             ) : view === 'audit' ? (
               <><span>Workspace</span><span className="sep">/</span><span className="current">Activity log</span></>
-            ) : (
+            ) : id ? (
               <>
                 <span>Projects</span>
                 <span className="sep">/</span>
                 <span className="current">{project?.name || 'Loading...'}</span>
               </>
+            ) : (
+              <span className="current">Projects</span>
             )}
           </div>
           <div className="topbar-actions">
             {view !== 'workspace' ? (
-              <button className="btn" onClick={()=>setView('workspace')}>← Back to workspace</button>
-            ) : (
+              <button className="btn" onClick={() => {
+                if (id) setView('workspace');
+                else setSearchParams({});
+              }}>← Back to {id ? 'workspace' : 'projects'}</button>
+            ) : id ? (
               <>
                 {isRunning ? (
                   <div className="status-badge state-running" role="status" aria-live="polite">
@@ -186,18 +210,22 @@ function V2LayoutInner() {
                   ⇣ Export
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         </div>
 
-        {view === "settings" ? (
-          <V2SettingsView />
+        {view === 'documents' ? (
+          <div className="v2-classic-surface"><Documents /></div>
+        ) : view === "settings" ? (
+          <V2SettingsView onOpenAudit={() => setView('audit')} />
         ) : view === "library" ? (
           <V2LibraryView onOpenIngest={() => setShowIngest(true)} />
         ) : view === "audit" ? (
           <V2AuditView />
-        ) : (
+        ) : id ? (
           <V2ProjectWorkspace />
+        ) : (
+          <V2Home onOpenIngest={() => setShowIngest(true)} />
         )}
       </main>
 
@@ -209,7 +237,12 @@ function V2LayoutInner() {
           setView={setView}
         />
       )}
-      {showFirstRun && <V2FirstRun onDismiss={dismissFirstRun} />}
+      {showFirstRun && (
+        <V2FirstRun
+          onDismiss={dismissFirstRun}
+          onOpenSettings={() => setView('settings')}
+        />
+      )}
       {showIngest && <V2IngestModal onClose={() => setShowIngest(false)} />}
       {showExport && project && allTemplates && (
         <V2ExportModal

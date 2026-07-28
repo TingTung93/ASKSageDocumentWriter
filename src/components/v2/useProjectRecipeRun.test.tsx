@@ -80,6 +80,24 @@ describe('useProjectRecipeRun', () => {
     expect(getRecoveredRunStatus(run, run.id)).toBe('running');
   });
 
+  it.each(['failed', 'completed'] as const)(
+    'preserves the %s terminal state without replaying it',
+    async (status) => {
+      const run = makeRun(`run-${status}`, 'project-a', status);
+      loadNewestRun.mockResolvedValue(run);
+
+      const { result } = renderHook(() => useProjectRecipeRun('project-a'));
+
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current).toEqual({
+        status: 'ready',
+        run,
+        recoveredStatus: status,
+      });
+      expect(loadNewestRun).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('never exposes project A after navigating to project B', async () => {
     const projectA = deferred<RecipeRun | undefined>();
     const runB = makeRun('run-b', 'project-b');
