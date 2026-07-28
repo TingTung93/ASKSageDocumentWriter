@@ -36,6 +36,7 @@ export interface OpenAIChatBody {
   model: string;
   messages: OpenAIChatMessage[];
   temperature?: number;
+  max_tokens?: number;
   tools?: OpenAITool[];
   tool_choice?: 'none' | 'auto' | 'required' | OpenAIToolChoice;
 }
@@ -118,6 +119,7 @@ export function mapQueryInputToOpenAIChatBody(input: QueryInput): OpenAIChatBody
     messages,
   };
   if (typeof input.temperature === 'number') out.temperature = input.temperature;
+  if (typeof input.max_tokens === 'number') out.max_tokens = input.max_tokens;
   if (input.tools && input.tools.length > 0) out.tools = input.tools;
   if (input.tool_choice) out.tool_choice = input.tool_choice;
   return out;
@@ -143,6 +145,7 @@ export function mapOpenAIResponseToQueryResponse(r: OpenAIChatCompletionResponse
     vectors_down: false,
     usage,
     tool_calls,
+    finish_reason: r.choices?.[0]?.finish_reason,
   };
 }
 
@@ -153,7 +156,20 @@ export function stripCodeFence(text: string): string {
 }
 
 export function parseJsonFromOpenAIText<T>(text: string): T {
-  return JSON.parse(stripCodeFence(text.trim())) as T;
+  const stripped = stripCodeFence(text.trim());
+  try {
+    return JSON.parse(stripped) as T;
+  } catch (originalError) {
+    // Some otherwise-capable models wrap the requested object in a short
+    // sentence. Recover only a complete object; never auto-close truncated
+    // JSON because applying a partial document-edit list would be unsafe.
+    const firstBrace = stripped.indexOf('{');
+    const lastBrace = stripped.lastIndexOf('}');
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      return JSON.parse(stripped.slice(firstBrace, lastBrace + 1)) as T;
+    }
+    throw originalError;
+  }
 }
 
 export function mapModelRowToModelInfo(row: OpenAIModelRow, fallbackOwner: string): ModelInfo {

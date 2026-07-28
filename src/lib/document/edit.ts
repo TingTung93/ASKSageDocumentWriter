@@ -145,6 +145,8 @@ CONTENT CONTROLS
 
 CRITICAL CONSTRAINTS:
 - A clean chunk yields { "edits": [] }. Do not invent edits to look productive.
+- Keep every rationale concise (160 characters or fewer) so the JSON response is not needlessly large.
+- Emit only fields defined for the selected op. Never repeat unchanged source text outside new_text.
 - All paragraph indices MUST refer to the exact integer labels shown in the DOCUMENT CHUNK below. Out-of-range indices are silently dropped.
 - ONLY emit edits for paragraphs labeled "[edit]". Paragraphs labeled "[ctx]" are context lines from the previous/next window — read them but do NOT propose edits against them; they will be handled in their own window.
 - replace_run_text new_text length must be COMPARABLE to the original run's text length. Use replace_paragraph_text for longer rewrites.
@@ -338,6 +340,10 @@ export async function requestDocumentEdits(
       model,
       dataset: args.dataset && args.dataset.length > 0 ? args.dataset : 'none',
       temperature: 0,
+      // STARK's endpoint default is too small for a multi-edit JSON response
+      // and can cut the object off mid-token, making otherwise-valid output
+      // impossible to parse.
+      max_tokens: 8192,
       usage: true,
     };
     if (typeof args.limit_references === 'number') {

@@ -105,6 +105,8 @@ export interface QueryInput {
   limit_references?: number;
   /** 0..1; default 0 on the server. */
   temperature?: number;
+  /** Maximum number of tokens the model may generate. */
+  max_tokens?: number;
   system_prompt?: string;
   persona?: number;
   /** Web search toggle: 0 off, 1 Google results, 2 Google + crawl. */
@@ -138,6 +140,8 @@ export interface QueryResponse {
   tool_calls?: OpenAIToolCall[];
   tool_calls_unified?: unknown;
   tool_responses?: unknown;
+  /** Provider completion reason, such as "stop" or "length". */
+  finish_reason?: string;
   /**
    * Number of OpenRouter web-search results invoked by THIS call.
    * Set by OpenRouterClient when the request body included the

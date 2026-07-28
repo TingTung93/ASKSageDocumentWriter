@@ -76,6 +76,7 @@ describe('GenAIMilClient', () => {
       system_prompt: 'Return JSON.',
       message: 'Draft this.',
       temperature: 0,
+      max_tokens: 8192,
       dataset: 'some-dataset',
       limit_references: 5,
       live: 2,
@@ -99,6 +100,7 @@ describe('GenAIMilClient', () => {
         { role: 'user', content: 'Draft this.' },
       ],
       temperature: 0,
+      max_tokens: 8192,
       stream: false,
     });
     expect(result.message).toBe('{"paragraphs":[]}');
@@ -137,5 +139,40 @@ describe('GenAIMilClient', () => {
     expect(error).toBeInstanceOf(AskSageError);
     expect((error as AskSageError).message).toContain('not parseable JSON');
     expect((error as AskSageError).body).toBe('not json');
+  });
+
+  it('identifies JSON truncated by the model output limit', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        id: 'chat-truncated',
+        choices: [{
+          message: { role: 'assistant', content: '{"edits":[{"op":"replace_' },
+          finish_reason: 'length',
+        }],
+      }), { status: 200 }),
+    );
+
+    await expect(makeClient().queryJson({
+      model: 'model-a',
+      message: 'json',
+      max_tokens: 8192,
+    })).rejects.toThrow(/STARK truncated the response at max_tokens/);
+  });
+
+  it('extracts a complete JSON object wrapped in model commentary', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        id: 'chat-wrapped',
+        choices: [{
+          message: { role: 'assistant', content: 'Here is the result:\n{"edits":[]}\nDone.' },
+          finish_reason: 'stop',
+        }],
+      }), { status: 200 }),
+    );
+
+    await expect(makeClient().queryJson<{ edits: unknown[] }>({
+      model: 'model-a',
+      message: 'json',
+    })).resolves.toMatchObject({ data: { edits: [] } });
   });
 });

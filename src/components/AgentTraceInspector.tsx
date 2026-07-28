@@ -18,8 +18,9 @@ export function AgentTraceInspector({ targetKind, targetId }: { targetKind: Edit
   if (!sessions || sessions.length === 0) return null;
 
   return (
-    <section className="agent-trace-inspector" aria-label="Agent execution trace">
-      <h3>Agent execution trace</h3>
+    <details className="agent-trace-inspector">
+      <summary><strong>Technical agent execution trace</strong></summary>
+      <section aria-label="Agent execution trace">
       <p className="muted">Every stage, routing decision, model request, response, and validation result is recorded here. This shows prompts and provider output, not hidden reasoning.</p>
       <label>
         Turn
@@ -45,6 +46,7 @@ export function AgentTraceInspector({ targetKind, targetId }: { targetKind: Edit
         ))}
       </div>
       {selectedArtifact && <details open><summary>{selectedArtifact.kind}</summary><pre>{selectedArtifact.content}</pre></details>}
-    </section>
+      </section>
+    </details>
   );
 }

@@ -128,6 +128,9 @@ export class GenAIMilClient implements LLMClient {
       ...(typeof mapped.temperature === 'number'
         ? { temperature: mapped.temperature }
         : {}),
+      ...(typeof mapped.max_tokens === 'number'
+        ? { max_tokens: mapped.max_tokens }
+        : {}),
       stream: false,
     };
     const requestText = JSON.stringify(body);
@@ -180,6 +183,14 @@ export class GenAIMilClient implements LLMClient {
       return { data: parseJsonFromOpenAIText<T>(text), raw };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      if (raw.finish_reason === 'length') {
+        throw new AskSageError(
+          raw.status ?? null,
+          `GenAI.mil queryJson: STARK truncated the response at max_tokens before the JSON was complete. ` +
+            `Reduce the request scope or increase max_tokens. Raw response (first 2000 chars):\n${text.slice(0, 2000)}`,
+          text,
+        );
+      }
       throw new AskSageError(
         raw.status ?? null,
         `GenAI.mil queryJson: response was not parseable JSON (${reason}). ` +

@@ -43,6 +43,7 @@ import { Spinner } from '../components/Spinner';
 import { ProgressBar } from '../components/ProgressBar';
 import { DocxSkeleton } from '../components/DocxSkeleton';
 import { AgentTraceInspector } from '../components/AgentTraceInspector';
+import { AgentProposalReview } from '../components/AgentProposalReview';
 import { startPromptOnlyEditingTurn } from '../lib/agentic-editing/runner';
 import { resolveDraftingModel } from '../lib/provider/resolve_model';
 import { appendTraceEvent, listTurnTrace } from '../lib/agentic-editing/journal';
@@ -983,6 +984,12 @@ function DocumentDetail({ document: doc }: { document: DocumentRecord }) {
           </div>
         </div>
       )}
+
+      <AgentProposalReview
+        targetKind="uploaded_document"
+        targetId={doc.id}
+        edits={doc.edits}
+      />
 
       <h3>
         Proposed edits ({proposed.length}) · Accepted ({accepted.length})
