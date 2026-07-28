@@ -14,6 +14,7 @@ import { Spinner } from '../components/Spinner';
 import { StepIndicator } from '../components/StepIndicator';
 import { HelpTip } from '../components/HelpTip';
 import { toast } from '../lib/state/toast';
+import { debugLog } from '../lib/debug/log';
 
 export function Welcome() {
   const {
@@ -100,6 +101,10 @@ export function Welcome() {
       toast.success(`Connected — ${list.length} models available`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      debugLog.add(
+        'error',
+        `[connection] ${draftProvider} ${draftBase.trim().replace(/\/$/, '')}/models failed: ${message}`,
+      );
       setError(message);
       setLocalProbe(null);
       toast.error('Connection failed — see error below');
@@ -458,7 +463,7 @@ export function Welcome() {
       )}
 
       {showDiagnostics && (
-        <Diagnostics baseUrl={draftBase.trim()} apiKey={draftKey.trim()} />
+        <Diagnostics baseUrl={draftBase.trim()} apiKey={draftKey.trim()} provider={draftProvider} />
       )}
 
       {/* ── Model list (collapsed by default for simplicity) ─────── */}

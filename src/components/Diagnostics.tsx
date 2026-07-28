@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { ProviderId } from '../lib/provider/types';
 
 // Self-contained in-app diagnostics. Replicates probe.html inside the
 // SPA so the user can debug network/auth issues on a workstation that
@@ -8,6 +9,7 @@ import { useState } from 'react';
 
 interface ProbeResult {
   name: string;
+  method: 'GET' | 'POST';
   url: string;
   startedAt: number;
   ms: number;
@@ -28,21 +30,24 @@ interface ProbeResult {
 interface DiagnosticsProps {
   baseUrl: string;
   apiKey: string;
+  provider: ProviderId;
+}
+
+interface ProbeDefinition {
+  name: string;
+  path: string;
+  method: 'GET' | 'POST';
+  body?: unknown;
+  headers: Record<string, string>;
 }
 
 async function runProbe(
-  name: string,
   baseUrl: string,
-  path: string,
-  apiKey: string,
-  body: unknown,
+  probe: ProbeDefinition,
 ): Promise<ProbeResult> {
-  const url = baseUrl.replace(/\/$/, '') + path;
-  const requestHeaders: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'x-access-tokens': apiKey,
-  };
-  const requestBody = JSON.stringify(body ?? {});
+  const url = baseUrl.replace(/\/$/, '') + probe.path;
+  const requestHeaders = probe.headers;
+  const requestBody = probe.body === undefined ? '' : JSON.stringify(probe.body);
   const startedAt = Date.now();
 
   let res: Response | null = null;
@@ -53,10 +58,10 @@ async function runProbe(
     // — see comment in src/lib/asksage/client.ts for why those break the
     // CORS preflight on the Ask Sage health tenant.
     res = await globalThis.fetch(url, {
-      method: 'POST',
+      method: probe.method,
       mode: 'cors',
       headers: requestHeaders,
-      body: requestBody,
+      ...(probe.method === 'POST' ? { body: requestBody } : {}),
     });
   } catch (e) {
     networkError = {
@@ -82,7 +87,8 @@ async function runProbe(
   }
 
   return {
-    name,
+    name: probe.name,
+    method: probe.method,
     url,
     startedAt,
     ms,
@@ -92,12 +98,12 @@ async function runProbe(
     statusText: res?.statusText ?? null,
     responseBodyExcerpt,
     visibleHeaders,
-    requestHeaders: { ...requestHeaders, 'x-access-tokens': '<redacted>' },
+    requestHeaders: redactHeaders(requestHeaders),
     requestBody,
   };
 }
 
-export function Diagnostics({ baseUrl, apiKey }: DiagnosticsProps) {
+export function Diagnostics({ baseUrl, apiKey, provider }: DiagnosticsProps) {
   const [results, setResults] = useState<ProbeResult[]>([]);
   const [running, setRunning] = useState(false);
 
@@ -105,16 +111,9 @@ export function Diagnostics({ baseUrl, apiKey }: DiagnosticsProps) {
     setRunning(true);
     setResults([]);
     const out: ProbeResult[] = [];
-    const probes: Array<[string, string, unknown]> = [
-      ['get-models (POST /server/get-models)', '/server/get-models', {}],
-      [
-        'query ping (POST /server/query)',
-        '/server/query',
-        { message: 'ping', model: 'google-claude-45-haiku', dataset: 'none', temperature: 0 },
-      ],
-    ];
-    for (const [name, path, body] of probes) {
-      const r = await runProbe(name, baseUrl, path, apiKey, body);
+    const probes = probesForProvider(provider, apiKey);
+    for (const probe of probes) {
+      const r = await runProbe(baseUrl, probe);
       out.push(r);
       setResults([...out]);
     }
@@ -211,7 +210,7 @@ function ProbeView({ r }: { r: ProbeResult }) {
       <details style={{ marginTop: '0.25rem' }}>
         <summary style={{ cursor: 'pointer', fontSize: 12 }}>Request details</summary>
         <pre style={{ background: '#f4f4f4', padding: '0.5rem', fontSize: 11 }}>
-          POST {r.url}
+          {r.method} {r.url}
           {'\n'}
           {Object.entries(r.requestHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')}
           {'\n\n'}
@@ -220,4 +219,40 @@ function ProbeView({ r }: { r: ProbeResult }) {
       </details>
     </div>
   );
+}
+
+function probesForProvider(provider: ProviderId, apiKey: string): ProbeDefinition[] {
+  if (provider === 'genai_mil') {
+    return [{
+      name: 'list models (GET /models)',
+      path: '/models',
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` },
+    }];
+  }
+  if (provider === 'openrouter' || provider === 'local_openai') {
+    return [{
+      name: 'list models (GET /models)',
+      path: '/models',
+      method: 'GET',
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    }];
+  }
+  return [
+    {
+      name: 'get-models (POST /server/get-models)', path: '/server/get-models', method: 'POST',
+      body: {}, headers: { 'Content-Type': 'application/json', 'x-access-tokens': apiKey },
+    },
+    {
+      name: 'query ping (POST /server/query)', path: '/server/query', method: 'POST',
+      body: { message: 'ping', model: 'google-claude-45-haiku', dataset: 'none', temperature: 0 },
+      headers: { 'Content-Type': 'application/json', 'x-access-tokens': apiKey },
+    },
+  ];
+}
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) =>
+    /authorization|access-token/i.test(key) ? [key, '<redacted>'] : [key, value],
+  ));
 }
