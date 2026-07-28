@@ -208,6 +208,43 @@ describe('useDraftEditingSession', () => {
     expect(result.current.preview?.before).toEqual(source);
   });
 
+  it('does not recover a proposal created for a different target selection', async () => {
+    findSession.mockResolvedValue({
+      id: 'session-1',
+      target_kind: 'freeform_draft',
+      target_id: 'project-1',
+      status: 'awaiting_approval',
+      active_turn_id: 'turn-1',
+    });
+    listTurns.mockResolvedValue([{
+      ...turn,
+      target: {
+        kind: 'freeform_draft',
+        targetId: 'project-1',
+        projectId: 'project-1',
+        sectionId: 'block-a',
+        selectionId: 'block:block-a',
+      },
+    }]);
+
+    const { result } = renderHook(() => useDraftEditingSession({
+      target: {
+        kind: 'freeform_draft',
+        targetId: 'project-1',
+        projectId: 'project-1',
+        sectionId: 'block-b',
+        selectionId: 'block:block-b',
+      },
+      source,
+      client: () => client,
+      providerId: 'asksage',
+      model: 'model',
+    }));
+    await waitFor(() => expect(findSession).toHaveBeenCalled());
+    expect(result.current.preview).toBeNull();
+    expect(getVersion).not.toHaveBeenCalled();
+  });
+
   it('routes undo through the atomic version service', async () => {
     currentVersion.mockResolvedValue({ id: 'current' });
     const { result } = setup();

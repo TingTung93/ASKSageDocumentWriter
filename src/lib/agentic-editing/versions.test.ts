@@ -4,6 +4,7 @@ import {
   commitTemplateDraftVersion,
   getCurrentAcceptedVersion,
   listAcceptedVersionLineage,
+  StaleCanonicalContentError,
   StaleVersionError,
   undoTemplateDraftVersion,
 } from './versions';
@@ -61,6 +62,20 @@ describe('immutable draft version lineage', () => {
     })).rejects.toBeInstanceOf(StaleVersionError);
     expect((await db.drafts.get(draft.id))?.paragraphs[0]?.text).toBe('First accepted.');
     expect(await db.document_versions.count()).toBe(2);
+  });
+
+  it('rejects acceptance after a competing manual edit changes canonical content', async () => {
+    await db.drafts.update(draft.id, {
+      paragraphs: [{ role: 'body', text: 'Newer manual text.' }],
+    });
+    await expect(commitTemplateDraftVersion({
+      draftId: draft.id,
+      expectedCanonicalParagraphs: draft.paragraphs,
+      paragraphs: [{ role: 'body', text: 'Stale proposal.' }],
+      summary: 'Stale proposal',
+    })).rejects.toBeInstanceOf(StaleCanonicalContentError);
+    expect((await db.drafts.get(draft.id))?.paragraphs[0]?.text).toBe('Newer manual text.');
+    expect(await db.document_versions.count()).toBe(0);
   });
 
   it('requires the current parent after the initial commit', async () => {

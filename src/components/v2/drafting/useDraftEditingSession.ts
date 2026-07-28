@@ -81,7 +81,11 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
         if (!active || !session?.active_turn_id) return;
         const turns = await listSessionTurns(session.id);
         const turn = turns.find((item) => item.id === session.active_turn_id);
-        if (!turn?.proposal || turn.status !== 'awaiting_user_approval') return;
+        if (
+          !turn?.proposal ||
+          turn.status !== 'awaiting_user_approval' ||
+          !sameEditingTarget(turn.target, options.target)
+        ) return;
         const targetVersions = await listTargetVersions(options.target.kind, options.target.targetId);
         const proposalVersion = targetVersions.find(
           (version) => version.source_turn_id === turn.id && version.status === 'preview',
@@ -106,6 +110,10 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
     return () => { active = false; };
   }, [
     options.target.kind,
+    options.target.projectId,
+    options.target.sectionId,
+    options.target.selectionId,
+    options.target.templateId,
     options.target.targetId,
     refreshVersions,
   ]);
@@ -205,6 +213,7 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
     try {
       const commit = {
         expectedParentVersionId: preview.turn.base_version_id,
+        expectedCanonicalParagraphs: preview.before,
         paragraphs: preview.after,
         sourceTurnId: preview.turn.id,
         summary: preview.turn.proposal?.summary || preview.turn.instruction,
@@ -266,6 +275,17 @@ export function useDraftEditingSession(options: DraftEditingSessionOptions) {
   }, [options, refreshVersions]);
 
   return { accept, busy, error, preview, propose, reject, undo, versions };
+}
+
+function sameEditingTarget(a: EditingTargetRef, b: EditingTargetRef): boolean {
+  return (
+    a.kind === b.kind &&
+    a.targetId === b.targetId &&
+    a.projectId === b.projectId &&
+    a.templateId === b.templateId &&
+    a.sectionId === b.sectionId &&
+    a.selectionId === b.selectionId
+  );
 }
 
 function applySectionProposal(

@@ -5,6 +5,7 @@ import {
   commitFreeformDraftVersion,
   getCurrentAcceptedVersion,
   listAcceptedVersionLineage,
+  StaleCanonicalContentError,
   StaleVersionError,
   undoFreeformDraftVersion,
 } from './versions';
@@ -69,6 +70,27 @@ describe('freeform immutable version lineage', () => {
     })).rejects.toBeInstanceOf(StaleVersionError);
     expect((await db.projects.get(project.id))?.freeform_draft?.[0]?.text).toBe('First.');
     expect(await db.document_versions.count()).toBe(2);
+  });
+
+  it('rejects acceptance after regeneration changes canonical content', async () => {
+    await db.projects.update(project.id, {
+      freeform_draft: [
+        { role: 'heading', level: 0, text: 'Overview' },
+        { role: 'body', text: 'Newer regenerated body.' },
+      ],
+    });
+    await expect(commitFreeformDraftVersion({
+      projectId: project.id,
+      expectedCanonicalParagraphs: project.freeform_draft,
+      paragraphs: [
+        { role: 'heading', level: 0, text: 'Overview' },
+        { role: 'body', text: 'Stale proposal.' },
+      ],
+      summary: 'Stale proposal',
+    })).rejects.toBeInstanceOf(StaleCanonicalContentError);
+    expect((await db.projects.get(project.id))?.freeform_draft?.[1]?.text)
+      .toBe('Newer regenerated body.');
+    expect(await db.document_versions.count()).toBe(0);
   });
 
   it('survives reload and exports only the accepted canonical project snapshot', async () => {

@@ -16,9 +16,17 @@ export class StaleVersionError extends Error {
   }
 }
 
+export class StaleCanonicalContentError extends Error {
+  constructor() {
+    super('The canonical draft changed after this proposal was created. Rerun the proposal.');
+    this.name = 'StaleCanonicalContentError';
+  }
+}
+
 export interface CommitTemplateDraftVersionInput {
   draftId: string;
   expectedParentVersionId?: string;
+  expectedCanonicalParagraphs?: DraftParagraph[];
   paragraphs: DraftParagraph[];
   sourceTurnId?: string;
   summary: string;
@@ -37,6 +45,7 @@ export interface UndoTemplateDraftVersionInput {
 export interface CommitFreeformDraftVersionInput {
   projectId: string;
   expectedParentVersionId?: string;
+  expectedCanonicalParagraphs?: DraftParagraph[];
   paragraphs: DraftParagraph[];
   sourceTurnId?: string;
   summary: string;
@@ -91,6 +100,7 @@ export async function commitTemplateDraftVersion(
     db.editing_turns,
     async () => {
       const draft = await requireDraft(input.draftId);
+      assertCanonicalContent(input.expectedCanonicalParagraphs, draft.paragraphs);
       const versions = await acceptedVersions('template_draft', input.draftId);
       const current = findAcceptedLeaf(versions);
       assertExpectedParent(input.expectedParentVersionId, current?.id);
@@ -205,6 +215,7 @@ export async function commitFreeformDraftVersion(
     db.editing_turns,
     async () => {
       const project = await requireFreeformProject(input.projectId);
+      assertCanonicalContent(input.expectedCanonicalParagraphs, project.freeform_draft);
       const versions = await acceptedVersions('freeform_draft', input.projectId);
       const current = findAcceptedLeaf(versions);
       assertExpectedParent(input.expectedParentVersionId, current?.id);
@@ -372,6 +383,15 @@ function findAcceptedLeaf(
 
 function assertExpectedParent(expected: string | undefined, current: string | undefined): void {
   if (expected !== current) throw new StaleVersionError(expected, current);
+}
+
+function assertCanonicalContent(
+  expected: DraftParagraph[] | undefined,
+  current: DraftParagraph[],
+): void {
+  if (expected !== undefined && JSON.stringify(expected) !== JSON.stringify(current)) {
+    throw new StaleCanonicalContentError();
+  }
 }
 
 async function requireDraft(id: string): Promise<DraftRecord> {

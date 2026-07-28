@@ -11,6 +11,7 @@ export interface EditingTargetRef {
   projectId?: string;
   templateId?: string;
   sectionId?: string;
+  selectionId?: string;
 }
 
 export type EditingSessionStatus =

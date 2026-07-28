@@ -19,7 +19,11 @@ import {
   redraftFreeformSection,
 } from '../../lib/freeform/drafter';
 import { getFreeformStyle } from '../../lib/freeform/styles';
-import { chunkFreeformByH1, type FreeformChunk } from './helpers';
+import {
+  chunkFreeformByH1,
+  isApprovalEditableFreeformChunk,
+  type FreeformChunk,
+} from './helpers';
 import { EditSessionPanel } from './drafting';
 import { projectGroundingSources } from './drafting/grounding';
 import { useDraftSelection } from './drafting/DraftSelectionContext';
@@ -449,11 +453,13 @@ function Section({ project, template, section, draft, allDrafts }: {
                   targetVersionId: baseVersionId,
                 });
                 const existing = current[selectedParagraphIndex]!;
-                return replaceAnchoredParagraph(current, paragraphSnapshot, {
+                const replacement: DraftParagraph = {
                   ...existing,
                   text: edits[0].text,
                   role: edits[0].role ?? existing.role,
-                });
+                };
+                delete replacement.runs;
+                return replaceAnchoredParagraph(current, paragraphSnapshot, replacement);
               }}
               target={{
                 kind: 'template_draft',
@@ -461,6 +467,9 @@ function Section({ project, template, section, draft, allDrafts }: {
                 projectId: project.id,
                 templateId: template.id,
                 sectionId: section.id,
+                selectionId: selectedParagraphIndex === undefined
+                  ? `section:${section.id}`
+                  : `paragraph:${section.id}:${selectedParagraphIndex}`,
               }}
             />
           )}
@@ -697,6 +706,7 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
   const [editModel, setEditModel] = useState<string | null>(null);
   const auth = useAuth();
   const connection = getAuthConnection(auth);
+  const approvalEditable = isApprovalEditableFreeformChunk(chunk);
   const { pinSelection, selection } = useDraftSelection();
   const selected = (
     (selection?.kind === 'freeform_block' || selection?.kind === 'freeform_paragraph') &&
@@ -815,7 +825,11 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
     <article
       className="doc-section"
       id={`freeform-${chunk.id}`}
-      onClick={() => pinSelection(freeformBlockSelection(project.id, chunk.id, chunk.heading))}
+      onClick={() => {
+        if (approvalEditable) {
+          pinSelection(freeformBlockSelection(project.id, chunk.id, chunk.heading));
+        }
+      }}
       style={{ outline: selected ? '2px solid var(--accent)' : undefined }}
     >
       <div className="sec-num" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -871,12 +885,14 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
                 selection?.kind === 'freeform_paragraph' &&
                 selection.indexHint === globalIndex
               }
-              onSelect={() => pinSelection(freeformParagraphSelection(
-                project.id,
-                chunk.id,
-                `${project.id}:p:${globalIndex}:${p.role}`,
-                globalIndex,
-              ))}
+              onSelect={approvalEditable
+                ? () => pinSelection(freeformParagraphSelection(
+                    project.id,
+                    chunk.id,
+                    `${project.id}:p:${globalIndex}:${p.role}`,
+                    globalIndex,
+                  ))
+                : undefined}
             />
             );
           })}
@@ -902,7 +918,7 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
               </div>
             </div>
           )}
-          {selected && connection.canGenerate && editModel && (
+          {approvalEditable && selected && connection.canGenerate && editModel && (
             <EditSessionPanel
               active
               client={() => createLLMClient({
@@ -942,6 +958,10 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
                 targetId: project.id,
                 projectId: project.id,
                 sectionId: chunk.id,
+                selectionId: selection?.kind === 'freeform_paragraph' &&
+                  selection.indexHint !== undefined
+                  ? `paragraph:${chunk.id}:${selection.indexHint}`
+                  : `block:${chunk.id}`,
               }}
               applyProposal={async (edits, current, baseVersionId) => {
                 if (selection?.kind === 'freeform_paragraph' &&
@@ -956,11 +976,13 @@ function FreeformBlock({ project, chunk }: { project: ProjectRecord; chunk: Free
                     targetVersionId: baseVersionId,
                   });
                   const existing = current[selection.indexHint]!;
-                  return replaceFreeformParagraph(current, snapshot, {
+                  const replacement: DraftParagraph = {
                     ...existing,
                     text: edits[0].text,
                     role: edits[0].role ?? existing.role,
-                  });
+                  };
+                  delete replacement.runs;
+                  return replaceFreeformParagraph(current, snapshot, replacement);
                 }
                 const normalized = edits.map((edit) => ({
                   ...edit,
